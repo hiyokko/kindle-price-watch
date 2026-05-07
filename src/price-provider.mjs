@@ -1372,6 +1372,9 @@ function normalizeSnapshot(snapshot) {
   if (!snapshot.title) {
     throw new Error('タイトルを取得できませんでした');
   }
+  if (isAmazonErrorPageTitle(snapshot.title)) {
+    throw new Error('Amazonが商品ページではなくエラーページを返しました');
+  }
 
   return {
     asin: snapshot.asin,
@@ -1386,6 +1389,16 @@ function normalizeSnapshot(snapshot) {
     listPrice: nullableNumber(snapshot.listPrice),
     provider: snapshot.provider
   };
+}
+
+function isAmazonErrorPageTitle(title) {
+  const value = cleanText(title).replace(/\s+/g, '');
+  if (!value) return false;
+  return (
+    /(?:503|ServiceUnavailable|サービスが利用できません)/i.test(value) ||
+    /(?:RobotCheck|CAPTCHA|ショッピングを続けてください)/i.test(value) ||
+    /^Amazon\.co\.jp$/i.test(value)
+  );
 }
 
 function keepaDomainId(domain) {
