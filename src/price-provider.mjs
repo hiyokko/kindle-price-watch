@@ -56,8 +56,7 @@ export function isKindleSeriesUrl(input) {
 }
 
 export async function fetchKindleSeriesItems(input, options = {}) {
-  const url = normalizeAmazonUrl(input);
-  const html = await fetchAmazonHtml(url);
+  const { url, html } = await fetchAmazonSeriesHtml(input);
   const sourceAsin = extractAsin(input);
   let items = extractKindleSeriesItemsFromHtml(html);
 
@@ -71,8 +70,44 @@ export async function fetchKindleSeriesItems(input, options = {}) {
     sourceAsin,
     sourcePriceSeed: extractSeriesSourcePriceSeedFromHtml(html, sourceAsin, url, items),
     expectedVolumeCount: extractSeriesExpectedCount(html) || maxSeriesItemVolume(items) || items.length,
+    completed: extractSeriesCompletionStatus(html),
     items: limit == null ? items : items.slice(0, limit)
   };
+}
+
+async function fetchAmazonSeriesHtml(input) {
+  const urls = kindleSeriesCandidateUrls(input);
+  let lastError;
+
+  for (const url of urls) {
+    try {
+      return { url, html: await fetchAmazonHtml(url) };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError || new Error('Amazonシリーズページを取得できませんでした');
+}
+
+function kindleSeriesCandidateUrls(input) {
+  const urls = [];
+  const add = (value) => {
+    if (!value || urls.includes(value)) return;
+    urls.push(value);
+  };
+
+  add(normalizeAmazonUrl(input));
+
+  const asin = extractAsin(input);
+  if (asin) {
+    const host = process.env.AMAZON_HOST || 'www.amazon.co.jp';
+    add(`https://${host}/dp/${asin}?binding=kindle_edition&ref_=dbs_s_ks_series_rwt_tkin`);
+    add(`https://${host}/dp/${asin}?binding=kindle_edition&ref=dbs_dp_rwt_sb_pc_tkin`);
+    add(`https://${host}/gp/product/${asin}?binding=kindle_edition&ref_=dbs_s_ks_series_rwt_tkin`);
+  }
+
+  return urls;
 }
 
 export async function fetchExternalKindleSeriesItems(input) {
@@ -90,11 +125,11 @@ export async function fetchExternalKindleSeriesItems(input) {
       if (items.length > 1) {
         const limit = readPositiveInteger(process.env.SERIES_IMPORT_LIMIT, null);
         const expectedVolumeCount = externalExpectedVolumeCount(html, items);
-        if (limit == null && expectedVolumeCount > items.length) continue;
         return {
           seriesName: extractExternalSeriesName(html),
           sourceAsin,
           expectedVolumeCount,
+          completed: extractSeriesCompletionStatus(html),
           items: limit == null ? items : items.slice(0, limit),
           provider: 'external_series'
         };
@@ -125,6 +160,7 @@ export async function fetchSaleBonKindleSeriesItems(seriesName, options = {}) {
     seriesName: pageSeriesName,
     sourceAsin: options.sourceAsin || '',
     expectedVolumeCount: extractSeriesExpectedCount(html) || maxSeriesItemVolume(limitedItems) || limitedItems.length,
+    completed: extractSeriesCompletionStatus(html),
     items: limitedItems,
     provider: 'sale_bon_series'
   };
@@ -1193,6 +1229,29 @@ function extractSeriesExpectedCount(html) {
     if (count) return count;
   }
   return 0;
+}
+
+function extractSeriesCompletionStatus(html) {
+  const value = cleanText(
+    [
+      extractById(html, 'collectionTitle'),
+      extractById(html, 'series-title'),
+      extractById(html, 'ebooksProductTitle'),
+      extractMeta(html, 'description'),
+      extractMeta(html, 'og:title'),
+      extractTag(html, 'title'),
+      extractTag(html, 'h1')
+    ]
+      .filter(Boolean)
+      .join(' ')
+  );
+  if (!value) return false;
+
+  return (
+    /(?:全\s*)?[0-9０-９]{1,3}\s*巻\s*(?:完結|完)/.test(value) ||
+    /(?:完結済み|完結作品|シリーズ完結|全巻完結)/.test(value) ||
+    /\b(?:completed|complete)\s+series\b/i.test(value)
+  );
 }
 
 function extractVolumeCount(text) {

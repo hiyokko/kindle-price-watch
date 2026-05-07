@@ -97,6 +97,7 @@ export async function addBooksFromInput(input) {
   const seriesKey = seriesKeyForSeries(input, series);
   const seriesName = series.seriesName || 'Kindle シリーズ';
   const sourceUrl = seriesSourceUrlFor(input, series);
+  const seriesCompleted = Boolean(series.completed);
 
   await updateStore(async (store) => {
     const sourceIsSeriesItem = Boolean(series.sourceAsin && series.items.some((item) => item.asin === series.sourceAsin));
@@ -175,6 +176,14 @@ export async function addBooksFromInput(input) {
         store.priceHistory.push(historyEntry(book, now));
       }
     }
+
+    for (const book of store.books.filter((item) => isKnownBookForSeries(item, seriesIdentity))) {
+      applySeriesDiscoveryMetadata(book, {
+        now,
+        completed: seriesCompleted,
+        error: ''
+      });
+    }
     return store;
   });
 
@@ -183,6 +192,7 @@ export async function addBooksFromInput(input) {
     imported: importedBooks.length,
     skippedDuplicates,
     updatedDuplicates,
+    seriesCompleted,
     books: importedBooks,
     errors: series.reconciliation?.errors || []
   };
@@ -257,6 +267,7 @@ function mergeSeriesCandidate(primary, secondary) {
     seriesName: base.seriesName || overlay.seriesName,
     sourceAsin: base.sourceAsin || overlay.sourceAsin,
     sourcePriceSeed: base.sourcePriceSeed || overlay.sourcePriceSeed,
+    completed: Boolean(base.completed || overlay.completed),
     expectedVolumeCount: Math.max(
       Number(base.expectedVolumeCount) || 0,
       Number(overlay.expectedVolumeCount) || 0,
@@ -266,6 +277,16 @@ function mergeSeriesCandidate(primary, secondary) {
     provider: [base.provider, overlay.provider].filter(Boolean).join('+') || base.provider,
     items
   };
+}
+
+function applySeriesDiscoveryMetadata(book, options = {}) {
+  const now = options.now || new Date().toISOString();
+  book.seriesLastDiscoveredAt = now;
+  book.seriesDiscoveryError = options.error || '';
+  if (options.completed) {
+    book.seriesCompleted = true;
+    book.seriesCompletedAt = book.seriesCompletedAt || now;
+  }
 }
 
 function isIncompleteSeriesCandidate(series) {
@@ -911,10 +932,13 @@ export async function runDueChecks(options = {}) {
   }
 
   try {
-    const store = await readStore();
-    const settings = mergedRuntimeSettings(store.settings);
     const startedAt = Date.now();
     const maxRuntimeMs = floorNumber(process.env.CHECK_MAX_RUNTIME_MS, 0, 0);
+    const seriesDiscovery = shouldRunSeriesDiscovery(source, options)
+      ? await discoverSeriesUpdates({ startedAt, maxRuntimeMs })
+      : null;
+    const store = await readStore();
+    const settings = mergedRuntimeSettings(store.settings);
     const forceAll = options.force === true || readEnvBoolean('FORCE_CHECK_ALL', false);
     const plan = planDueChecks(store, settings, startedAt, { forceAll });
     const concurrency = checkConcurrency();
@@ -943,6 +967,7 @@ export async function runDueChecks(options = {}) {
       overlapped: Math.max(0, results.length - plan.dueSelected),
       stoppedByRuntimeLimit,
       forced: forceAll,
+      seriesDiscovery,
       results
     };
 
@@ -952,6 +977,10 @@ export async function runDueChecks(options = {}) {
         lastCronChecked: result.checked,
         lastCronRemainingDue: result.remainingDue,
         lastCronStoppedByRuntimeLimit: result.stoppedByRuntimeLimit,
+        lastSeriesDiscoveryChecked: seriesDiscovery?.checked || 0,
+        lastSeriesDiscoveryAdded: seriesDiscovery?.added || 0,
+        lastSeriesDiscoveryCompleted: seriesDiscovery?.completed || 0,
+        lastSeriesDiscoveryErrors: seriesDiscovery?.errors?.length || 0,
         lastCronError: ''
       });
     }
@@ -966,6 +995,143 @@ export async function runDueChecks(options = {}) {
     }
     throw error;
   }
+}
+
+async function discoverSeriesUpdates(options = {}) {
+  const now = new Date().toISOString();
+  const store = await readStore();
+  const plan = planSeriesDiscovery(store);
+  const results = [];
+  const errors = [];
+  let added = 0;
+  let completed = 0;
+  let stoppedByRuntimeLimit = false;
+
+  for (const group of plan.groups) {
+    if (shouldStopSeriesDiscoveryForRuntimeLimit(options.startedAt, options.maxRuntimeMs, results.length + errors.length)) {
+      stoppedByRuntimeLimit = true;
+      break;
+    }
+
+    try {
+      const result = await addBooksFromInput(group.sourceUrl);
+      const newBooks = Number(result.imported || 0);
+      const seriesCompleted = Boolean(result.seriesCompleted);
+      added += newBooks;
+      if (seriesCompleted) completed += 1;
+      results.push({
+        seriesKey: group.seriesKey,
+        seriesName: group.seriesName,
+        checked: true,
+        added: newBooks,
+        completed: seriesCompleted
+      });
+      await recordSeriesDiscoveryCursor(group, now);
+    } catch (error) {
+      const message = error.message || String(error);
+      errors.push({
+        seriesKey: group.seriesKey,
+        seriesName: group.seriesName,
+        error: message
+      });
+      await markSeriesDiscoveryError(group, now, message);
+      await recordSeriesDiscoveryCursor(group, now);
+    }
+  }
+
+  return {
+    checked: results.length + errors.length,
+    added,
+    completed,
+    stoppedByRuntimeLimit,
+    cursor: (await readStore()).seriesDiscoveryCursor,
+    results,
+    errors
+  };
+}
+
+function shouldRunSeriesDiscovery(source, options = {}) {
+  if (options.discoverSeries === true) return true;
+  if (options.discoverSeries === false) return false;
+  return source === 'cron' || source === 'scheduler';
+}
+
+function planSeriesDiscovery(store) {
+  const groups = rotateSeriesGroupsAfterCursor(
+    seriesDiscoveryGroups(store.books),
+    store.seriesDiscoveryCursor?.lastSeriesKey
+  );
+  const limit = floorNumber(process.env.SERIES_DISCOVERY_BATCH_SIZE, 1, 50);
+  return { groups: groups.slice(0, limit), totalEligible: groups.length };
+}
+
+function seriesDiscoveryGroups(books = []) {
+  const groups = new Map();
+
+  for (const book of books) {
+    if (book.importMode !== 'kindle_series' && !book.seriesKey) continue;
+    const seriesKey = book.seriesKey || book.sourceUrl;
+    const sourceUrl = book.sourceUrl || seriesInputFromSeriesKey(seriesKey);
+    if (!seriesKey || !sourceUrl) continue;
+
+    if (!groups.has(seriesKey)) {
+      groups.set(seriesKey, {
+        seriesKey,
+        sourceUrl,
+        seriesName: book.seriesName || seriesTitleFromBook(book),
+        completed: false,
+        books: []
+      });
+    }
+
+    const group = groups.get(seriesKey);
+    group.books.push(book);
+    group.completed = group.completed || Boolean(book.seriesCompleted);
+  }
+
+  return [...groups.values()].filter((group) => !group.completed);
+}
+
+function rotateSeriesGroupsAfterCursor(groups, lastSeriesKey = '') {
+  if (!Array.isArray(groups) || groups.length === 0) return [];
+  const cursorIndex = groups.findIndex((group) => group.seriesKey === lastSeriesKey);
+  if (cursorIndex === -1 || cursorIndex === groups.length - 1) return [...groups];
+  return [...groups.slice(cursorIndex + 1), ...groups.slice(0, cursorIndex + 1)];
+}
+
+function seriesInputFromSeriesKey(seriesKey = '') {
+  const match = String(seriesKey).match(/^series:asin:([A-Z0-9]{10})$/i);
+  return match ? amazonUrlForAsin(match[1].toUpperCase()) : '';
+}
+
+function seriesTitleFromBook(book) {
+  return String(book.seriesName || book.title || 'Kindle シリーズ')
+    .replace(/\s*\(?\d+\)?\s*巻?.*$/, '')
+    .trim();
+}
+
+function shouldStopSeriesDiscoveryForRuntimeLimit(startedAt, maxRuntimeMs, completedCount) {
+  return maxRuntimeMs > 0 && completedCount > 0 && Date.now() - startedAt >= maxRuntimeMs;
+}
+
+async function markSeriesDiscoveryError(group, now, error) {
+  await updateStore((store) => {
+    for (const book of store.books) {
+      if (book.seriesKey !== group.seriesKey) continue;
+      applySeriesDiscoveryMetadata(book, { now, error });
+    }
+    return store;
+  });
+}
+
+async function recordSeriesDiscoveryCursor(group, now) {
+  await updateStore((store) => {
+    store.seriesDiscoveryCursor = {
+      lastSeriesKey: group.seriesKey,
+      checkedAt: now
+    };
+    return store;
+  });
 }
 
 export async function getSettings() {
@@ -1268,6 +1434,10 @@ async function buildBookFromAsin(asin, options = {}) {
     provider: snapshot.provider,
     sourceUrl: options.sourceUrl || '',
     importMode: options.importMode || 'single',
+    seriesCompleted: Boolean(options.seriesCompleted || seed.seriesCompleted),
+    seriesCompletedAt: options.seriesCompleted || seed.seriesCompleted ? now : '',
+    seriesLastDiscoveredAt: options.seriesLastDiscoveredAt || '',
+    seriesDiscoveryError: '',
     lastCheckedAt: snapshot.currentPrice == null ? null : now,
     createdAt: now,
     updatedAt: now,

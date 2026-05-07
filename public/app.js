@@ -260,6 +260,7 @@ function createSeriesNode(group) {
   const firstImage = group.books.find((book) => book.imageUrl)?.imageUrl || '';
   const seriesTotal = seriesTotalLabel(group);
   const registeredCount = group.expectedCount > group.books.length ? `${group.books.length}/${group.expectedCount}冊` : `${group.books.length}冊`;
+  const seriesStatus = seriesStatusLabel(group);
   const section = document.createElement('section');
   section.className = 'series-card';
   section.classList.toggle('expanded', expanded);
@@ -279,7 +280,7 @@ function createSeriesNode(group) {
       <span class="eyebrow">シリーズ</span>
       <strong>${escapeHtml(group.title)}</strong>
       <span class="series-total">${escapeHtml(seriesTotal)}</span>
-      <span class="book-meta">${escapeHtml(registeredCount)} / ${group.checkedCount}冊確認済み / 最終確認 ${relativeTime(group.lastCheckedAt)} / ${selectedCount}冊選択中</span>
+      <span class="book-meta">${escapeHtml(registeredCount)} / ${group.checkedCount}冊確認済み / 最終確認 ${relativeTime(group.lastCheckedAt)} / ${escapeHtml(seriesStatus)} / ${selectedCount}冊選択中</span>
     </span>
     <span class="series-chevron">${expanded ? '閉じる' : '開く'}</span>
   `;
@@ -555,6 +556,9 @@ function groupBooks(books) {
         isSeries,
         title: isSeries ? seriesTitle(book) : book.title,
         expectedCount: 0,
+        seriesCompleted: false,
+        seriesLastDiscoveredAt: '',
+        seriesDiscoveryError: '',
         books: []
       });
     }
@@ -566,6 +570,9 @@ function groupBooks(books) {
     group.expectedCount = expectedSeriesCount(group.books);
     group.checkedCount = group.books.filter((book) => book.lastCheckedAt).length;
     group.lastCheckedAt = latestCheckedAt(group.books);
+    group.seriesCompleted = group.books.some((book) => book.seriesCompleted);
+    group.seriesLastDiscoveredAt = latestSeriesDiscoveredAt(group.books);
+    group.seriesDiscoveryError = latestSeriesDiscoveryError(group.books);
     return group;
   });
 }
@@ -583,6 +590,20 @@ function latestCheckedAt(books) {
     .filter((time) => Number.isFinite(time) && time > 0);
   if (times.length === 0) return '';
   return new Date(Math.max(...times)).toISOString();
+}
+
+function latestSeriesDiscoveredAt(books) {
+  const times = books
+    .map((book) => (book.seriesLastDiscoveredAt ? new Date(book.seriesLastDiscoveredAt).getTime() : 0))
+    .filter((time) => Number.isFinite(time) && time > 0);
+  if (times.length === 0) return '';
+  return new Date(Math.max(...times)).toISOString();
+}
+
+function latestSeriesDiscoveryError(books) {
+  return [...books]
+    .sort((a, b) => new Date(b.seriesLastDiscoveredAt || 0) - new Date(a.seriesLastDiscoveredAt || 0))
+    .find((book) => book.seriesDiscoveryError)?.seriesDiscoveryError || '';
 }
 
 function compareBooksWithinGroup(a, b) {
@@ -652,6 +673,12 @@ function seriesTotalLabel(group) {
   return `合計 ${yen(totalPrice)}${points}${missingText}${unregisteredText}`;
 }
 
+function seriesStatusLabel(group) {
+  if (group.seriesCompleted) return '完結';
+  const discovered = group.seriesLastDiscoveredAt ? `新刊探索 ${relativeTime(group.seriesLastDiscoveredAt)}` : '新刊探索 未実行';
+  return group.seriesDiscoveryError ? `${discovered}（要確認）` : discovered;
+}
+
 function cleanMeta(value) {
   const text = String(value || '')
     .replace(/^フォロー,\s*/i, '')
@@ -683,8 +710,9 @@ function cronSummary(automation) {
   if (!automation?.lastCronStartedAt && !automation?.lastCronFinishedAt) return '未実行';
   if (automation.lastCronError) return 'エラー';
   const checked = Number(automation.lastCronChecked || 0);
+  const added = Number(automation.lastSeriesDiscoveryAdded || 0);
   const time = relativeTime(automation.lastCronFinishedAt || automation.lastCronStartedAt);
-  return `${time} / ${checked}冊`;
+  return `${time} / ${checked}冊${added > 0 ? ` / 新刊${added}冊` : ''}`;
 }
 
 function dateLabel(date) {

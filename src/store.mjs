@@ -24,12 +24,20 @@ const defaultStore = {
     lastCronChecked: 0,
     lastCronRemainingDue: 0,
     lastCronStoppedByRuntimeLimit: false,
-    lastCronError: ''
+    lastCronError: '',
+    lastSeriesDiscoveryChecked: 0,
+    lastSeriesDiscoveryAdded: 0,
+    lastSeriesDiscoveryCompleted: 0,
+    lastSeriesDiscoveryErrors: 0
   },
   checkCursor: {
     lastBookId: '',
     lastAsin: '',
     lastTitle: '',
+    checkedAt: ''
+  },
+  seriesDiscoveryCursor: {
+    lastSeriesKey: '',
     checkedAt: ''
   }
 };
@@ -58,7 +66,8 @@ function mergeStore(store) {
     priceHistory: Array.isArray(store.priceHistory) ? store.priceHistory : [],
     notifications: Array.isArray(store.notifications) ? store.notifications : [],
     automation: normalizeAutomation(store.automation),
-    checkCursor: normalizeCheckCursor(store.checkCursor)
+    checkCursor: normalizeCheckCursor(store.checkCursor),
+    seriesDiscoveryCursor: normalizeSeriesDiscoveryCursor(store.seriesDiscoveryCursor)
   };
 }
 
@@ -120,6 +129,10 @@ export function publicBook(book) {
     lowestEffectivePrice: book.lowestEffectivePrice,
     previousEffectivePrice: book.previousEffectivePrice,
     lastCheckedAt: book.lastCheckedAt,
+    seriesCompleted: Boolean(book.seriesCompleted),
+    seriesCompletedAt: book.seriesCompletedAt || '',
+    seriesLastDiscoveredAt: book.seriesLastDiscoveredAt || '',
+    seriesDiscoveryError: book.seriesDiscoveryError || '',
     createdAt: book.createdAt,
     updatedAt: book.updatedAt,
     lastError: book.lastError,
@@ -141,6 +154,13 @@ function publicMetadataText(value) {
 function normalizeCheckCursor(cursor) {
   return {
     ...defaultStore.checkCursor,
+    ...(cursor || {})
+  };
+}
+
+function normalizeSeriesDiscoveryCursor(cursor) {
+  return {
+    ...defaultStore.seriesDiscoveryCursor,
     ...(cursor || {})
   };
 }
