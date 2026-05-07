@@ -2088,22 +2088,14 @@ function chooseLikelyKindlePrice(prices) {
 }
 
 function correctImplausibleKindlePrice({ currentPrice, currentPoints, listPrice, prices, html }) {
-  if (!isSuspiciousDiscountLikePrice(currentPrice, currentPoints, listPrice, prices)) {
-    return { currentPrice, currentPoints };
+  if (
+    isSuspiciousDiscountLikePrice(currentPrice, currentPoints, listPrice, prices) ||
+    isSuspiciousAboveListPrice(currentPrice, listPrice)
+  ) {
+    return { currentPrice: null, currentPoints: 0 };
   }
 
-  const maxReference = Math.max(listPrice || 0, ...prices);
-  const replacement = prices
-    .filter((price) => price > currentPrice)
-    .filter((price) => !maxReference || price <= maxReference)
-    .filter((price) => !listPrice || price >= listPrice * 0.5 || price === maxReference)
-    .sort((a, b) => a - b)[0];
-  if (replacement == null) return { currentPrice, currentPoints };
-
-  return {
-    currentPrice: replacement,
-    currentPoints: extractPointsNearPrice(html, replacement) ?? extractPoints(html, replacement)
-  };
+  return { currentPrice, currentPoints };
 }
 
 function isSuspiciousDiscountLikePrice(currentPrice, currentPoints, listPrice, prices = []) {
@@ -2112,6 +2104,10 @@ function isSuspiciousDiscountLikePrice(currentPrice, currentPoints, listPrice, p
   const maxPrice = Math.max(listPrice || 0, ...prices);
   if (!maxPrice || maxPrice < currentPrice * 4) return false;
   return !listPrice || currentPrice <= listPrice * 0.3;
+}
+
+function isSuspiciousAboveListPrice(currentPrice, listPrice) {
+  return currentPrice != null && listPrice != null && currentPrice > listPrice * 1.15;
 }
 
 function extractBulkOfferUnitPrice(html, expectedCount = 0) {
