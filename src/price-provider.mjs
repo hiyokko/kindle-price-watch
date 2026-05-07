@@ -752,12 +752,13 @@ async function fetchFromAmazonReader(asin, inputUrl = '') {
 
 function extractAmazonReaderSnapshotFromText(text, asin, url, provider) {
   const value = String(text || '');
+  const title = extractAmazonReaderTitle(value);
   return normalizeSnapshot({
     asin,
-    title: extractAmazonReaderTitle(value),
+    title,
     author: extractAmazonReaderAuthor(value),
     publisher: '',
-    imageUrl: extractAmazonReaderImage(value),
+    imageUrl: extractAmazonReaderImage(value, title),
     amazonUrl: amazonUrlForAsin(asin),
     currentPrice: extractAmazonReaderCurrentPrice(value),
     currentPoints: extractAmazonReaderPoints(value),
@@ -781,24 +782,44 @@ function extractAmazonReaderAuthor(text) {
   return cleanContributorText(author || '');
 }
 
-function extractAmazonReaderImage(text) {
+function extractAmazonReaderImage(text, title = '') {
   const images = [];
   for (const match of String(text || '').matchAll(/!\[[^\]]*?\]\((https?:\/\/[^)]+)\)/g)) {
     const url = decodeHtml(match[1]);
     if (!isAmazonImage(url)) continue;
     if (!/\/images\/I\//i.test(url)) continue;
-    images.push(url);
+    images.push({
+      alt: match[0].match(/^!\[([^\]]*)\]/)?.[1] || '',
+      url,
+      index: match.index ?? 0
+    });
   }
-  return images.sort((left, right) => readerImageScore(right) - readerImageScore(left))[0] || '';
+  return images.sort((left, right) => readerImageScore(right, title) - readerImageScore(left, title))[0]?.url || '';
 }
 
-function readerImageScore(url) {
-  const value = String(url || '');
+function readerImageScore(image, title = '') {
+  const value = String(image?.url || '');
+  const titleText = normalizeReaderImageText(title);
+  const altText = normalizeReaderImageText(image?.alt || '');
   let score = 0;
+  if (titleText && altText) {
+    if (altText === titleText) score += 140;
+    else if (altText.includes(titleText)) score += 120;
+    else if (titleText.includes(altText)) score += 80;
+  }
   if (/\/images\/I\/[A-Za-z0-9_.-]+(?:_SL|_SY|_SX)[0-9]+_/i.test(value)) score += 20;
   if (/\.jpg|\.jpeg|\.png|\.webp/i.test(value)) score += 10;
   if (/_AC_|_FM|_PQ|grey-pixel|sprite|logo|sash/i.test(value)) score -= 20;
+  if (Number.isFinite(image?.index)) score -= Math.min(image.index / 10000, 20);
   return score + Math.min(value.length, 200) / 1000;
+}
+
+function normalizeReaderImageText(value) {
+  return cleanText(value)
+    .replace(/^image\s+\d+\s*:\s*/i, '')
+    .replace(/\s+/g, '')
+    .replace(/[・:：\-‐‑‒–—―_＿|｜]/g, '')
+    .toLowerCase();
 }
 
 function extractAmazonReaderCurrentPrice(text) {
