@@ -932,7 +932,7 @@ function updateExistingSeriesBook(book, item, options) {
     book.lastError = '';
     changed = true;
   }
-  if (hasImplausibleSeriesPriceHistory(book, options.store)) {
+  if (hasImplausibleSeriesPriceHistory(book, options.store) || hasImplausibleSeriesPriceFloor(book)) {
     repairImplausibleSeriesPriceHistory(book, options.store);
     changed = true;
   }
@@ -1039,6 +1039,16 @@ function hasImplausibleSeriesPriceHistory(book, store) {
       book.currentPrice != null &&
       store.priceHistory.some((entry) => entry.bookId === book.id && isImplausibleSeriesHistoryEntry(entry, book))
   );
+}
+
+function hasImplausibleSeriesPriceFloor(book) {
+  if (!book || book.currentPrice == null) return false;
+  const floor = Number(book.lowestPrice);
+  const currentPrice = Number(book.currentPrice);
+  const listPrice = Number(book.listPrice);
+  if (!Number.isFinite(floor) || !Number.isFinite(currentPrice) || floor <= 0) return false;
+  if (!Number.isFinite(listPrice) || listPrice <= 0) return currentPrice >= floor * 2;
+  return floor <= listPrice * 0.3 && currentPrice >= floor * 2 && currentPrice <= listPrice * 1.15;
 }
 
 function isImplausibleSeriesHistoryEntry(entry, book) {
