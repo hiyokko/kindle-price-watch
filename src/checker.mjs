@@ -874,6 +874,10 @@ function updateExistingSeriesBook(book, item, options) {
     book.lastError = '';
     changed = true;
   }
+  if (book.currentPrice != null && item.currentPrice != null && /価格補完/.test(book.lastError || '')) {
+    book.lastError = '';
+    changed = true;
+  }
   if (shouldClearUnvalidatedSourcePrice(book, item)) {
     book.currentPrice = null;
     book.currentPoints = 0;
@@ -1645,7 +1649,7 @@ async function buildBookFromAsin(asin, options = {}) {
       lastError = error.message;
     }
   } else {
-    lastError = seed.lastError || (seed.currentPrice == null ? 'シリーズ一括登録: 次回チェックで詳細取得します' : '');
+    lastError = seed.currentPrice == null ? seed.lastError || 'シリーズ一括登録: 次回チェックで詳細取得します' : '';
   }
 
   const fallback = {
