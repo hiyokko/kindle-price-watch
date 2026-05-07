@@ -575,6 +575,11 @@ function addResultMessage(data) {
   }
 
   if (data.book) {
+    if (data.imported === 0 && data.skippedDuplicates > 0) {
+      return data.updatedDuplicates > 0
+        ? `${displayBookTitle(data.book)} は登録済みです。既存データを更新しました`
+        : `${displayBookTitle(data.book)} は登録済みです`;
+    }
     if (data.book.currentPrice == null || data.book.lastError) {
       return `${displayBookTitle(data.book)} を追加しました。詳細は次回チェックで再取得します`;
     }

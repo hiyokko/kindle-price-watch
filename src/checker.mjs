@@ -82,6 +82,21 @@ export async function addBooksFromInput(input) {
   }
 
   if (!series || asins.length === 0) {
+    const asin = extractAsin(input);
+    const existing = asin ? await findBookByAsin(asin) : null;
+    if (existing) {
+      const refreshed = await refreshExistingSingleBookFromInput(existing.id, input);
+      return {
+        mode: 'single',
+        imported: 0,
+        skippedDuplicates: 1,
+        updatedDuplicates: refreshed.updated ? 1 : 0,
+        books: [refreshed.book],
+        book: refreshed.book,
+        errors: refreshed.book.lastError ? [refreshed.book.lastError] : []
+      };
+    }
+
     const book = await addBook(input);
     return {
       mode: 'single',
@@ -200,6 +215,85 @@ export async function addBooksFromInput(input) {
     books: importedBooks,
     errors: series.reconciliation?.errors || []
   };
+}
+
+async function refreshExistingSingleBookFromInput(id, input) {
+  const now = new Date().toISOString();
+  const sourceUrl = String(input || '').trim();
+  let snapshotResult = null;
+  if (sourceUrl) {
+    snapshotResult = await settleSnapshotWithUrl(extractAsin(sourceUrl), sourceUrl);
+  }
+
+  let updated = false;
+  let publicResult = null;
+
+  await updateStore((store) => {
+    const book = store.books.find((item) => item.id === id);
+    if (!book) return store;
+
+    if (sourceUrl && book.sourceUrl !== sourceUrl) {
+      book.sourceUrl = sourceUrl;
+      updated = true;
+    }
+
+    if (!snapshotResult?.ok) {
+      if (isAmazonErrorPageBookTitle(book.title)) {
+        book.title = `ASIN ${book.asin}`;
+        book.imageUrl = '';
+        book.imageSource = '';
+        book.provider = 'pending';
+        updated = true;
+      }
+      if (snapshotResult?.error && book.lastError !== snapshotResult.error) {
+        book.lastError = snapshotResult.error;
+        updated = true;
+      }
+      if (updated) book.updatedAt = now;
+      publicResult = publicBook(book);
+      return store;
+    }
+
+    const previousEffectivePrice = book.effectivePrice;
+    const snapshot = snapshotResult.snapshot;
+    book.title = snapshot.title || book.title;
+    book.author = snapshot.author || book.author;
+    book.publisher = snapshot.publisher || book.publisher;
+    book.imageUrl = snapshot.imageUrl || book.imageUrl;
+    book.imageSource = snapshot.imageUrl ? snapshot.provider || book.imageSource || '' : book.imageSource || '';
+    book.amazonUrl = snapshot.amazonUrl || book.amazonUrl;
+    book.previousEffectivePrice = previousEffectivePrice;
+    book.currentPrice = snapshot.currentPrice;
+    book.currentPoints = snapshot.currentPoints;
+    book.effectivePrice = snapshot.effectivePrice;
+    book.listPrice = snapshot.listPrice ?? book.listPrice;
+    book.lowestPrice =
+      snapshot.currentPrice == null
+        ? book.lowestPrice
+        : book.lowestPrice == null
+          ? snapshot.currentPrice
+          : Math.min(book.lowestPrice, snapshot.currentPrice);
+    book.lowestEffectivePrice =
+      snapshot.effectivePrice == null
+        ? book.lowestEffectivePrice
+        : book.lowestEffectivePrice == null
+          ? snapshot.effectivePrice
+          : Math.min(book.lowestEffectivePrice, snapshot.effectivePrice);
+    book.provider = snapshot.provider;
+    book.lastCheckedAt = now;
+    book.updatedAt = now;
+    book.lastError = '';
+    updated = true;
+
+    if (book.effectivePrice != null) {
+      store.priceHistory.push(historyEntry(book, now));
+    }
+
+    publicResult = publicBook(book);
+    return store;
+  });
+
+  return { updated, book: publicResult || publicBook(await findBookById(id)) };
 }
 
 async function detectCollectionSeries(input) {
@@ -1403,6 +1497,16 @@ async function settleSnapshot(asin, book = {}) {
   }
 }
 
+async function settleSnapshotWithUrl(asin, url) {
+  if (!asin) return { ok: false, error: 'Amazon URL または ASIN を入力してください' };
+  try {
+    const snapshot = await fetchBookSnapshot(asin, { url });
+    return { ok: true, snapshot };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+}
+
 function normalizeImageUrl(value) {
   const text = String(value || '').trim();
   if (!text) return '';
@@ -1419,6 +1523,11 @@ function normalizeImageUrl(value) {
 async function findBookByAsin(asin) {
   const store = await readStore();
   return store.books.find((book) => book.asin === asin);
+}
+
+async function findBookById(id) {
+  const store = await readStore();
+  return store.books.find((book) => book.id === id);
 }
 
 async function buildBookFromAsin(asin, options = {}) {
@@ -1513,7 +1622,17 @@ function effectivePriceFromSeed(seed) {
 
 function preferSnapshotText(snapshotText, fallbackText) {
   if (!snapshotText || /^ASIN\s+[A-Z0-9]{10}$/i.test(snapshotText)) return fallbackText;
+  if (isAmazonErrorPageBookTitle(snapshotText)) return fallbackText;
   return snapshotText;
+}
+
+function isAmazonErrorPageBookTitle(title) {
+  const value = String(title || '').replace(/\s+/g, '');
+  return (
+    /(?:503|ServiceUnavailable|サービスが利用できません)/i.test(value) ||
+    /(?:RobotCheck|CAPTCHA|ショッピングを続けてください)/i.test(value) ||
+    /^Amazon\.co\.jp$/i.test(value)
+  );
 }
 
 function seriesKeyForSeries(input, series = {}) {
