@@ -39,7 +39,7 @@ export async function addBook(input) {
     throw error;
   }
 
-  const book = await buildBookFromAsin(asin, { fetchDetails: true });
+  const book = await buildBookFromAsin(asin, { fetchDetails: true, inputUrl: input });
   const now = book.createdAt;
 
   await updateStore((store) => {
@@ -737,6 +737,7 @@ function shouldClearUnvalidatedSourcePrice(book, item) {
 function seriesPriceProviderRank(provider) {
   const normalized = String(provider || '').toLowerCase();
   if (normalized === 'keepa' || normalized === 'amazon_html') return 100;
+  if (normalized === 'amazon_reader') return 90;
   if (normalized === 'amazon_series_bulk') return 95;
   if (normalized === 'amazon_series_unit_price') return 90;
   if (normalized === 'sale_bon_series') return 80;
@@ -751,6 +752,7 @@ function seriesPriceProviderRank(provider) {
 function isRefreshableSeriesPriceProvider(provider) {
   return [
     'amazon_html',
+    'amazon_reader',
     'amazon_series_bulk',
     'amazon_series_unit_price',
     'sale_bon_series',
@@ -762,6 +764,7 @@ function isRefreshableSeriesPriceProvider(provider) {
 function seriesImageProviderRank(provider) {
   const normalized = String(provider || '').toLowerCase();
   if (normalized === 'keepa' || normalized === 'amazon_html') return 100;
+  if (normalized === 'amazon_reader') return 90;
   if (normalized === 'external_series') return 80;
   if (normalized === 'amazon_series_bulk') return 60;
   if (normalized === 'sale_bon_series') return 40;
@@ -1387,7 +1390,7 @@ async function buildBookFromAsin(asin, options = {}) {
 
   if (fetchDetails) {
     try {
-      snapshot = await fetchBookSnapshot(asin);
+      snapshot = await fetchBookSnapshot(asin, { url: options.inputUrl || seed.amazonUrl || '' });
     } catch (error) {
       lastError = error.message;
     }

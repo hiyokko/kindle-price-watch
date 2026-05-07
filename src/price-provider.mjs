@@ -595,9 +595,10 @@ function dedupeNumbers(values) {
   return result;
 }
 
-export async function fetchBookSnapshot(asin) {
+export async function fetchBookSnapshot(asin, options = {}) {
   const provider = (process.env.PRICE_PROVIDER || 'amazon_html').toLowerCase();
   const errors = [];
+  const inputUrl = typeof options === 'string' ? options : options.url || '';
 
   if ((provider === 'auto' || provider === 'keepa') && process.env.KEEPA_API_KEY) {
     try {
@@ -610,7 +611,7 @@ export async function fetchBookSnapshot(asin) {
 
   if (provider === 'auto' || provider === 'amazon_html') {
     try {
-      return await fetchFromAmazonHtml(asin);
+      return await fetchFromAmazonHtml(asin, inputUrl);
     } catch (error) {
       errors.push(`Amazon HTML: ${error.message}`);
       if (provider === 'amazon_html') throw error;
@@ -667,10 +668,202 @@ async function fetchFromKeepa(asin) {
 }
 
 async function fetchFromAmazonHtml(asin, inputUrl = '') {
-  const url = inputUrl || amazonUrlForAsin(asin);
-  const html = await fetchAmazonHtml(url);
+  let lastSnapshot = null;
+  const errors = [];
 
-  return extractAmazonHtmlSnapshotFromHtml(html, asin, url, 'amazon_html');
+  for (const url of amazonProductCandidateUrls(asin, inputUrl)) {
+    try {
+      const html = await fetchAmazonHtml(url);
+      const snapshot = extractAmazonHtmlSnapshotFromHtml(html, asin, url, 'amazon_html');
+      if (snapshot.currentPrice != null) return snapshot;
+      lastSnapshot = snapshot;
+    } catch (error) {
+      errors.push(`${amazonFetchUrlLabel(url)}: ${error.message}`);
+    }
+  }
+
+  if (shouldUseAmazonReaderFallback()) {
+    try {
+      const snapshot = await fetchFromAmazonReader(asin, inputUrl);
+      if (snapshot.currentPrice != null || !lastSnapshot) return snapshot;
+      lastSnapshot = mergeSnapshotLike(lastSnapshot, snapshot);
+    } catch (error) {
+      errors.push(`reader: ${error.message}`);
+    }
+  }
+
+  if (lastSnapshot) return lastSnapshot;
+  throw new Error(compactFetchErrors(errors) || 'Amazon HTMLで商品情報を取得できませんでした');
+}
+
+function amazonProductCandidateUrls(asin, inputUrl = '') {
+  const normalizedAsin = String(asin || '').toUpperCase();
+  const urls = [];
+  const add = (value) => {
+    if (!value || urls.includes(value)) return;
+    if (extractAsin(value) !== normalizedAsin) return;
+    urls.push(value);
+  };
+
+  add(inputUrl);
+  add(withAmazonSearchParams(inputUrl, { binding: 'kindle_edition', ref: 'dbs_dp_rwt_sb_pc_tkin' }));
+
+  const base = amazonUrlForAsin(normalizedAsin);
+  add(base);
+  add(withAmazonSearchParams(base, { binding: 'kindle_edition', ref: 'dbs_dp_rwt_sb_pc_tkin' }));
+
+  try {
+    const baseUrl = new URL(base);
+    const host = baseUrl.host;
+    add(`https://${host}/gp/product/${normalizedAsin}`);
+    add(`https://${host}/gp/product/${normalizedAsin}?storeType=ebooks`);
+    add(`https://${host}/gp/product/${normalizedAsin}?binding=kindle_edition&ref=dbs_dp_rwt_sb_pc_tkin`);
+    add(`https://${host}/gp/aw/d/${normalizedAsin}`);
+  } catch {
+    // Keep the canonical URL candidates.
+  }
+
+  return urls;
+}
+
+function withAmazonSearchParams(value, params) {
+  try {
+    const url = new URL(String(value || '').trim());
+    if (!/amazon\./i.test(url.hostname)) return '';
+    for (const [key, paramValue] of Object.entries(params)) {
+      url.searchParams.set(key, paramValue);
+    }
+    return url.toString();
+  } catch {
+    return '';
+  }
+}
+
+function shouldUseAmazonReaderFallback() {
+  return String(process.env.AMAZON_READER_FALLBACK || 'true').toLowerCase() !== 'false';
+}
+
+async function fetchFromAmazonReader(asin, inputUrl = '') {
+  const sourceUrl = amazonProductCandidateUrls(asin, inputUrl)[0] || amazonUrlForAsin(asin);
+  const readerUrl = `https://r.jina.ai/http://${sourceUrl}`;
+  const text = await fetchHtml(readerUrl);
+  return extractAmazonReaderSnapshotFromText(text, asin, sourceUrl, 'amazon_reader');
+}
+
+function extractAmazonReaderSnapshotFromText(text, asin, url, provider) {
+  const value = String(text || '');
+  return normalizeSnapshot({
+    asin,
+    title: extractAmazonReaderTitle(value),
+    author: extractAmazonReaderAuthor(value),
+    publisher: '',
+    imageUrl: extractAmazonReaderImage(value),
+    amazonUrl: amazonUrlForAsin(asin),
+    currentPrice: extractAmazonReaderCurrentPrice(value),
+    currentPoints: extractAmazonReaderPoints(value),
+    listPrice: null,
+    provider
+  });
+}
+
+function extractAmazonReaderTitle(text) {
+  const rawTitle = text.match(/^Title:\s*(.+)$/im)?.[1] || text.match(/^#\s+(.+)$/m)?.[1] || '';
+  return cleanTitle(rawTitle)
+    .replace(/^Amazon\.co\.jp:\s*/i, '')
+    .replace(/\s+eBook\s*:.*$/i, '')
+    .replace(/\s*:\s*Kindle Store.*$/i, '')
+    .trim();
+}
+
+function extractAmazonReaderAuthor(text) {
+  const rawTitle = text.match(/^Title:\s*(.+)$/im)?.[1] || text.match(/^#\s+(.+)$/m)?.[1] || '';
+  const author = rawTitle.match(/\beBook\s*:\s*([^:]+?)\s*:\s*Kindle Store/i)?.[1];
+  return cleanContributorText(author || '');
+}
+
+function extractAmazonReaderImage(text) {
+  const images = [];
+  for (const match of String(text || '').matchAll(/!\[[^\]]*?\]\((https?:\/\/[^)]+)\)/g)) {
+    const url = decodeHtml(match[1]);
+    if (!isAmazonImage(url)) continue;
+    if (!/\/images\/I\//i.test(url)) continue;
+    images.push(url);
+  }
+  return images.sort((left, right) => readerImageScore(right) - readerImageScore(left))[0] || '';
+}
+
+function readerImageScore(url) {
+  const value = String(url || '');
+  let score = 0;
+  if (/\/images\/I\/[A-Za-z0-9_.-]+(?:_SL|_SY|_SX)[0-9]+_/i.test(value)) score += 20;
+  if (/\.jpg|\.jpeg|\.png|\.webp/i.test(value)) score += 10;
+  if (/_AC_|_FM|_PQ|grey-pixel|sprite|logo|sash/i.test(value)) score -= 20;
+  return score + Math.min(value.length, 200) / 1000;
+}
+
+function extractAmazonReaderCurrentPrice(text) {
+  const value = cleanText(text);
+  const patterns = [
+    /charged\s+JPY\s*([0-9][0-9,]*)/i,
+    /(?:Kindle|Digital)[^\n。]{0,160}\bJPY\s*([0-9][0-9,]*)/i,
+    /(?:Kindle|Digital|Kindle版)[^\n。]{0,160}(?:￥|¥)\s*([0-9][0-9,]*)/i,
+    /(?:Kindle|Digital|Kindle版)[^\n。]{0,160}([0-9][0-9,]*)\s*円/i
+  ];
+
+  for (const pattern of patterns) {
+    const price = parsePrice(value.match(pattern)?.[1]);
+    if (price != null) return price;
+  }
+
+  return null;
+}
+
+function extractAmazonReaderPoints(text) {
+  const value = cleanText(text);
+  const patterns = [
+    /Amazon Points:\s*\+?\s*([0-9][0-9,]*)\s*pt/i,
+    /\(([0-9][0-9,]*)\s*pt\)/i,
+    /([0-9][0-9,]*)\s*ポイント/
+  ];
+
+  for (const pattern of patterns) {
+    const points = parseOptionalPoints(value.match(pattern)?.[1]);
+    if (points != null) return points;
+  }
+
+  return 0;
+}
+
+function mergeSnapshotLike(base, overlay) {
+  return {
+    ...base,
+    title: base.title || overlay.title,
+    author: base.author || overlay.author,
+    publisher: base.publisher || overlay.publisher,
+    imageUrl: base.imageUrl || overlay.imageUrl,
+    currentPrice: base.currentPrice ?? overlay.currentPrice,
+    currentPoints: base.currentPoints ?? overlay.currentPoints,
+    effectivePrice: base.effectivePrice ?? overlay.effectivePrice,
+    listPrice: base.listPrice ?? overlay.listPrice,
+    provider: base.currentPrice == null && overlay.currentPrice != null ? overlay.provider : base.provider
+  };
+}
+
+function amazonFetchUrlLabel(value) {
+  try {
+    const url = new URL(value);
+    return `${url.pathname}${url.search ? '?...' : ''}`;
+  } catch {
+    return 'amazon';
+  }
+}
+
+function compactFetchErrors(errors) {
+  const unique = [...new Set(errors.map((error) => String(error || '').trim()).filter(Boolean))];
+  if (unique.length <= 4) return unique.join(' / ');
+
+  const readerError = unique.findLast((error) => error.startsWith('reader:'));
+  return [...unique.slice(0, readerError ? 3 : 4), readerError].filter(Boolean).join(' / ');
 }
 
 function extractAmazonHtmlSnapshotFromHtml(html, asin, url, provider) {
