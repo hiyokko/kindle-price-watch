@@ -735,7 +735,9 @@ async function fetchFromAmazonHtml(asin, inputUrl = '') {
   for (const url of amazonProductCandidateUrls(asin, inputUrl)) {
     try {
       const html = await fetchAmazonHtml(url);
-      const snapshot = extractAmazonHtmlSnapshotFromHtml(html, asin, url, 'amazon_html');
+      const snapshot = isAmazonSearchUrl(url)
+        ? extractAmazonSearchSnapshotFromHtml(html, asin, url, 'amazon_html')
+        : extractAmazonHtmlSnapshotFromHtml(html, asin, url, 'amazon_html');
       if (snapshot.currentPrice != null) return snapshot;
       lastSnapshot = snapshot;
     } catch (error) {
@@ -760,9 +762,9 @@ async function fetchFromAmazonHtml(asin, inputUrl = '') {
 function amazonProductCandidateUrls(asin, inputUrl = '') {
   const normalizedAsin = String(asin || '').toUpperCase();
   const urls = [];
-  const add = (value) => {
+  const add = (value, options = {}) => {
     if (!value || urls.includes(value)) return;
-    if (extractAsin(value) !== normalizedAsin) return;
+    if (!options.skipAsinCheck && extractAsin(value) !== normalizedAsin) return;
     urls.push(value);
   };
 
@@ -782,6 +784,7 @@ function amazonProductCandidateUrls(asin, inputUrl = '') {
     add(`https://${host}/gp/product/${normalizedAsin}?storeType=ebooks`);
     add(`https://${host}/gp/product/${normalizedAsin}?binding=kindle_edition&ref=dbs_dp_rwt_sb_pc_tkin`);
     add(`https://${host}/gp/aw/d/${normalizedAsin}`);
+    add(`https://${host}/s?k=${normalizedAsin}&i=digital-text`, { skipAsinCheck: true });
   } catch {
     // Keep the canonical URL candidates.
   }
@@ -1265,6 +1268,74 @@ function extractAmazonHtmlSnapshotFromHtml(html, asin, url, provider) {
   });
 }
 
+function extractAmazonSearchSnapshotFromHtml(html, asin, url, provider) {
+  const fragment = extractAmazonSearchResultFragment(html, asin);
+  if (!fragment) throw new Error('Amazon検索結果に商品が見つかりません');
+
+  const prices = extractPrices(fragment);
+  const currentPrice = chooseLikelyKindlePrice(prices);
+  const title =
+    cleanTitle(fragment.match(/<h2\b[^>]*aria-label=["']([^"']+)["']/i)?.[1] || '') ||
+    cleanTitle(fragment.match(/<h2\b[\s\S]*?<span\b[^>]*>([\s\S]*?)<\/span>/i)?.[1] || '') ||
+    extractItemTitle(fragment, asin);
+  const imageUrl = extractItemImage(fragment);
+  const productUrl = absoluteAmazonHref(extractAsinHref(fragment, asin)) || amazonUrlForAsin(asin);
+
+  return normalizeSnapshot({
+    asin,
+    title,
+    author: extractSearchResultAuthor(fragment),
+    publisher: '',
+    imageUrl,
+    amazonUrl: productUrl,
+    currentPrice,
+    currentPoints: extractPoints(fragment),
+    listPrice: extractListPrice(fragment, currentPrice),
+    provider
+  });
+}
+
+function extractAmazonSearchResultFragment(html, asin) {
+  const value = String(html || '');
+  const normalizedAsin = String(asin || '').toUpperCase();
+  const asinPattern = escapeRegExp(normalizedAsin);
+  const match = value.match(new RegExp(`\\bdata-asin=["']${asinPattern}["']`, 'i'));
+  if (!match) return '';
+
+  const index = match.index || 0;
+  const startCandidates = [
+    value.lastIndexOf('<div role="listitem"', index),
+    value.lastIndexOf('<div', index)
+  ].filter((position) => position >= 0);
+  const start = startCandidates.length ? Math.max(...startCandidates) : Math.max(0, index - 2000);
+  const nextItem = value.indexOf('<div role="listitem"', index + normalizedAsin.length);
+  const end = nextItem > index ? nextItem : Math.min(value.length, index + 24000);
+  return value.slice(start, end);
+}
+
+function extractSearchResultAuthor(fragment) {
+  const candidates = [];
+  for (const match of String(fragment || '').matchAll(/<a\b[^>]*href=["'][^"']*\/e\/[^"']*["'][^>]*>([\s\S]*?)<\/a>/gi)) {
+    const author = cleanContributorText(match[1]);
+    if (author && !candidates.includes(author)) candidates.push(author);
+  }
+  return candidates.slice(0, 3).join(', ');
+}
+
+function extractAsinHref(fragment, asin) {
+  const pattern = new RegExp(`href=["']([^"']*(?:\\/dp\\/|\\/gp\\/product\\/)${escapeRegExp(String(asin || ''))}[^"']*)["']`, 'i');
+  return decodeHtml(String(fragment || '').match(pattern)?.[1] || '');
+}
+
+function absoluteAmazonHref(href) {
+  if (!href) return '';
+  try {
+    return new URL(href, `https://${process.env.AMAZON_HOST || 'www.amazon.co.jp'}`).toString();
+  } catch {
+    return '';
+  }
+}
+
 function extractAmazonHtmlSnapshotBase(html, asin, url, provider) {
   const title = cleanText(
     extractById(html, 'productTitle') ||
@@ -1284,6 +1355,15 @@ function extractAmazonHtmlSnapshotBase(html, asin, url, provider) {
     amazonUrl: url,
     provider
   };
+}
+
+function isAmazonSearchUrl(value) {
+  try {
+    const url = new URL(String(value || ''));
+    return /amazon\./i.test(url.hostname) && /^\/s\/?$/i.test(url.pathname);
+  } catch {
+    return false;
+  }
 }
 
 function extractSeriesSourcePriceSeedFromHtml(html, asin, url, items = []) {
