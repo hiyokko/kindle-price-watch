@@ -274,7 +274,7 @@ async function refreshExistingSingleBookFromInput(id, input) {
 
     const previousEffectivePrice = book.effectivePrice;
     const snapshot = snapshotResult.snapshot;
-    book.title = snapshot.title || book.title;
+    book.title = preferSnapshotText(snapshot.title, book.title);
     book.author = snapshot.author || book.author;
     book.publisher = snapshot.publisher || book.publisher;
     book.imageUrl = snapshot.imageUrl || book.imageUrl;
@@ -302,6 +302,7 @@ async function refreshExistingSingleBookFromInput(id, input) {
     book.updatedAt = now;
     book.lastError = '';
     updated = true;
+    repairStoredBookTitle(book);
 
     if (book.effectivePrice != null) {
       store.priceHistory.push(historyEntry(book, now));
@@ -1845,7 +1846,7 @@ async function checkOneBook(bookRef, options = {}) {
     }
 
     const snapshot = snapshotResult.snapshot;
-    book.title = snapshot.title || book.title;
+    book.title = preferSnapshotText(snapshot.title, book.title);
     book.author = snapshot.author || book.author;
     book.publisher = snapshot.publisher || book.publisher;
     book.imageUrl = snapshot.imageUrl || book.imageUrl;
@@ -1859,6 +1860,7 @@ async function checkOneBook(bookRef, options = {}) {
     book.lastCheckedAt = now;
     book.updatedAt = now;
     book.lastError = '';
+    repairStoredBookTitle(book);
     if (options.updateCursor) updateCheckCursor(store, book, now);
 
     if (snapshot.currentPrice != null) {
@@ -1972,13 +1974,14 @@ async function settleSnapshotWithUrl(asin, url, book = {}) {
 
 function applyMetadataSnapshotToBook(book, snapshot) {
   if (!book || !snapshot) return;
-  book.title = snapshot.title || book.title;
+  book.title = preferSnapshotText(snapshot.title, book.title);
   book.author = snapshot.author || book.author;
   book.publisher = snapshot.publisher || book.publisher;
   book.imageUrl = snapshot.imageUrl || book.imageUrl;
   book.imageSource = snapshot.imageUrl ? snapshot.provider || book.imageSource || '' : book.imageSource || '';
   book.amazonUrl = snapshot.amazonUrl || book.amazonUrl;
   if (!book.provider || book.provider === 'pending') book.provider = snapshot.provider || book.provider;
+  repairStoredBookTitle(book);
 }
 
 function normalizeImageUrl(value) {
@@ -2103,11 +2106,26 @@ function preferSnapshotText(snapshotText, fallbackText) {
   return snapshotText;
 }
 
+function repairStoredBookTitle(book) {
+  if (!book || !isAmazonErrorPageBookTitle(book.title)) return false;
+  const fallback = fallbackBookTitle(book);
+  if (!fallback || fallback === book.title) return false;
+  book.title = fallback;
+  return true;
+}
+
+function fallbackBookTitle(book) {
+  if (book?.seriesName && book?.volume) return `${book.seriesName} ${book.volume}`;
+  if (book?.asin) return `ASIN ${book.asin}`;
+  return '';
+}
+
 function isAmazonErrorPageBookTitle(title) {
   const value = String(title || '').replace(/\s+/g, '');
   return (
     /(?:503|ServiceUnavailable|サービスが利用できません)/i.test(value) ||
     /(?:RobotCheck|CAPTCHA|ショッピングを続けてください)/i.test(value) ||
+    /^URLSource:/i.test(value) ||
     /^Amazon\.co\.jp$/i.test(value)
   );
 }
