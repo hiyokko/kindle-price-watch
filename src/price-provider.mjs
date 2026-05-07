@@ -1478,13 +1478,32 @@ function extractAmazonSearchResultFragment(html, asin) {
 
   const index = match.index || 0;
   const startCandidates = [
+    lastPatternIndex(value, /<div\b[^>]*data-component-type=["']s-search-result["'][^>]*>/gi, index),
     value.lastIndexOf('<div role="listitem"', index),
     value.lastIndexOf('<div', index)
   ].filter((position) => position >= 0);
   const start = startCandidates.length ? Math.max(...startCandidates) : Math.max(0, index - 2000);
   const nextItem = value.indexOf('<div role="listitem"', index + normalizedAsin.length);
-  const end = nextItem > index ? nextItem : Math.min(value.length, index + 24000);
+  const nextSearchResult = nextPatternIndex(value, /<div\b[^>]*data-component-type=["']s-search-result["'][^>]*>/gi, index + normalizedAsin.length);
+  const nextDataAsin = nextPatternIndex(value, /\bdata-asin=["'][A-Z0-9]{10}["']/gi, index + normalizedAsin.length);
+  const endCandidates = [nextItem, nextSearchResult, nextDataAsin].filter((position) => position > index);
+  const end = endCandidates.length ? Math.min(...endCandidates) : Math.min(value.length, index + 12000);
   return value.slice(start, end);
+}
+
+function lastPatternIndex(value, pattern, beforeIndex) {
+  let last = -1;
+  for (const match of String(value || '').matchAll(pattern)) {
+    if ((match.index ?? -1) >= beforeIndex) break;
+    last = match.index ?? -1;
+  }
+  return last;
+}
+
+function nextPatternIndex(value, pattern, fromIndex) {
+  pattern.lastIndex = Math.max(0, fromIndex);
+  const match = pattern.exec(String(value || ''));
+  return match?.index ?? -1;
 }
 
 function extractSearchResultAuthor(fragment) {
