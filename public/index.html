@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Kindle Price Watch</title>
+    <link rel="stylesheet" href="/styles.css?v=20260507-1">
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Kindle Price Watch">
+        <span class="brand-mark">K</span>
+        <span>Kindle Price Watch</span>
+      </a>
+      <div class="topbar-actions">
+        <button class="icon-button" id="refreshButton" type="button" title="更新" aria-label="更新">↻</button>
+        <button class="primary-button" id="checkAllButton" type="button">価格チェック</button>
+        <form class="logout-form" action="/logout" method="post">
+          <button class="ghost-button" type="submit">ログアウト</button>
+        </form>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="summary-grid" aria-label="サマリー">
+        <div class="summary">
+          <span class="summary-value" id="bookCount">0</span>
+          <span class="summary-label">登録本</span>
+        </div>
+        <div class="summary">
+          <span class="summary-value" id="dropCount">0</span>
+          <span class="summary-label">値下げ中</span>
+        </div>
+        <div class="summary">
+          <span class="summary-value" id="bestCount">0</span>
+          <span class="summary-label">過去最安</span>
+        </div>
+        <div class="summary">
+          <button class="summary-value summary-button" id="discordState" type="button">未設定</button>
+          <span class="summary-label">Discord</span>
+        </div>
+        <div class="summary">
+          <span class="summary-value compact" id="cronState">未実行</span>
+          <span class="summary-label">自動実行</span>
+        </div>
+      </section>
+
+      <section class="toolbar">
+        <form class="add-form" id="addForm">
+          <label class="field">
+            <span>Amazon URL / ASIN</span>
+            <input id="bookInput" name="book" type="text" autocomplete="off" placeholder="B07VBZJ75B / 商品URL / binding=kindle_edition のシリーズURL" required>
+          </label>
+          <button class="primary-button" id="addButton" type="submit">追加</button>
+        </form>
+        <form class="settings-form" id="settingsForm">
+          <label class="field compact">
+            <span>通知閾値</span>
+            <select id="thresholdInput" name="notificationThreshold">
+              <option value="0">すべて</option>
+              <option value="5">5%以上</option>
+              <option value="10">10%以上</option>
+              <option value="20">20%以上</option>
+              <option value="30">30%以上</option>
+              <option value="50">50%以上</option>
+            </select>
+          </label>
+          <label class="field compact">
+            <span>再確認間隔</span>
+            <select id="intervalInput" name="checkIntervalHours">
+              <option value="24">24時間</option>
+              <option value="48">48時間</option>
+              <option value="72">72時間</option>
+            </select>
+          </label>
+          <label class="field compact">
+            <span>1回の件数</span>
+            <input id="batchInput" name="batchSize" type="number" min="1" step="1">
+          </label>
+          <button class="secondary-button" type="submit">保存</button>
+          <button class="ghost-button" id="testNotifyButton" type="button">通知テスト</button>
+        </form>
+      </section>
+
+      <div class="message" id="message" role="status" aria-live="polite"></div>
+
+      <section class="bulk-toolbar" aria-label="一括操作">
+        <label class="select-all">
+          <input id="selectAllInput" type="checkbox">
+          <span>全選択</span>
+        </label>
+        <button class="danger-button" id="deleteSelectedButton" type="button" disabled>選択削除</button>
+      </section>
+
+      <section class="book-grid" id="bookGrid" aria-label="登録している本"></section>
+    </main>
+
+    <dialog class="history-dialog" id="historyDialog">
+      <div class="dialog-header">
+        <div>
+          <p class="eyebrow">価格履歴</p>
+          <h2 id="historyTitle"></h2>
+        </div>
+        <button class="icon-button" id="closeHistoryButton" type="button" title="閉じる" aria-label="閉じる">×</button>
+      </div>
+      <div class="chart" id="historyChart"></div>
+    </dialog>
+
+    <dialog class="webhook-dialog" id="webhookDialog">
+      <div class="dialog-header">
+        <div>
+          <p class="eyebrow">Discord</p>
+          <h2>Webhook</h2>
+        </div>
+        <button class="icon-button" id="closeWebhookButton" type="button" title="閉じる" aria-label="閉じる">×</button>
+      </div>
+      <form class="webhook-form" id="webhookForm">
+        <div class="webhook-list" id="webhookList"></div>
+        <div class="dialog-actions">
+          <button class="ghost-button" id="addWebhookButton" type="button">追加</button>
+          <button class="secondary-button" id="saveWebhookButton" type="submit">保存</button>
+        </div>
+      </form>
+    </dialog>
+
+    <template id="bookTemplate">
+      <article class="book-card">
+        <label class="book-select" title="選択">
+          <input class="book-checkbox" type="checkbox">
+        </label>
+        <a class="cover-link" target="_blank" rel="noopener noreferrer">
+          <img class="cover" alt="" loading="lazy" decoding="async">
+          <span class="cover-fallback">No Image</span>
+        </a>
+        <div class="book-body">
+          <div class="book-head">
+            <div>
+              <h2 class="book-title"></h2>
+              <p class="book-meta"></p>
+            </div>
+            <span class="badge"></span>
+          </div>
+          <div class="price-strip">
+            <div>
+              <span class="price-label">現在</span>
+              <strong class="current-price"></strong>
+            </div>
+            <div>
+              <span class="price-label">過去最安</span>
+              <strong class="lowest-price"></strong>
+            </div>
+            <div>
+              <span class="price-label">確認</span>
+              <strong class="checked-at"></strong>
+            </div>
+          </div>
+          <p class="error-text"></p>
+          <div class="book-actions">
+            <a class="secondary-button amazon-link" target="_blank" rel="noopener noreferrer">Amazon</a>
+            <button class="ghost-button history-button" type="button">履歴</button>
+            <button class="ghost-button check-button" type="button">再チェック</button>
+            <button class="danger-button delete-button" type="button">削除</button>
+          </div>
+        </div>
+      </article>
+    </template>
+
+    <script src="/app.js?v=20260507-1" type="module"></script>
+  </body>
+</html>
