@@ -6,23 +6,21 @@ import { fileURLToPath } from 'node:url';
 import { loadEnv, readBooleanEnv, readNumberEnv } from './src/env.mjs';
 import { requireCronAuth } from './src/api-utils.mjs';
 import {
-  addBooksFromInput,
-  checkBookById,
-  deleteAllBooks,
-  deleteBook,
-  deleteBooks,
-  deleteSeries,
-  getDiscordWebhooks,
-  getDiscordWebhookCount,
-  getHistory,
-  getAutomationStatus,
-  getSettings,
-  listBooks,
-  runDueChecks,
-  saveSettings,
-  saveDiscordWebhooks,
-  sendTestNotification
-} from './src/checker.mjs';
+  addBooksPayload,
+  checkBookPayload,
+  deleteBookPayload,
+  deleteBooksPayload,
+  deleteSeriesPayload,
+  historyPayload,
+  listBooksPayload,
+  runChecksPayload,
+  saveSettingsPayload,
+  saveWebhooksPayload,
+  settingsPayload,
+  testNotificationPayload,
+  webhooksPayload
+} from './src/app-api.mjs';
+import { runDueChecks } from './src/checker.mjs';
 
 loadEnv();
 
@@ -85,71 +83,58 @@ async function handleApi(req, res, url) {
   const pathParts = url.pathname.split('/').filter(Boolean);
 
   if (method === 'GET' && url.pathname === '/api/books') {
-    sendJson(res, 200, { books: await listBooks() });
+    sendJson(res, 200, await listBooksPayload());
     return;
   }
 
   if (method === 'POST' && url.pathname === '/api/books') {
-    const body = await readBody(req);
-    sendJson(res, 201, await addBooksFromInput(body.url || body.asin || ''));
+    sendJson(res, 201, await addBooksPayload(await readBody(req)));
     return;
   }
 
   if (method === 'DELETE' && url.pathname === '/api/books') {
-    const body = await readBody(req);
-    sendJson(res, 200, body.all ? await deleteAllBooks() : await deleteBooks(body.ids || []));
+    sendJson(res, 200, await deleteBooksPayload(await readBody(req)));
     return;
   }
 
   if (method === 'POST' && url.pathname === '/api/check') {
-    sendJson(res, 200, await runDueChecks({ notify: true, source: 'cron' }));
+    sendJson(res, 200, await runChecksPayload({ source: 'cron' }));
     return;
   }
 
   if ((method === 'GET' || method === 'POST') && url.pathname === '/api/cron/check') {
     if (!requireCronAuth(req, res)) return;
-    sendJson(res, 200, await runDueChecks({ notify: true }));
+    sendJson(res, 200, await runChecksPayload());
     return;
   }
 
   if (method === 'DELETE' && url.pathname === '/api/series') {
-    const body = await readBody(req);
-    await deleteSeries(body.seriesKey || '', body.sourceUrl || '');
-    sendJson(res, 200, { ok: true });
+    sendJson(res, 200, await deleteSeriesPayload(await readBody(req)));
     return;
   }
 
   if (method === 'GET' && url.pathname === '/api/settings') {
-    const discordWebhookCount = await getDiscordWebhookCount();
-    sendJson(res, 200, {
-      settings: await getSettings(),
-      automation: await getAutomationStatus(),
-      discordConfigured: discordWebhookCount > 0,
-      discordWebhookCount,
-      priceProvider: process.env.PRICE_PROVIDER || 'amazon_html',
-      keepaConfigured: Boolean(process.env.KEEPA_API_KEY)
-    });
+    sendJson(res, 200, await settingsPayload());
     return;
   }
 
   if (method === 'GET' && url.pathname === '/api/webhooks') {
-    sendJson(res, 200, await getDiscordWebhooks());
+    sendJson(res, 200, await webhooksPayload());
     return;
   }
 
   if (method === 'PUT' && url.pathname === '/api/webhooks') {
-    const body = await readBody(req);
-    sendJson(res, 200, await saveDiscordWebhooks(body.urls || []));
+    sendJson(res, 200, await saveWebhooksPayload(await readBody(req)));
     return;
   }
 
   if (method === 'PUT' && url.pathname === '/api/settings') {
-    sendJson(res, 200, { settings: await saveSettings(await readBody(req)) });
+    sendJson(res, 200, await saveSettingsPayload(await readBody(req)));
     return;
   }
 
   if (method === 'POST' && url.pathname === '/api/notify/test') {
-    sendJson(res, 200, await sendTestNotification());
+    sendJson(res, 200, await testNotificationPayload());
     return;
   }
 
@@ -157,25 +142,17 @@ async function handleApi(req, res, url) {
     const bookId = pathParts[2];
 
     if (method === 'DELETE' && pathParts.length === 3) {
-      await deleteBook(bookId);
-      sendJson(res, 200, { ok: true });
+      sendJson(res, 200, await deleteBookPayload(bookId));
       return;
     }
 
     if (method === 'POST' && pathParts[3] === 'check') {
-      const result = await checkBookById(bookId, { notify: true });
-      sendJson(res, 200, {
-        ...result,
-        diagnostics: {
-          priceProvider: process.env.PRICE_PROVIDER || 'amazon_html',
-          keepaConfigured: Boolean(process.env.KEEPA_API_KEY)
-        }
-      });
+      sendJson(res, 200, await checkBookPayload(bookId));
       return;
     }
 
     if (method === 'GET' && pathParts[3] === 'history') {
-      sendJson(res, 200, { history: await getHistory(bookId) });
+      sendJson(res, 200, await historyPayload(bookId));
       return;
     }
   }

@@ -1,4 +1,4 @@
-import { addBooksFromInput, deleteAllBooks, deleteBooks, listBooks } from '../src/checker.mjs';
+import { addBooksPayload, deleteBooksPayload, listBooksPayload } from '../src/app-api.mjs';
 import { handleError, readJsonBody, requireMethod, sendJson } from '../src/api-utils.mjs';
 
 export default async function handler(req, res) {
@@ -6,18 +6,16 @@ export default async function handler(req, res) {
     if (!requireMethod(req, res, ['GET', 'POST', 'DELETE'])) return;
 
     if (req.method === 'GET') {
-      sendJson(res, 200, { books: await listBooks() });
+      sendJson(res, 200, await listBooksPayload());
       return;
     }
 
     if (req.method === 'DELETE') {
-      const body = await readJsonBody(req);
-      sendJson(res, 200, body.all ? await deleteAllBooks() : await deleteBooks(body.ids || []));
+      sendJson(res, 200, await deleteBooksPayload(await readJsonBody(req)));
       return;
     }
 
-    const body = await readJsonBody(req);
-    sendJson(res, 201, await addBooksFromInput(body.url || body.asin || ''));
+    sendJson(res, 201, await addBooksPayload(await readJsonBody(req)));
   } catch (error) {
     handleError(res, error);
   }

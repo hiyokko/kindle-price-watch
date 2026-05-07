@@ -945,6 +945,7 @@ export async function runDueChecks(options = {}) {
     const forceAll = options.force === true || readEnvBoolean('FORCE_CHECK_ALL', false);
     const plan = planDueChecks(store, settings, startedAt, { forceAll });
     const concurrency = checkConcurrency();
+    const getWebhookUrls = options.notify === false ? null : sharedWebhookUrlLoader();
 
     const results = [];
     let stoppedByRuntimeLimit = false;
@@ -955,7 +956,9 @@ export async function runDueChecks(options = {}) {
       }
 
       const chunk = plan.books.slice(index, index + concurrency);
-      const chunkResults = await Promise.all(chunk.map((book) => checkOneBook(book, { ...options, updateCursor: false })));
+      const chunkResults = await Promise.all(
+        chunk.map((book) => checkOneBook(book, { ...options, updateCursor: false, getWebhookUrls }))
+      );
       results.push(...chunkResults);
       await recordCursorForCompletedChunk(chunk, chunkResults);
       index += chunk.length;
@@ -1147,6 +1150,16 @@ export async function getAutomationStatus() {
   return store.automation || {};
 }
 
+export async function getSettingsSummary() {
+  const [store, webhooks] = await Promise.all([readStore(), getDiscordWebhooks()]);
+  return {
+    settings: mergedRuntimeSettings(store.settings),
+    automation: store.automation || {},
+    discordConfigured: webhooks.count > 0,
+    discordWebhookCount: webhooks.count
+  };
+}
+
 export async function saveSettings(settings) {
   const cleaned = {
     notificationThreshold: clampNumber(settings.notificationThreshold, 0, 95, 10),
@@ -1331,7 +1344,7 @@ async function checkOneBook(bookRef, options = {}) {
 
   const sent = [];
   if (options.notify !== false && checkedBook && events.length > 0) {
-    const webhookUrls = await getRuntimeDiscordWebhookUrls();
+    const webhookUrls = await notificationWebhookUrls(options);
     for (const event of events) {
       const notification = buildPriceNotification(checkedBook, event);
       try {
@@ -1354,9 +1367,23 @@ async function checkOneBook(bookRef, options = {}) {
   };
 }
 
-async function settleSnapshot(asin) {
+async function notificationWebhookUrls(options = {}) {
+  if (Array.isArray(options.webhookUrls)) return options.webhookUrls;
+  if (typeof options.getWebhookUrls === 'function') return options.getWebhookUrls();
+  return getRuntimeDiscordWebhookUrls();
+}
+
+function sharedWebhookUrlLoader() {
+  let promise;
+  return async () => {
+    promise ||= getRuntimeDiscordWebhookUrls();
+    return promise;
+  };
+}
+
+async function settleSnapshot(asin, book = {}) {
   try {
-    const snapshot = await fetchBookSnapshot(asin);
+    const snapshot = await fetchBookSnapshot(asin, { url: book.amazonUrl || '' });
     return { ok: true, snapshot };
   } catch (error) {
     return { ok: false, error: error.message };

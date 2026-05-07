@@ -1,10 +1,10 @@
-import { sendTestNotification } from '../../src/checker.mjs';
+import { testNotificationPayload } from '../../src/app-api.mjs';
 import { handleError, requireMethod, sendJson } from '../../src/api-utils.mjs';
 
 export default async function handler(req, res) {
   try {
     if (!requireMethod(req, res, ['POST'])) return;
-    sendJson(res, 200, await sendTestNotification());
+    sendJson(res, 200, await testNotificationPayload());
   } catch (error) {
     handleError(res, error);
   }

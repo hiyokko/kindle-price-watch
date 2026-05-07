@@ -139,7 +139,7 @@ els.webhookForm.addEventListener('submit', async (event) => {
 });
 
 els.selectAllInput.addEventListener('change', () => {
-  state.selectedBookIds = els.selectAllInput.checked ? new Set(state.books.map((book) => book.id)) : new Set();
+  state.selectedBookIds = els.selectAllInput.checked ? visibleBookIds() : new Set();
   renderBooks();
   renderBulkControls();
 });
@@ -181,7 +181,8 @@ async function loadSettings() {
 async function loadBooks() {
   const data = await api('/api/books');
   state.books = data.books;
-  state.selectedBookIds = new Set([...state.selectedBookIds].filter((id) => state.books.some((book) => book.id === id)));
+  const bookIds = new Set(state.books.map((book) => book.id));
+  state.selectedBookIds = new Set([...state.selectedBookIds].filter((id) => bookIds.has(id)));
   renderBooks();
   renderBulkControls();
   renderSummary();
@@ -263,19 +264,25 @@ function renderBooks() {
     return;
   }
 
+  const fragment = document.createDocumentFragment();
   for (const group of groupBooks(books)) {
     if (!group.isSeries) {
-      els.bookGrid.append(createBookNode(group.books[0]));
+      fragment.append(createBookNode(group.books[0]));
       continue;
     }
 
-    els.bookGrid.append(createSeriesNode(group));
+    fragment.append(createSeriesNode(group));
   }
+  els.bookGrid.append(fragment);
 }
 
 function filteredBooks() {
   if (state.activeFilter === 'best') return state.books.filter(isAtBestEver);
   return state.books;
+}
+
+function visibleBookIds() {
+  return new Set(filteredBooks().map((book) => book.id));
 }
 
 function createSeriesNode(group) {
@@ -446,11 +453,13 @@ function createBookNode(book) {
 }
 
 function renderBulkControls() {
+  const visibleIds = visibleBookIds();
   const selected = state.selectedBookIds.size;
-  const total = state.books.length;
+  const selectedVisible = [...visibleIds].filter((id) => state.selectedBookIds.has(id)).length;
+  const total = visibleIds.size;
   els.deleteSelectedButton.disabled = selected === 0;
-  els.selectAllInput.checked = total > 0 && selected === total;
-  els.selectAllInput.indeterminate = selected > 0 && selected < total;
+  els.selectAllInput.checked = total > 0 && selectedVisible === total;
+  els.selectAllInput.indeterminate = selectedVisible > 0 && selectedVisible < total;
   els.deleteSelectedButton.textContent = selected > 0 ? `選択削除 (${selected})` : '選択削除';
 }
 

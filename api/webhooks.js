@@ -1,4 +1,4 @@
-import { getDiscordWebhooks, saveDiscordWebhooks } from '../src/checker.mjs';
+import { saveWebhooksPayload, webhooksPayload } from '../src/app-api.mjs';
 import { handleError, readJsonBody, requireMethod, sendJson } from '../src/api-utils.mjs';
 
 export default async function handler(req, res) {
@@ -6,12 +6,11 @@ export default async function handler(req, res) {
     if (!requireMethod(req, res, ['GET', 'PUT'])) return;
 
     if (req.method === 'GET') {
-      sendJson(res, 200, await getDiscordWebhooks());
+      sendJson(res, 200, await webhooksPayload());
       return;
     }
 
-    const body = await readJsonBody(req);
-    sendJson(res, 200, await saveDiscordWebhooks(body.urls || []));
+    sendJson(res, 200, await saveWebhooksPayload(await readJsonBody(req)));
   } catch (error) {
     handleError(res, error);
   }
