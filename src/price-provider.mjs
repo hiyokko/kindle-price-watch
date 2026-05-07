@@ -1259,7 +1259,10 @@ function extractAmazonHtmlSnapshotFromHtml(html, asin, url, provider) {
   const allPrices = extractPrices(html);
   const currentPrice = kindleOffer.price ?? chooseLikelyKindlePrice(allPrices);
   const listPrice = extractListPrice(html, currentPrice);
-  const currentPoints = kindleOffer.price != null ? kindleOffer.points ?? 0 : extractPoints(html);
+  const currentPoints =
+    kindleOffer.price != null
+      ? kindleOffer.points ?? 0
+      : extractPointsNearPrice(html, currentPrice) ?? extractPoints(html, currentPrice);
 
   return normalizeSnapshot({
     ...base,
@@ -2208,11 +2211,12 @@ function extractScopedKindlePriceOffer(html) {
   const prices = extractPrices(html);
   if (!prices.length) return { price: null, points: null };
 
-  const nonZeroPrice = prices.find((price) => price > 0);
-  if (nonZeroPrice != null) {
+  for (const nonZeroPrice of prices.filter((price) => price > 0)) {
+    const points = extractPointsNearPrice(html, nonZeroPrice);
+    if (points != null && points > nonZeroPrice) continue;
     return {
       price: nonZeroPrice,
-      points: extractPointsNearPrice(html, nonZeroPrice)
+      points
     };
   }
 
@@ -2272,6 +2276,7 @@ function decodeBase64Like(value) {
 }
 
 function extractPointsNearPrice(html, price) {
+  if (price == null) return null;
   const text = cleanText(html).replace(/\s+/g, '');
   const rawPrice = escapeRegExp(String(price));
   const commaPrice = escapeRegExp(Number(price).toLocaleString('ja-JP'));
@@ -2280,7 +2285,8 @@ function extractPointsNearPrice(html, price) {
     'i'
   );
   const match = text.match(pattern);
-  return parseOptionalPoints(match?.[1] || match?.[2] || match?.[3]);
+  const points = parseOptionalPoints(match?.[1] || match?.[2] || match?.[3]);
+  return points != null && points <= price ? points : null;
 }
 
 function parseOptionalPoints(value) {
@@ -2299,13 +2305,16 @@ function extractListPrice(html, currentPrice) {
   return higher.sort((a, b) => a - b)[0] ?? null;
 }
 
-function extractPoints(html) {
+function extractPoints(html, currentPrice = null) {
   const value = decodeHtml(html);
   const matches = [
     ...value.matchAll(/([0-9][0-9,]*)\s*ポイント/g),
     ...value.matchAll(/\(([0-9][0-9,]*)\s*pt\)/gi)
   ];
-  const points = matches.map((match) => parsePoints(match[1])).filter(Number.isFinite);
+  const points = matches
+    .map((match) => parsePoints(match[1]))
+    .filter(Number.isFinite)
+    .filter((point) => currentPrice == null || point <= currentPrice);
   return points.length ? Math.max(...points) : 0;
 }
 
