@@ -908,7 +908,8 @@ export async function runDueChecks(options = {}) {
     const settings = mergedRuntimeSettings(store.settings);
     const startedAt = Date.now();
     const maxRuntimeMs = floorNumber(process.env.CHECK_MAX_RUNTIME_MS, 0, 0);
-    const plan = planDueChecks(store, settings, startedAt);
+    const forceAll = options.force === true || readEnvBoolean('FORCE_CHECK_ALL', false);
+    const plan = planDueChecks(store, settings, startedAt, { forceAll });
     const concurrency = checkConcurrency();
 
     const results = [];
@@ -934,6 +935,7 @@ export async function runDueChecks(options = {}) {
       cursor: finalStore.checkCursor,
       overlapped: Math.max(0, results.length - plan.dueSelected),
       stoppedByRuntimeLimit,
+      forced: forceAll,
       results
     };
 
@@ -1396,8 +1398,13 @@ async function markNotification(bookId, event, status, error = '') {
   });
 }
 
-function planDueChecks(store, settings, now) {
+function planDueChecks(store, settings, now, options = {}) {
   const rotatedBooks = rotateAfterCursor(store.books, store.checkCursor?.lastBookId);
+  if (options.forceAll) {
+    const selected = rotatedBooks.slice(0, settings.batchSize);
+    return { books: selected, dueSelected: selected.length };
+  }
+
   const dueBefore = now - settings.checkIntervalHours * 60 * 60 * 1000;
   const dueBooks = rotatedBooks.filter((book) => isBookDue(book, dueBefore));
   const selected = dueBooks.slice(0, settings.batchSize);
@@ -1440,6 +1447,12 @@ function shouldStopForRuntimeLimit(startedAt, maxRuntimeMs, completedCount) {
 
 function checkConcurrency() {
   return Math.min(20, floorNumber(process.env.CHECK_CONCURRENCY, 1, 1));
+}
+
+function readEnvBoolean(name, fallback) {
+  const value = process.env[name];
+  if (value == null || value === '') return fallback;
+  return ['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase());
 }
 
 async function recordCursorForCompletedChunk(books, results) {
