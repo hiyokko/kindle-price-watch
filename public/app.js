@@ -200,7 +200,7 @@ async function loadBooks() {
 function renderSummary() {
   els.bookCount.textContent = String(state.books.length);
   els.dropCount.textContent = String(state.books.filter(isBelowList).length);
-  els.bestCount.textContent = String(state.books.filter(isAtBestEver).length);
+  els.bestCount.textContent = String(groupBooks(state.books).filter(isGroupAtBestEver).length);
   els.bookCount.classList.toggle('active', state.activeFilter === 'all');
   els.bookCount.setAttribute('aria-pressed', String(state.activeFilter === 'all'));
   els.bestCount.classList.toggle('active', state.activeFilter === 'best');
@@ -260,8 +260,8 @@ function collectWebhookUrls() {
 
 function renderBooks() {
   els.bookGrid.innerHTML = '';
-  const books = filteredBooks();
-  if (books.length === 0) {
+  const groups = sortedGroups(filteredGroups());
+  if (groups.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'book-card';
     empty.innerHTML =
@@ -274,7 +274,7 @@ function renderBooks() {
   }
 
   const fragment = document.createDocumentFragment();
-  for (const group of sortedGroups(groupBooks(books))) {
+  for (const group of groups) {
     if (!group.isSeries) {
       fragment.append(createBookNode(group.books[0]));
       continue;
@@ -285,13 +285,14 @@ function renderBooks() {
   els.bookGrid.append(fragment);
 }
 
-function filteredBooks() {
-  if (state.activeFilter === 'best') return state.books.filter(isAtBestEver);
-  return state.books;
+function filteredGroups() {
+  const groups = groupBooks(state.books);
+  if (state.activeFilter === 'best') return groups.filter(isGroupAtBestEver);
+  return groups;
 }
 
 function visibleBookIds() {
-  return new Set(filteredBooks().map((book) => book.id));
+  return new Set(filteredGroups().flatMap((group) => group.books.map((book) => book.id)));
 }
 
 function createSeriesNode(group) {
@@ -745,12 +746,14 @@ function seriesTotalLabel(group) {
 
 function seriesTotalMetrics(group) {
   const pricedBooks = group.books.filter((book) => book.currentPrice != null);
+  const lowestBooks = group.books.filter((book) => book.lowestEffectivePrice != null);
   const totalPrice = pricedBooks.reduce((sum, book) => sum + Number(book.currentPrice || 0), 0);
   const totalPoints = pricedBooks.reduce((sum, book) => sum + Number(book.currentPoints || 0), 0);
   const effectiveTotal = pricedBooks.reduce(
     (sum, book) => sum + Number(book.effectivePrice ?? Math.max(0, (book.currentPrice || 0) - (book.currentPoints || 0))),
     0
   );
+  const lowestEffectiveTotal = lowestBooks.reduce((sum, book) => sum + Number(book.lowestEffectivePrice || 0), 0);
   const missing = group.books.length - pricedBooks.length;
   const unregistered = Math.max(0, (group.expectedCount || group.books.length) - group.books.length);
 
@@ -759,6 +762,8 @@ function seriesTotalMetrics(group) {
     totalPrice,
     totalPoints,
     effectiveTotal,
+    lowestEffectiveTotal,
+    lowestPricedCount: lowestBooks.length,
     missing,
     unregistered,
     complete: pricedBooks.length > 0 && missing === 0 && unregistered === 0
@@ -817,6 +822,17 @@ function isBelowList(book) {
 
 function isAtBestEver(book) {
   return book.effectivePrice != null && book.lowestEffectivePrice != null && book.effectivePrice <= book.lowestEffectivePrice;
+}
+
+function isGroupAtBestEver(group) {
+  if (!group.isSeries) return isAtBestEver(group.books[0]);
+
+  const metrics = seriesTotalMetrics(group);
+  return (
+    metrics.complete &&
+    metrics.lowestPricedCount === group.books.length &&
+    metrics.effectiveTotal <= metrics.lowestEffectiveTotal
+  );
 }
 
 function badgeFor(book) {
