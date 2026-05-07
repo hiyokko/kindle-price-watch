@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 const ASIN_PATTERN = /[A-Z0-9]{10}/i;
 const ASIN_GLOBAL_PATTERN = /[A-Z0-9]{10}/gi;
 const DEFAULT_FETCH_TIMEOUT_MS = 4000;
+const HOST_THROTTLES = new Map();
 
 const AMAZON_HEADERS = {
   Accept: 'text/html,application/xhtml+xml',
@@ -1596,13 +1597,16 @@ async function fetchHtml(url, options = {}) {
   const { signal, cleanup } = requestSignal(options.signal, timeoutMs);
 
   try {
+    await waitForHostFetchSlot(url, options);
     const response = await fetch(url, { headers: AMAZON_HEADERS, signal });
     if (!response.ok) {
+      noteHostFetchPenalty(url, response);
       throw new Error(`HTTP ${response.status}`);
     }
 
     const html = await response.text();
     if (options.rejectRobotCheck && /captcha|robot check|自動化されたアクセス/i.test(html)) {
+      noteHostFetchPenalty(url, { status: 503 });
       throw new Error('Amazonにブロックされました');
     }
 
@@ -1615,6 +1619,95 @@ async function fetchHtml(url, options = {}) {
   } finally {
     cleanup();
   }
+}
+
+async function waitForHostFetchSlot(url, options = {}) {
+  if (options.skipThrottle) return;
+
+  const host = hostnameForThrottle(url);
+  if (!host) return;
+
+  const previous = HOST_THROTTLES.get(host)?.queue || Promise.resolve();
+  const next = previous.catch(() => {}).then(async () => {
+    const state = HOST_THROTTLES.get(host) || {};
+    const waitMs = Math.max(0, Number(state.nextAt || 0) - Date.now());
+    if (waitMs > 0) await sleep(waitMs);
+
+    const current = HOST_THROTTLES.get(host) || {};
+    HOST_THROTTLES.set(host, {
+      ...current,
+      nextAt: Date.now() + hostRequestDelayMs(host)
+    });
+  });
+
+  HOST_THROTTLES.set(host, {
+    ...(HOST_THROTTLES.get(host) || {}),
+    queue: next
+  });
+  await next;
+}
+
+function noteHostFetchPenalty(url, responseLike = {}) {
+  const host = hostnameForThrottle(url);
+  if (!host || !isBlockingHttpStatus(responseLike.status)) return;
+
+  const retryAfterMs = retryAfterHeaderMs(responseLike.headers?.get?.('retry-after'));
+  const cooldownMs = retryAfterMs || hostBlockCooldownMs(host);
+  const state = HOST_THROTTLES.get(host) || {};
+  HOST_THROTTLES.set(host, {
+    ...state,
+    nextAt: Math.max(Number(state.nextAt || 0), Date.now() + cooldownMs)
+  });
+}
+
+function hostnameForThrottle(url) {
+  try {
+    return new URL(String(url || '')).hostname.toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+function hostRequestDelayMs(host) {
+  const configured = readNonNegativeInteger(process.env.HTTP_REQUEST_MIN_INTERVAL_MS, null);
+  if (configured != null) return configured + randomJitter(httpRequestJitterMs());
+
+  const base = /amazon\./i.test(host) || host === 'r.jina.ai' ? 900 : 600;
+  return base + randomJitter(httpRequestJitterMs(host));
+}
+
+function httpRequestJitterMs(host = '') {
+  const configured = readNonNegativeInteger(process.env.HTTP_REQUEST_JITTER_MS, null);
+  if (configured != null) return configured;
+  return /amazon\./i.test(host) || host === 'r.jina.ai' ? 900 : 500;
+}
+
+function hostBlockCooldownMs(host) {
+  const configured = readNonNegativeInteger(process.env.HTTP_BLOCK_COOLDOWN_MS, null);
+  if (configured != null) return configured;
+  return /amazon\./i.test(host) || host === 'r.jina.ai' ? 60000 : 30000;
+}
+
+function isBlockingHttpStatus(status) {
+  return Number(status) === 429 || Number(status) === 503;
+}
+
+function retryAfterHeaderMs(value) {
+  if (!value) return 0;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds > 0) return Math.round(seconds * 1000);
+  const timestamp = new Date(value).getTime();
+  if (!Number.isFinite(timestamp)) return 0;
+  return Math.max(0, timestamp - Date.now());
+}
+
+function randomJitter(maxMs) {
+  const max = Math.max(0, Math.round(maxMs || 0));
+  return max > 0 ? Math.floor(Math.random() * (max + 1)) : 0;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, Math.round(ms || 0))));
 }
 
 function requestSignal(externalSignal, timeoutMs) {
@@ -2194,6 +2287,11 @@ function isProbablyBookAsin(asin) {
 function readPositiveInteger(value, fallback) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed) : fallback;
+}
+
+function readNonNegativeInteger(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.round(parsed) : fallback;
 }
 
 function nullableNumber(value) {

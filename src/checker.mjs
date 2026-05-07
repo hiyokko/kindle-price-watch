@@ -1536,24 +1536,33 @@ export async function runDueChecks(options = {}) {
     const settings = mergedRuntimeSettings(store.settings);
     const forceAll = options.force === true || readEnvBoolean('FORCE_CHECK_ALL', false);
     const plan = planDueChecks(store, settings, startedAt, { forceAll });
-    const concurrency = checkConcurrency();
+    const pacing = checkPacing();
     const getWebhookUrls = options.notify === false ? null : sharedWebhookUrlLoader();
 
     const results = [];
     let stoppedByRuntimeLimit = false;
-    for (let index = 0; index < plan.books.length;) {
+    for (let index = 0; index < plan.books.length; index += 1) {
       if (shouldStopForRuntimeLimit(startedAt, maxRuntimeMs, results.length)) {
         stoppedByRuntimeLimit = true;
         break;
       }
 
-      const chunk = plan.books.slice(index, index + concurrency);
-      const chunkResults = await Promise.all(
-        chunk.map((book) => checkOneBook(book, { ...options, updateCursor: false, getWebhookUrls }))
-      );
-      results.push(...chunkResults);
-      await recordCursorForCompletedChunk(chunk, chunkResults);
-      index += chunk.length;
+      if (!(await waitBeforeCheck(pacing, results.length, startedAt, maxRuntimeMs))) {
+        stoppedByRuntimeLimit = true;
+        break;
+      }
+
+      const book = plan.books[index];
+      const result = await checkOneBook(book, { ...options, updateCursor: false, getWebhookUrls });
+      results.push(result);
+      await recordCursorForCompletedBook(book, result);
+
+      if (isBlockingCheckResult(result)) {
+        if (!(await waitAfterBlockedCheck(pacing, startedAt, maxRuntimeMs))) {
+          stoppedByRuntimeLimit = true;
+          break;
+        }
+      }
     }
 
     const finalStore = await readStore();
@@ -1599,6 +1608,7 @@ async function discoverSeriesUpdates(options = {}) {
   const now = new Date().toISOString();
   const store = await readStore();
   const plan = planSeriesDiscovery(store);
+  const pacing = seriesDiscoveryPacing();
   const results = [];
   const errors = [];
   let added = 0;
@@ -1612,6 +1622,11 @@ async function discoverSeriesUpdates(options = {}) {
     }
 
     try {
+      if (!(await waitBeforeSeriesDiscovery(pacing, results.length + errors.length, options.startedAt, options.maxRuntimeMs))) {
+        stoppedByRuntimeLimit = true;
+        break;
+      }
+
       const result = await addBooksFromInput(seriesDiscoveryInput(group.sourceUrl, group.seriesKey));
       const newBooks = Number(result.imported || 0);
       const seriesCompleted = Boolean(result.seriesCompleted);
@@ -2358,28 +2373,78 @@ function shouldStopForRuntimeLimit(startedAt, maxRuntimeMs, completedCount) {
   return maxRuntimeMs > 0 && completedCount > 0 && Date.now() - startedAt >= maxRuntimeMs;
 }
 
-function checkConcurrency() {
-  return Math.min(20, floorNumber(process.env.CHECK_CONCURRENCY, 1, 1));
-}
-
 function readEnvBoolean(name, fallback) {
   const value = process.env[name];
   if (value == null || value === '') return fallback;
   return ['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase());
 }
 
-async function recordCursorForCompletedChunk(books, results) {
-  for (let index = results.length - 1; index >= 0; index -= 1) {
-    const checkedBook = results[index]?.book || books[index];
-    if (!checkedBook?.id) continue;
+async function recordCursorForCompletedBook(bookRef, result) {
+  const checkedBook = result?.book || bookRef;
+  if (!checkedBook?.id) return;
 
-    await updateStore((store) => {
-      const book = store.books.find((item) => item.id === checkedBook.id);
-      if (book) updateCheckCursor(store, book, checkedBook.lastCheckedAt || book.lastCheckedAt || new Date().toISOString());
-      return store;
-    });
-    return;
+  await updateStore((store) => {
+    const book = store.books.find((item) => item.id === checkedBook.id);
+    if (book) updateCheckCursor(store, book, checkedBook.lastCheckedAt || book.lastCheckedAt || new Date().toISOString());
+    return store;
+  });
+}
+
+function checkPacing() {
+  return {
+    delayMs: floorNumber(process.env.CHECK_REQUEST_DELAY_MS, 0, 1800),
+    jitterMs: floorNumber(process.env.CHECK_REQUEST_JITTER_MS, 0, 1200),
+    blockCooldownMs: floorNumber(process.env.CHECK_BLOCK_COOLDOWN_MS, 0, 60000)
+  };
+}
+
+function seriesDiscoveryPacing() {
+  return {
+    delayMs: floorNumber(process.env.SERIES_DISCOVERY_DELAY_MS ?? process.env.CHECK_REQUEST_DELAY_MS, 0, 2500),
+    jitterMs: floorNumber(process.env.SERIES_DISCOVERY_JITTER_MS ?? process.env.CHECK_REQUEST_JITTER_MS, 0, 1500)
+  };
+}
+
+async function waitBeforeCheck(pacing, completedCount, startedAt, maxRuntimeMs) {
+  if (completedCount === 0) return true;
+  return sleepWithinRuntime(randomizedDelay(pacing.delayMs, pacing.jitterMs), startedAt, maxRuntimeMs);
+}
+
+async function waitAfterBlockedCheck(pacing, startedAt, maxRuntimeMs) {
+  return sleepWithinRuntime(randomizedDelay(pacing.blockCooldownMs, Math.floor(pacing.blockCooldownMs / 3)), startedAt, maxRuntimeMs);
+}
+
+async function waitBeforeSeriesDiscovery(pacing, completedCount, startedAt, maxRuntimeMs) {
+  if (completedCount === 0) return true;
+  return sleepWithinRuntime(randomizedDelay(pacing.delayMs, pacing.jitterMs), startedAt, maxRuntimeMs);
+}
+
+async function sleepWithinRuntime(ms, startedAt, maxRuntimeMs) {
+  const delay = Math.max(0, Math.round(ms || 0));
+  if (delay === 0) return true;
+
+  if (maxRuntimeMs > 0) {
+    const remaining = maxRuntimeMs - (Date.now() - startedAt);
+    if (remaining <= delay + 1000) return false;
   }
+
+  await sleep(delay);
+  return true;
+}
+
+function randomizedDelay(baseMs, jitterMs) {
+  const base = Math.max(0, Math.round(baseMs || 0));
+  const jitter = Math.max(0, Math.round(jitterMs || 0));
+  return base + (jitter > 0 ? Math.floor(Math.random() * (jitter + 1)) : 0);
+}
+
+function isBlockingCheckResult(result) {
+  const value = String(result?.error || result?.book?.lastError || '');
+  return /(?:HTTP\s*(?:429|503)|Too Many Requests|ServiceUnavailable|サービスが利用できません|Amazonにブロック|captcha|robot check|自動化されたアクセス|ショッピングを続けてください)/i.test(value);
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, Math.round(ms || 0))));
 }
 
 function updateCheckCursor(store, book, checkedAt) {

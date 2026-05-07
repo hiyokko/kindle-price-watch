@@ -29,7 +29,12 @@ jobs:
       PRICE_PROVIDER: amazon_html
       AMAZON_DOMAIN: JP
       AMAZON_HOST: www.amazon.co.jp
-      CHECK_CONCURRENCY: "8"
+      CHECK_REQUEST_DELAY_MS: "2200"
+      CHECK_REQUEST_JITTER_MS: "1800"
+      CHECK_BLOCK_COOLDOWN_MS: "90000"
+      HTTP_REQUEST_MIN_INTERVAL_MS: "900"
+      HTTP_REQUEST_JITTER_MS: "900"
+      HTTP_BLOCK_COOLDOWN_MS: "90000"
       FORCE_CHECK_ALL: ${{ github.event_name == 'workflow_dispatch' && inputs.force_all }}
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
     steps:
