@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Kindle Price Watch</title>
-    <link rel="stylesheet" href="/styles.css?v=20260507-1">
+    <link rel="stylesheet" href="/styles.css?v=20260507-2">
   </head>
   <body>
     <header class="topbar">
@@ -24,7 +24,7 @@
     <main class="layout">
       <section class="summary-grid" aria-label="サマリー">
         <div class="summary">
-          <span class="summary-value" id="bookCount">0</span>
+          <button class="summary-value summary-button" id="bookCount" type="button">0</button>
           <span class="summary-label">登録本</span>
         </div>
         <div class="summary">
@@ -32,7 +32,7 @@
           <span class="summary-label">値下げ中</span>
         </div>
         <div class="summary">
-          <span class="summary-value" id="bestCount">0</span>
+          <button class="summary-value summary-button" id="bestCount" type="button">0</button>
           <span class="summary-label">過去最安</span>
         </div>
         <div class="summary">
@@ -165,6 +165,6 @@
       </article>
     </template>
 
-    <script src="/app.js?v=20260507-1" type="module"></script>
+    <script src="/app.js?v=20260507-2" type="module"></script>
   </body>
 </html>

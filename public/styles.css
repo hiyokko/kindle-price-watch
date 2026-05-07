@@ -133,7 +133,8 @@ a {
 }
 
 .summary-button:hover,
-.summary-button:focus-visible {
+.summary-button:focus-visible,
+.summary-button.active {
   color: var(--teal-strong);
 }
 

@@ -6,7 +6,8 @@ const state = {
   discordWebhookCount: 0,
   discordWebhookUrls: [],
   selectedBookIds: new Set(),
-  expandedSeriesKeys: new Set()
+  expandedSeriesKeys: new Set(),
+  activeFilter: 'all'
 };
 
 const els = {
@@ -97,6 +98,8 @@ els.checkAllButton.addEventListener('click', async () => {
 });
 
 els.refreshButton.addEventListener('click', load);
+els.bookCount.addEventListener('click', () => setBookFilter('all'));
+els.bestCount.addEventListener('click', () => setBookFilter(state.activeFilter === 'best' ? 'all' : 'best'));
 els.discordState.addEventListener('click', openWebhookDialog);
 
 els.testNotifyButton.addEventListener('click', async () => {
@@ -188,9 +191,21 @@ function renderSummary() {
   els.bookCount.textContent = String(state.books.length);
   els.dropCount.textContent = String(state.books.filter(isBelowList).length);
   els.bestCount.textContent = String(state.books.filter(isAtBestEver).length);
+  els.bookCount.classList.toggle('active', state.activeFilter === 'all');
+  els.bookCount.setAttribute('aria-pressed', String(state.activeFilter === 'all'));
+  els.bestCount.classList.toggle('active', state.activeFilter === 'best');
+  els.bestCount.setAttribute('aria-pressed', String(state.activeFilter === 'best'));
   els.discordState.textContent = state.discordConfigured ? `設定済み${state.discordWebhookCount > 1 ? `(${state.discordWebhookCount})` : ''}` : '未設定';
   els.discordState.title = 'Webhookを編集';
   els.cronState.textContent = cronSummary(state.automation);
+}
+
+function setBookFilter(filter) {
+  state.activeFilter = filter;
+  state.selectedBookIds.clear();
+  renderBooks();
+  renderBulkControls();
+  renderSummary();
 }
 
 async function openWebhookDialog() {
@@ -235,16 +250,20 @@ function collectWebhookUrls() {
 
 function renderBooks() {
   els.bookGrid.innerHTML = '';
-  if (state.books.length === 0) {
+  const books = filteredBooks();
+  if (books.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'book-card';
-    empty.innerHTML = '<div class="book-body"><h2 class="book-title">まだ本がありません</h2><p class="book-meta">Amazon URLかASINを追加してください。</p></div>';
+    empty.innerHTML =
+      state.activeFilter === 'best'
+        ? '<div class="book-body"><h2 class="book-title">過去最安の本はありません</h2><p class="book-meta">フィルタを解除すると全件を表示します。</p></div>'
+        : '<div class="book-body"><h2 class="book-title">まだ本がありません</h2><p class="book-meta">Amazon URLかASINを追加してください。</p></div>';
     els.bookGrid.append(empty);
     renderBulkControls();
     return;
   }
 
-  for (const group of groupBooks(state.books)) {
+  for (const group of groupBooks(books)) {
     if (!group.isSeries) {
       els.bookGrid.append(createBookNode(group.books[0]));
       continue;
@@ -252,6 +271,11 @@ function renderBooks() {
 
     els.bookGrid.append(createSeriesNode(group));
   }
+}
+
+function filteredBooks() {
+  if (state.activeFilter === 'best') return state.books.filter(isAtBestEver);
+  return state.books;
 }
 
 function createSeriesNode(group) {
