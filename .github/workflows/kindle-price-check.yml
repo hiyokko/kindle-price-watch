@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       force_all:
-        description: "24時間以内に確認済みの本も最大500冊まで再確認する"
+        description: "24時間以内に確認済みの本も保存設定の件数まで再確認する"
         required: false
         type: boolean
         default: true
@@ -29,11 +29,8 @@ jobs:
       PRICE_PROVIDER: amazon_html
       AMAZON_DOMAIN: JP
       AMAZON_HOST: www.amazon.co.jp
-      CHECK_INTERVAL_HOURS: "24"
-      CHECK_BATCH_SIZE: "500"
       CHECK_CONCURRENCY: "8"
       FORCE_CHECK_ALL: ${{ github.event_name == 'workflow_dispatch' && inputs.force_all }}
-      SERIES_IMPORT_FETCH_DETAILS: "false"
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
     steps:
       - name: Checkout

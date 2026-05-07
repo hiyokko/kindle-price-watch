@@ -39,8 +39,6 @@ APP_PASSWORD=ログイン用パスワード
 BLOB_READ_WRITE_TOKEN=Vercel BlobのRead Write Token
 BLOB_STORE_PATH=kindle-price-watch/store.json
 PRICE_PROVIDER=amazon_html
-CHECK_INTERVAL_HOURS=24
-CHECK_BATCH_SIZE=50
 CHECK_MAX_RUNTIME_MS=8000
 ```
 
@@ -97,9 +95,11 @@ Vercel Hobbyでは登録時に全巻の詳細取得まで行うとタイムア�
 
 ## 定期実行
 
-GitHub Actionsでは、`CHECK_INTERVAL_HOURS` より古い本を `CHECK_BATCH_SIZE` 件ずつ自動チェックします。既定のWorkflowでは毎日03:00 JSTに最大500冊、並列8で確認します。`CHECK_CONCURRENCY` を設定すると、1回の実行内で複数冊を並列に確認します。
+GitHub Actionsでは、アプリ画面に保存した再確認時間より古い本を、保存した件数ずつ自動チェックします。既定のWorkflowでは毎日16:00 JSTに、並列8で確認します。`CHECK_CONCURRENCY` を設定すると、1回の実行内で複数冊を並列に確認します。
 
 価格チェックは最後に確認できた本を `checkCursor` として保存します。途中で停止した場合でも、次回はその続きから確認します。期限切れの本を最後まで確認して枠が余った場合のみ、先頭に戻って前回分を重複チェックします。
+
+GitHub Actionsの手動実行では、`force_all` を有効にすると24時間以内に確認済みの本も保存した件数まで再確認します。
 
 手動で一度だけ実行する場合は次を使います。
 

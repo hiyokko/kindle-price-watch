@@ -1504,15 +1504,10 @@ async function recordCronRun(fields) {
 }
 
 function mergedRuntimeSettings(settings = {}) {
-  const envInterval = Number(process.env.CHECK_INTERVAL_HOURS);
-  const envBatchSize = Number(process.env.CHECK_BATCH_SIZE);
-  const intervalFallback = normalizeCheckIntervalHours(envInterval, 24);
-  const batchFallback = Number.isFinite(envBatchSize) && envBatchSize > 0 ? envBatchSize : 50;
-
   return {
     notificationThreshold: clampNumber(settings.notificationThreshold, 0, 95, 10),
-    checkIntervalHours: normalizeCheckIntervalHours(settings.checkIntervalHours, intervalFallback),
-    batchSize: floorNumber(settings.batchSize, 1, batchFallback),
+    checkIntervalHours: normalizeCheckIntervalHours(settings.checkIntervalHours, 24),
+    batchSize: floorNumber(settings.batchSize, 1, 50),
     notifyOnPriceDrop: settings.notifyOnPriceDrop !== false,
     notifyOnBestEver: settings.notifyOnBestEver !== false
   };
