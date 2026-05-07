@@ -166,7 +166,8 @@ export async function addBooksFromInput(input) {
             seriesName,
             seriesExpectedCount,
             volume: seriesItemVolume(item) || index + 1,
-            weakImageUrls
+            weakImageUrls,
+            store
           })
         ) {
           updatedDuplicates += 1;
@@ -910,6 +911,7 @@ function updateExistingSeriesBook(book, item, options) {
     changed = true;
   }
   if (shouldRefreshSeriesPrice(book, item)) {
+    const correctingImplausiblePrice = isImplausibleStoredSeriesPrice(book, item);
     const effectivePrice = item.effectivePrice ?? effectivePriceFromSeed(item);
     book.currentPrice = item.currentPrice;
     book.currentPoints = item.currentPoints ?? 0;
@@ -923,10 +925,15 @@ function updateExistingSeriesBook(book, item, options) {
     if (item.provider) book.provider = item.provider;
     book.lastCheckedAt = book.lastCheckedAt || options.now;
     book.lastError = '';
+    if (correctingImplausiblePrice) repairImplausibleSeriesPriceHistory(book, options.store);
     changed = true;
   }
   if (book.currentPrice != null && item.currentPrice != null && /価格補完/.test(book.lastError || '')) {
     book.lastError = '';
+    changed = true;
+  }
+  if (hasImplausibleSeriesPriceHistory(book, options.store)) {
+    repairImplausibleSeriesPriceHistory(book, options.store);
     changed = true;
   }
   if (shouldClearUnvalidatedSourcePrice(book, item)) {
@@ -1007,6 +1014,41 @@ function isImplausibleStoredSeriesPrice(book, item) {
     currentPoints / Number(book.currentPrice) >= 0.5 &&
     Number(item.currentPrice) >= Number(book.currentPrice) * 2
   );
+}
+
+function repairImplausibleSeriesPriceHistory(book, store) {
+  if (!store || !book?.id || book.currentPrice == null) return;
+
+  store.priceHistory = store.priceHistory.filter(
+    (entry) => entry.bookId !== book.id || !isImplausibleSeriesHistoryEntry(entry, book)
+  );
+
+  const entries = store.priceHistory.filter((entry) => entry.bookId === book.id && entry.price != null);
+  const prices = [...entries.map((entry) => entry.price), book.currentPrice].filter((price) => price != null);
+  const effectivePrices = [...entries.map((entry) => entry.effectivePrice), book.effectivePrice].filter(
+    (price) => price != null
+  );
+  book.lowestPrice = prices.length ? Math.min(...prices) : book.currentPrice;
+  book.lowestEffectivePrice = effectivePrices.length ? Math.min(...effectivePrices) : book.effectivePrice;
+}
+
+function hasImplausibleSeriesPriceHistory(book, store) {
+  return Boolean(
+    store &&
+      book?.id &&
+      book.currentPrice != null &&
+      store.priceHistory.some((entry) => entry.bookId === book.id && isImplausibleSeriesHistoryEntry(entry, book))
+  );
+}
+
+function isImplausibleSeriesHistoryEntry(entry, book) {
+  if (String(entry.provider || '').toLowerCase() !== 'amazon_html') return false;
+  const historyPrice = Number(entry.price);
+  const currentPrice = Number(book.currentPrice);
+  const listPrice = Number(book.listPrice);
+  if (!Number.isFinite(historyPrice) || !Number.isFinite(currentPrice) || historyPrice <= 0) return false;
+  if (!Number.isFinite(listPrice) || listPrice <= 0) return currentPrice >= historyPrice * 2;
+  return historyPrice <= listPrice * 0.3 && currentPrice >= historyPrice * 2 && currentPrice <= listPrice * 1.15;
 }
 
 function shouldClearUnvalidatedSourcePrice(book, item) {
