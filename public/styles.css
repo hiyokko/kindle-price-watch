@@ -283,6 +283,12 @@ button:disabled {
 .book-grid {
   display: grid;
   gap: 12px;
+  align-items: stretch;
+}
+
+.book-grid > .book-card,
+.book-grid > .series-card {
+  width: 100%;
 }
 
 .bulk-toolbar {
