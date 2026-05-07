@@ -224,7 +224,7 @@ async function refreshExistingSingleBookFromInput(id, input) {
   const sourceUrl = String(input || '').trim();
   let snapshotResult = null;
   if (sourceUrl) {
-    snapshotResult = await settleSnapshotWithUrl(extractAsin(sourceUrl), sourceUrl);
+    snapshotResult = await settleSnapshotWithUrl(extractAsin(sourceUrl), sourceUrl, await findBookById(id));
   }
 
   let updated = false;
@@ -258,6 +258,14 @@ async function refreshExistingSingleBookFromInput(id, input) {
       if (isUnresolvedSingleBook(book) && book.lastCheckedAt) {
         book.lastCheckedAt = null;
         updated = true;
+      }
+      const repair = repairSuspiciousPriceState(book, store, {
+        clearCurrent: true,
+        restoreMissingCurrent: true
+      });
+      if (repair.changed) updated = true;
+      if ((repair.currentCleared && !repair.currentRestored) || isSuspiciousSnapshotError(snapshotResult?.error)) {
+        book.lastCheckedAt = null;
       }
       if (updated) book.updatedAt = now;
       publicResult = publicBook(book);
@@ -297,6 +305,9 @@ async function refreshExistingSingleBookFromInput(id, input) {
 
     if (book.effectivePrice != null) {
       store.priceHistory.push(historyEntry(book, now));
+    }
+    if (repairSuspiciousPriceState(book, store).changed) {
+      updated = true;
     }
 
     publicResult = publicBook(book);
@@ -1021,19 +1032,8 @@ function isImplausibleStoredSeriesPrice(book, item) {
 }
 
 function repairImplausibleSeriesPriceHistory(book, store) {
-  if (!store || !book?.id || book.currentPrice == null) return;
-
-  store.priceHistory = store.priceHistory.filter(
-    (entry) => entry.bookId !== book.id || !isImplausibleSeriesHistoryEntry(entry, book)
-  );
-
-  const entries = store.priceHistory.filter((entry) => entry.bookId === book.id && entry.price != null);
-  const prices = [...entries.map((entry) => entry.price), book.currentPrice].filter((price) => price != null);
-  const effectivePrices = [...entries.map((entry) => entry.effectivePrice), book.effectivePrice].filter(
-    (price) => price != null
-  );
-  book.lowestPrice = prices.length ? Math.min(...prices) : book.currentPrice;
-  book.lowestEffectivePrice = effectivePrices.length ? Math.min(...effectivePrices) : book.effectivePrice;
+  if (!store || !book?.id) return;
+  repairSuspiciousPriceState(book, store);
 }
 
 function hasImplausibleSeriesPriceHistory(book, store) {
@@ -1072,6 +1072,195 @@ function shouldClearUnvalidatedSourcePrice(book, item) {
     item.currentPrice == null &&
     item.lastError
   );
+}
+
+function suspiciousSnapshotReason(book, snapshot) {
+  return suspiciousPriceReason({
+    price: snapshot.currentPrice,
+    points: snapshot.currentPoints,
+    effectivePrice: snapshot.effectivePrice,
+    listPrice: snapshot.listPrice ?? book.listPrice,
+    referencePrices: [
+      book.currentPrice,
+      book.effectivePrice,
+      book.previousEffectivePrice,
+      book.listPrice,
+      snapshot.listPrice
+    ]
+  });
+}
+
+function isSuspiciousSnapshotError(error) {
+  return String(error || '').startsWith('疑わしい価格を無視しました');
+}
+
+function repairSuspiciousPriceState(book, store, options = {}) {
+  if (!book || !store) {
+    return {
+      changed: false,
+      currentCleared: false,
+      currentRestored: false,
+      removedHistory: 0,
+      removedNotifications: 0
+    };
+  }
+
+  let changed = false;
+  let currentCleared = false;
+  let currentRestored = false;
+
+  if (options.clearCurrent && suspiciousStoredCurrentPriceReason(book)) {
+    book.currentPrice = null;
+    book.currentPoints = 0;
+    book.effectivePrice = null;
+    book.provider = book.provider === 'amazon_html' ? 'pending' : book.provider;
+    currentCleared = true;
+    changed = true;
+  }
+
+  const beforeHistoryCount = store.priceHistory.length;
+  store.priceHistory = store.priceHistory.filter(
+    (entry) => entry.bookId !== book.id || !isSuspiciousHistoryEntry(entry, book)
+  );
+  const removedHistory = beforeHistoryCount - store.priceHistory.length;
+  if (removedHistory > 0) changed = true;
+
+  if (currentCleared || (options.restoreMissingCurrent && book.currentPrice == null)) {
+    const latest = latestValidPriceHistoryEntry(book, store);
+    if (latest) {
+      book.currentPrice = latest.price;
+      book.currentPoints = latest.points || 0;
+      book.effectivePrice = latest.effectivePrice ?? effectivePriceFromSeed(latest);
+      book.listPrice = latest.listPrice ?? book.listPrice ?? null;
+      book.provider = latest.provider || book.provider;
+      book.lastCheckedAt = latest.checkedAt || book.lastCheckedAt;
+      currentRestored = true;
+      changed = true;
+    }
+  }
+
+  const beforeNotificationCount = store.notifications.length;
+  store.notifications = store.notifications.filter(
+    (entry) => entry.bookId !== book.id || !isSuspiciousNotificationEntry(entry, book)
+  );
+  const removedNotifications = beforeNotificationCount - store.notifications.length;
+  if (removedNotifications > 0) changed = true;
+
+  if (changed || hasSuspiciousStoredPriceFloor(book)) {
+    recomputeBookPriceFloors(book, store);
+    changed = true;
+  }
+
+  return { changed, currentCleared, currentRestored, removedHistory, removedNotifications };
+}
+
+function latestValidPriceHistoryEntry(book, store) {
+  return store.priceHistory
+    .filter((entry) => entry.bookId === book.id && entry.price != null && !isSuspiciousHistoryEntry(entry, book))
+    .sort((a, b) => new Date(b.checkedAt || 0) - new Date(a.checkedAt || 0))[0] || null;
+}
+
+function suspiciousStoredCurrentPriceReason(book) {
+  return suspiciousPriceReason({
+    price: book.currentPrice,
+    points: book.currentPoints,
+    effectivePrice: book.effectivePrice,
+    listPrice: book.listPrice,
+    referencePrices: [
+      book.listPrice,
+      book.previousEffectivePrice,
+      book.lowestPrice && Number(book.lowestPrice) !== Number(book.currentPrice) ? book.lowestPrice : null
+    ]
+  });
+}
+
+function isSuspiciousHistoryEntry(entry, book) {
+  return Boolean(
+    suspiciousPriceReason({
+      price: entry.price,
+      points: entry.points,
+      effectivePrice: entry.effectivePrice,
+      listPrice: entry.listPrice ?? book.listPrice,
+      referencePrices: [book.currentPrice, book.effectivePrice, book.listPrice]
+    })
+  );
+}
+
+function isSuspiciousNotificationEntry(entry, book) {
+  return Boolean(
+    suspiciousPriceReason({
+      price: entry.effectivePrice,
+      points: 0,
+      effectivePrice: entry.effectivePrice,
+      listPrice: book.listPrice,
+      referencePrices: [book.currentPrice, book.effectivePrice, book.listPrice]
+    })
+  );
+}
+
+function hasSuspiciousStoredPriceFloor(book) {
+  return Boolean(
+    suspiciousPriceReason({
+      price: book.lowestPrice,
+      points: 0,
+      effectivePrice: book.lowestEffectivePrice,
+      listPrice: book.listPrice,
+      referencePrices: [book.currentPrice, book.effectivePrice, book.listPrice]
+    }) ||
+      suspiciousPriceReason({
+        price: book.lowestEffectivePrice,
+        points: 0,
+        effectivePrice: book.lowestEffectivePrice,
+        listPrice: book.listPrice,
+        referencePrices: [book.currentPrice, book.effectivePrice, book.listPrice]
+      })
+  );
+}
+
+function suspiciousPriceReason({ price, points = 0, effectivePrice = null, listPrice = null, referencePrices = [] }) {
+  const current = Number(price);
+  if (!Number.isFinite(current) || current <= 0) return '';
+
+  const pointValue = Number(points || 0);
+  if (Number.isFinite(pointValue) && pointValue > current) return 'ポイントが価格を超えています';
+
+  const list = Number(listPrice);
+  if (Number.isFinite(list) && list > 0 && current > list * 1.15) return '価格が定価を大きく超えています';
+
+  const reference = Math.max(
+    ...referencePrices
+      .map((value) => Number(value))
+      .filter((value) => Number.isFinite(value) && value > 0)
+  );
+  const lowPriceMax = floorNumber(process.env.SUSPICIOUS_LOW_PRICE_MAX, 1, 60);
+  if (Number.isFinite(reference) && current <= lowPriceMax && reference >= current * 3) {
+    return '割引率またはポイントを価格として読んだ可能性があります';
+  }
+
+  const effective = Number(effectivePrice);
+  if (
+    Number.isFinite(effective) &&
+    effective === 0 &&
+    Number.isFinite(reference) &&
+    reference >= current * 2 &&
+    pointValue > 0
+  ) {
+    return '実質価格が不自然に0円です';
+  }
+
+  return '';
+}
+
+function recomputeBookPriceFloors(book, store) {
+  const entries = store.priceHistory.filter((entry) => entry.bookId === book.id && entry.price != null);
+  const prices = entries.map((entry) => entry.price);
+  const effectivePrices = entries.map((entry) => entry.effectivePrice).filter((value) => value != null);
+
+  if (book.currentPrice != null) prices.push(book.currentPrice);
+  if (book.effectivePrice != null) effectivePrices.push(book.effectivePrice);
+
+  book.lowestPrice = prices.length ? Math.min(...prices) : book.currentPrice;
+  book.lowestEffectivePrice = effectivePrices.length ? Math.min(...effectivePrices) : book.effectivePrice;
 }
 
 function seriesPriceProviderRank(provider) {
@@ -1635,7 +1824,19 @@ async function checkOneBook(bookRef, options = {}) {
       if (snapshotResult.snapshot) {
         applyMetadataSnapshotToBook(book, snapshotResult.snapshot);
       }
-      book.lastCheckedAt = isUnresolvedSingleBook(book) ? null : now;
+      const repair = repairSuspiciousPriceState(book, store, {
+        clearCurrent: true,
+        restoreMissingCurrent: true
+      });
+      if (
+        isUnresolvedSingleBook(book) ||
+        (repair.currentCleared && !repair.currentRestored) ||
+        isSuspiciousSnapshotError(snapshotResult.error)
+      ) {
+        book.lastCheckedAt = null;
+      } else if (!repair.currentRestored) {
+        book.lastCheckedAt = now;
+      }
       book.updatedAt = now;
       book.lastError = snapshotResult.error;
       if (options.updateCursor) updateCheckCursor(store, book, now);
@@ -1667,6 +1868,7 @@ async function checkOneBook(bookRef, options = {}) {
       book.lowestEffectivePrice = minNullable(book.lowestEffectivePrice, snapshot.effectivePrice);
       store.priceHistory.push(historyEntry(book, now));
     }
+    repairSuspiciousPriceState(book, store);
 
     events = detectEvents({
       book,
@@ -1735,17 +1937,33 @@ async function settleSnapshot(asin, book = {}) {
   try {
     const snapshot = await fetchBookSnapshot(asin, { url: book.sourceUrl || book.amazonUrl || '' });
     if (snapshot.currentPrice == null) return { ok: false, snapshot, error: '価格を取得できませんでした' };
+    const suspiciousReason = suspiciousSnapshotReason(book, snapshot);
+    if (suspiciousReason) {
+      return {
+        ok: false,
+        snapshot,
+        error: `疑わしい価格を無視しました (${suspiciousReason})`
+      };
+    }
     return { ok: true, snapshot };
   } catch (error) {
     return { ok: false, error: error.message };
   }
 }
 
-async function settleSnapshotWithUrl(asin, url) {
+async function settleSnapshotWithUrl(asin, url, book = {}) {
   if (!asin) return { ok: false, error: 'Amazon URL または ASIN を入力してください' };
   try {
     const snapshot = await fetchBookSnapshot(asin, { url });
     if (snapshot.currentPrice == null) return { ok: false, snapshot, error: '価格を取得できませんでした' };
+    const suspiciousReason = suspiciousSnapshotReason(book || {}, snapshot);
+    if (suspiciousReason) {
+      return {
+        ok: false,
+        snapshot,
+        error: `疑わしい価格を無視しました (${suspiciousReason})`
+      };
+    }
     return { ok: true, snapshot };
   } catch (error) {
     return { ok: false, error: error.message };
