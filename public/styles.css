@@ -300,6 +300,15 @@ button:disabled {
   flex-wrap: wrap;
 }
 
+.sort-control {
+  display: inline-grid;
+  grid-template-columns: auto minmax(190px, 230px);
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
 .select-all {
   display: inline-flex;
   align-items: center;
@@ -751,6 +760,11 @@ button:disabled {
 
   .book-card {
     grid-template-columns: 92px minmax(0, 1fr);
+  }
+
+  .sort-control {
+    width: 100%;
+    grid-template-columns: 1fr;
   }
 
   .book-grid > .book-card .book-body {

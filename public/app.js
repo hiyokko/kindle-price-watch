@@ -7,7 +7,8 @@ const state = {
   discordWebhookUrls: [],
   selectedBookIds: new Set(),
   expandedSeriesKeys: new Set(),
-  activeFilter: 'all'
+  activeFilter: 'all',
+  sortMode: readSavedSortMode()
 };
 
 const els = {
@@ -21,6 +22,7 @@ const els = {
   intervalInput: document.getElementById('intervalInput'),
   batchInput: document.getElementById('batchInput'),
   testNotifyButton: document.getElementById('testNotifyButton'),
+  sortInput: document.getElementById('sortInput'),
   selectAllInput: document.getElementById('selectAllInput'),
   deleteSelectedButton: document.getElementById('deleteSelectedButton'),
   message: document.getElementById('message'),
@@ -101,6 +103,13 @@ els.refreshButton.addEventListener('click', load);
 els.bookCount.addEventListener('click', () => setBookFilter('all'));
 els.bestCount.addEventListener('click', () => setBookFilter(state.activeFilter === 'best' ? 'all' : 'best'));
 els.discordState.addEventListener('click', openWebhookDialog);
+els.sortInput.value = state.sortMode;
+els.sortInput.addEventListener('change', () => {
+  state.sortMode = els.sortInput.value;
+  saveSortMode(state.sortMode);
+  renderBooks();
+  renderBulkControls();
+});
 
 els.testNotifyButton.addEventListener('click', async () => {
   setBusy(els.testNotifyButton, true, '送信中');
@@ -265,7 +274,7 @@ function renderBooks() {
   }
 
   const fragment = document.createDocumentFragment();
-  for (const group of groupBooks(books)) {
+  for (const group of sortedGroups(groupBooks(books))) {
     if (!group.isSeries) {
       fragment.append(createBookNode(group.books[0]));
       continue;
@@ -610,6 +619,27 @@ function groupBooks(books) {
   });
 }
 
+function sortedGroups(groups) {
+  if (state.sortMode !== 'total_asc') return groups;
+  return [...groups].sort(compareGroupsByTotalPrice);
+}
+
+function compareGroupsByTotalPrice(a, b) {
+  const am = seriesTotalMetrics(a);
+  const bm = seriesTotalMetrics(b);
+  const ar = totalPriceSortRank(am);
+  const br = totalPriceSortRank(bm);
+  if (ar !== br) return ar - br;
+  if (am.totalPrice !== bm.totalPrice) return am.totalPrice - bm.totalPrice;
+  if (am.effectiveTotal !== bm.effectiveTotal) return am.effectiveTotal - bm.effectiveTotal;
+  return String(a.title || '').localeCompare(String(b.title || ''), 'ja');
+}
+
+function totalPriceSortRank(metrics) {
+  if (metrics.pricedCount === 0) return 2;
+  return metrics.complete ? 0 : 1;
+}
+
 function expectedSeriesCount(books) {
   const counts = books
     .map((book) => Number(book.seriesExpectedCount) || 0)
@@ -689,9 +719,17 @@ function formatPrice(book) {
 }
 
 function seriesTotalLabel(group) {
-  const pricedBooks = group.books.filter((book) => book.currentPrice != null);
-  if (pricedBooks.length === 0) return '合計 未取得';
+  const { pricedCount, totalPrice, totalPoints, effectiveTotal, missing, unregistered } = seriesTotalMetrics(group);
+  if (pricedCount === 0) return '合計 未取得';
 
+  const points = totalPoints > 0 ? ` / ${totalPoints.toLocaleString('ja-JP')}pt（実質 ${yen(effectiveTotal)}）` : '';
+  const missingText = missing > 0 ? ` / 未取得${missing}冊` : '';
+  const unregisteredText = unregistered > 0 ? ` / 未登録${unregistered}冊` : '';
+  return `合計 ${yen(totalPrice)}${points}${missingText}${unregisteredText}`;
+}
+
+function seriesTotalMetrics(group) {
+  const pricedBooks = group.books.filter((book) => book.currentPrice != null);
   const totalPrice = pricedBooks.reduce((sum, book) => sum + Number(book.currentPrice || 0), 0);
   const totalPoints = pricedBooks.reduce((sum, book) => sum + Number(book.currentPoints || 0), 0);
   const effectiveTotal = pricedBooks.reduce(
@@ -700,10 +738,16 @@ function seriesTotalLabel(group) {
   );
   const missing = group.books.length - pricedBooks.length;
   const unregistered = Math.max(0, (group.expectedCount || group.books.length) - group.books.length);
-  const points = totalPoints > 0 ? ` / ${totalPoints.toLocaleString('ja-JP')}pt（実質 ${yen(effectiveTotal)}）` : '';
-  const missingText = missing > 0 ? ` / 未取得${missing}冊` : '';
-  const unregisteredText = unregistered > 0 ? ` / 未登録${unregistered}冊` : '';
-  return `合計 ${yen(totalPrice)}${points}${missingText}${unregisteredText}`;
+
+  return {
+    pricedCount: pricedBooks.length,
+    totalPrice,
+    totalPoints,
+    effectiveTotal,
+    missing,
+    unregistered,
+    complete: pricedBooks.length > 0 && missing === 0 && unregistered === 0
+  };
 }
 
 function seriesStatusLabel(group) {
@@ -766,6 +810,23 @@ function badgeFor(book) {
   if (isAtBestEver(book)) return { label: '過去最安', tone: 'best' };
   if (isBelowList(book)) return { label: '値下げ', tone: 'sale' };
   return { label: '通常', tone: '' };
+}
+
+function readSavedSortMode() {
+  try {
+    const value = localStorage.getItem('kw_sort_mode');
+    return value === 'total_asc' ? value : 'default';
+  } catch {
+    return 'default';
+  }
+}
+
+function saveSortMode(value) {
+  try {
+    localStorage.setItem('kw_sort_mode', value === 'total_asc' ? value : 'default');
+  } catch {
+    // Sorting still works for the current session if storage is unavailable.
+  }
 }
 
 load().catch((error) => setMessage(error.message, 'error'));
