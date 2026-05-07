@@ -5,6 +5,7 @@ import {
   fetchAmazonHtmlSnapshot,
   fetchBookSnapshot,
   fetchExternalKindleSeriesItems,
+  fetchKinpomeKindleSeriesItems,
   fetchKindleSeriesItems,
   fetchSaleBonKindleSeriesItems,
   isKindleSeriesUrl
@@ -339,6 +340,17 @@ async function fetchSeriesCandidates(input, options = {}) {
         // Sale-bon is an optional fallback; ignore failures and use the other candidates.
       }
     }
+
+    if (candidates.length > 0) {
+      for (const { query, seriesName } of seriesQueriesForSupplementalSources(candidates)) {
+        try {
+          const series = await fetchKinpomeKindleSeriesItems(query, { sourceAsin: extractAsin(input), seriesName });
+          if (series?.items?.length > 1) candidates.push(series);
+        } catch {
+          // Kinpome is an optional price source; ignore failures and use the other candidates.
+        }
+      }
+    }
   }
 
   if (candidates.length === 0) return null;
@@ -355,6 +367,27 @@ function seriesNamesForSaleBon(candidates) {
         .filter((name) => name && name !== 'Kindle シリーズ')
     )
   ];
+}
+
+function seriesQueriesForSupplementalSources(candidates) {
+  const queries = new Map();
+  for (const seriesName of seriesNamesForSaleBon(candidates)) {
+    queries.set(`${seriesName}\n${seriesName}`, { query: seriesName, seriesName });
+  }
+
+  for (const candidate of candidates) {
+    const seriesName = String(candidate?.seriesName || '').trim();
+    if (!seriesName || seriesName === 'Kindle シリーズ') continue;
+
+    for (const item of candidate.items || []) {
+      const author = String(item.author || '').split(',')[0].trim();
+      if (!author) continue;
+      queries.set(`${seriesName}\n${author}`, { query: author, seriesName });
+      if (queries.size >= 8) return [...queries.values()];
+    }
+  }
+
+  return [...queries.values()].slice(0, 8);
 }
 
 async function sourceSeriesNamesForSaleBon(input) {
@@ -797,7 +830,8 @@ function collectCandidateItemsByAsin(candidates) {
 }
 
 function mergeAmazonSnapshotIntoSeriesItem(item, snapshot) {
-  const currentPrice = snapshot.currentPrice ?? item.currentPrice;
+  const useSnapshotPrice = shouldUseAmazonSnapshotPriceForSeriesItem(item, snapshot);
+  const currentPrice = useSnapshotPrice ? snapshot.currentPrice : item.currentPrice;
   return {
     ...item,
     title: preferSnapshotText(snapshot.title, item.title),
@@ -807,12 +841,29 @@ function mergeAmazonSnapshotIntoSeriesItem(item, snapshot) {
     imageSource: snapshot.imageUrl ? snapshot.provider || 'amazon_html' : item.imageSource || '',
     amazonUrl: snapshot.amazonUrl || item.amazonUrl || amazonUrlForAsin(item.asin),
     currentPrice,
-    currentPoints: snapshot.currentPrice == null ? item.currentPoints ?? 0 : snapshot.currentPoints ?? 0,
-    effectivePrice: snapshot.currentPrice == null ? item.effectivePrice : snapshot.effectivePrice ?? effectivePriceFromSeed(snapshot),
-    listPrice: snapshot.listPrice ?? item.listPrice ?? null,
-    provider: snapshot.currentPrice == null ? item.provider || snapshot.provider : snapshot.provider || item.provider,
+    currentPoints: useSnapshotPrice ? snapshot.currentPoints ?? 0 : item.currentPoints ?? 0,
+    effectivePrice: useSnapshotPrice ? snapshot.effectivePrice ?? effectivePriceFromSeed(snapshot) : item.effectivePrice,
+    listPrice: useSnapshotPrice ? snapshot.listPrice ?? item.listPrice ?? null : item.listPrice ?? snapshot.listPrice ?? null,
+    provider: useSnapshotPrice ? snapshot.provider || item.provider : item.provider || snapshot.provider,
     lastError: currentPrice == null ? item.lastError || '' : ''
   };
+}
+
+function shouldUseAmazonSnapshotPriceForSeriesItem(item, snapshot) {
+  if (snapshot.currentPrice == null) return false;
+  if (item.currentPrice == null) return true;
+  if (!isExternalSeriesPriceProvider(item.provider)) return true;
+
+  const current = Number(item.currentPrice);
+  const next = Number(snapshot.currentPrice);
+  if (!Number.isFinite(current) || !Number.isFinite(next) || current <= 0 || next <= 0) return true;
+
+  const ratio = next / current;
+  return ratio >= 0.5 && ratio <= 1.5;
+}
+
+function isExternalSeriesPriceProvider(provider) {
+  return ['sale_bon_series', 'kinpome', 'kinpome_series', 'external_series'].includes(String(provider || '').toLowerCase());
 }
 
 function updateExistingSeriesBook(book, item, options) {
@@ -939,6 +990,17 @@ function isImplausibleStoredSeriesPrice(book, item) {
   if (book.currentPrice == null || item.currentPrice == null) return false;
   const listPrice = Number(book.listPrice ?? item.listPrice);
   if (Number.isFinite(listPrice) && listPrice > 0 && Number(book.currentPrice) > listPrice * 1.15) return true;
+  if (
+    Number.isFinite(listPrice) &&
+    listPrice > 0 &&
+    isExternalSeriesPriceProvider(item.provider) &&
+    String(book.provider || '').toLowerCase() === 'amazon_html' &&
+    Number(book.currentPrice) <= listPrice * 0.3 &&
+    Number(item.currentPrice) >= Number(book.currentPrice) * 2 &&
+    Number(item.currentPrice) <= listPrice * 1.15
+  ) {
+    return true;
+  }
   const currentPoints = Number(book.currentPoints || 0);
   return (
     currentPoints > 0 &&
@@ -964,6 +1026,8 @@ function seriesPriceProviderRank(provider) {
   if (normalized === 'amazon_series_unit_price') return 90;
   if (normalized === 'amazon_series_reader') return 70;
   if (normalized === 'sale_bon_series') return 80;
+  if (normalized === 'kinpome') return 78;
+  if (normalized === 'kinpome_series') return 75;
   if (normalized === 'amazon_series_source_price') return 60;
   if (normalized === 'external_series') return 50;
   if (normalized === 'existing_series') return 40;
@@ -980,6 +1044,8 @@ function isRefreshableSeriesPriceProvider(provider) {
     'amazon_series_bulk',
     'amazon_series_unit_price',
     'sale_bon_series',
+    'kinpome',
+    'kinpome_series',
     'amazon_series_source_price',
     'external_series'
   ].includes(String(provider || '').toLowerCase());

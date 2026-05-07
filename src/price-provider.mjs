@@ -227,6 +227,115 @@ export async function fetchSaleBonKindleSeriesItems(seriesName, options = {}) {
   };
 }
 
+export async function fetchKinpomeKindleSeriesItems(seriesName, options = {}) {
+  const searchText = cleanTitle(seriesName);
+  const normalizedName = cleanTitle(options.seriesName || seriesName);
+  if (!searchText || !normalizedName || normalizedName === 'Kindle シリーズ') return null;
+
+  const html = await fetchKinpomeSearchHtml(searchText, options);
+  const items = extractKinpomeSeriesItemsFromHtml(html, normalizedName);
+  if (items.length <= 1) return null;
+
+  const limit = readPositiveInteger(process.env.SERIES_IMPORT_LIMIT, null);
+  const limitedItems = limit == null ? items : items.slice(0, limit);
+  return {
+    seriesName: normalizedName,
+    sourceAsin: options.sourceAsin || '',
+    expectedVolumeCount: maxSeriesItemVolume(limitedItems) || limitedItems.length,
+    completed: false,
+    items: limitedItems,
+    provider: 'kinpome_series'
+  };
+}
+
+async function fetchKinpomeSearchHtml(keyword, options = {}) {
+  const url = new URL('https://kinpome.com/kindle-sale-search2/');
+  url.searchParams.set('keyword', keyword);
+  url.searchParams.set('cat', '');
+  url.searchParams.set('ex', '');
+  url.searchParams.set('hpr', '');
+  url.searchParams.set('hpro', '');
+  url.searchParams.set('hprr', '');
+  url.searchParams.set('hptr', '');
+  url.searchParams.set('hrpr', '');
+  url.searchParams.set('lpr', '');
+  url.searchParams.set('lpro', '');
+  url.searchParams.set('lprr', '');
+  url.searchParams.set('lptr', '');
+  url.searchParams.set('lrpr', '');
+  url.searchParams.set('rde', '');
+  url.searchParams.set('rds', '');
+  url.searchParams.set('st', '');
+  return fetchHtml(url.toString(), { timeoutMs: options.timeoutMs ?? 6000 });
+}
+
+function extractKinpomeSeriesItemsFromHtml(html, seriesName) {
+  const items = [];
+  const seen = new Set();
+
+  for (const match of String(html || '').matchAll(/<tr\b[\s\S]*?<\/tr>/gi)) {
+    const item = kinpomeSeriesItemFromRow(match[0], seriesName);
+    if (!item || seen.has(item.asin)) continue;
+    items.push(item);
+    seen.add(item.asin);
+  }
+
+  return items.sort(compareExternalSeriesItems);
+}
+
+function kinpomeSeriesItemFromRow(row, seriesName) {
+  const item = kinpomeBookItemFromRow(row);
+  if (!item) return null;
+
+  const volume = extractExternalVolumeFromTitle(item.title);
+  if (!volume) return null;
+  if (normalizeSeriesNameForMatch(kinpomeSeriesBaseName(item.title)) !== normalizeSeriesNameForMatch(seriesName)) return null;
+
+  return {
+    ...item,
+    volume,
+    provider: 'kinpome_series'
+  };
+}
+
+function kinpomeBookItemFromRow(row) {
+  const link = String(row || '').match(/<a\b[^>]*href=["']([^"']*amazon\.co\.jp[^"']*)["'][^>]*>([\s\S]*?)<\/a>/i);
+  if (!link) return null;
+
+  const href = decodeHtml(link[1]);
+  const asin = extractAsin(href);
+  if (!asin || !isProbablyBookAsin(asin)) return null;
+
+  const title = cleanTitle(link[2]);
+  const rightValues = [...String(row || '').matchAll(/<td\b[^>]*class=["'][^"']*right[^"']*["'][^>]*>([\s\S]*?)<\/td>/gi)]
+    .map((cell) => cleanText(cell[1]))
+    .filter(Boolean);
+  const currentPrice = parsePrice(toHalfWidthNumber(rightValues[0] || ''));
+  if (currentPrice == null) return null;
+
+  return {
+    asin,
+    title,
+    imageUrl: '',
+    imageSource: '',
+    amazonUrl: amazonUrlForAsin(asin),
+    currentPrice,
+    currentPoints: 0,
+    effectivePrice: currentPrice,
+    listPrice: null,
+    provider: 'kinpome'
+  };
+}
+
+function kinpomeSeriesBaseName(title) {
+  return cleanTitle(title)
+    .replace(/\s*[（(][^（）()]{0,80}(?:コミックス|コミック|文庫|新書|DX|KC|REX|ZERO-SUM|モーニング|イブニング|アフタヌーン|ビッグ|スピリッツ|ジャンプ|マガジン|サンデー|チャンピオン|ヒーローズ|ebook|Kindle)[^（）()]{0,80}[）)]\s*$/i, '')
+    .replace(/\s*[（(]\s*(?:第\s*)?[0-9０-９]{1,3}\s*(?:巻)?\s*[）)]\s*$/i, '')
+    .replace(/\s*(?:第\s*)?[0-9０-９]{1,3}\s*巻\s*$/i, '')
+    .replace(/\s+[0-9０-９]{1,3}\s*$/i, '')
+    .trim();
+}
+
 export async function fetchKindleSeriesAsins(input) {
   const series = await fetchKindleSeriesItems(input);
   return series.items.map((item) => item.asin);
