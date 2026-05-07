@@ -240,6 +240,10 @@ async function refreshExistingSingleBookFromInput(id, input) {
     }
 
     if (!snapshotResult?.ok) {
+      if (snapshotResult?.snapshot) {
+        applyMetadataSnapshotToBook(book, snapshotResult.snapshot);
+        updated = true;
+      }
       if (isAmazonErrorPageBookTitle(book.title)) {
         book.title = `ASIN ${book.asin}`;
         book.imageUrl = '';
@@ -1628,6 +1632,9 @@ async function checkOneBook(bookRef, options = {}) {
     const previousLowestEffectivePrice = book.lowestEffectivePrice;
 
     if (!snapshotResult.ok) {
+      if (snapshotResult.snapshot) {
+        applyMetadataSnapshotToBook(book, snapshotResult.snapshot);
+      }
       book.lastCheckedAt = isUnresolvedSingleBook(book) ? null : now;
       book.updatedAt = now;
       book.lastError = snapshotResult.error;
@@ -1727,6 +1734,7 @@ function sharedWebhookUrlLoader() {
 async function settleSnapshot(asin, book = {}) {
   try {
     const snapshot = await fetchBookSnapshot(asin, { url: book.sourceUrl || book.amazonUrl || '' });
+    if (snapshot.currentPrice == null) return { ok: false, snapshot, error: '価格を取得できませんでした' };
     return { ok: true, snapshot };
   } catch (error) {
     return { ok: false, error: error.message };
@@ -1737,10 +1745,22 @@ async function settleSnapshotWithUrl(asin, url) {
   if (!asin) return { ok: false, error: 'Amazon URL または ASIN を入力してください' };
   try {
     const snapshot = await fetchBookSnapshot(asin, { url });
+    if (snapshot.currentPrice == null) return { ok: false, snapshot, error: '価格を取得できませんでした' };
     return { ok: true, snapshot };
   } catch (error) {
     return { ok: false, error: error.message };
   }
+}
+
+function applyMetadataSnapshotToBook(book, snapshot) {
+  if (!book || !snapshot) return;
+  book.title = snapshot.title || book.title;
+  book.author = snapshot.author || book.author;
+  book.publisher = snapshot.publisher || book.publisher;
+  book.imageUrl = snapshot.imageUrl || book.imageUrl;
+  book.imageSource = snapshot.imageUrl ? snapshot.provider || book.imageSource || '' : book.imageSource || '';
+  book.amazonUrl = snapshot.amazonUrl || book.amazonUrl;
+  if (!book.provider || book.provider === 'pending') book.provider = snapshot.provider || book.provider;
 }
 
 function normalizeImageUrl(value) {
@@ -1798,6 +1818,9 @@ async function buildBookFromAsin(asin, options = {}) {
     provider: seed.provider || (fetchDetails ? 'pending' : 'pending_series')
   };
   snapshot = mergeSnapshot(fallback, snapshot);
+  if (snapshot.currentPrice == null && !lastError) {
+    lastError = '価格を取得できませんでした';
+  }
 
   return {
     id: crypto.randomUUID(),
@@ -1874,6 +1897,7 @@ function isAmazonErrorPageBookTitle(title) {
 function isUnresolvedSingleBook(book) {
   if (!book || book.currentPrice != null) return false;
   if ((book.importMode || 'single') !== 'single') return false;
+  if (book.effectivePrice == null) return true;
   const title = String(book.title || '');
   return (
     /^ASIN\s+[A-Z0-9]{10}$/i.test(title) ||

@@ -893,12 +893,63 @@ function amazonProductCandidateUrls(asin, inputUrl = '') {
     add(`https://${host}/gp/product/${normalizedAsin}?storeType=ebooks`);
     add(`https://${host}/gp/product/${normalizedAsin}?binding=kindle_edition&ref=dbs_dp_rwt_sb_pc_tkin`);
     add(`https://${host}/gp/aw/d/${normalizedAsin}`);
+    for (const query of amazonSearchQueriesForInput(inputUrl, normalizedAsin)) {
+      add(`https://${host}/s?k=${encodeURIComponent(query)}&i=digital-text`, { skipAsinCheck: true });
+    }
     add(`https://${host}/s?k=${normalizedAsin}&i=digital-text`, { skipAsinCheck: true });
   } catch {
     // Keep the canonical URL candidates.
   }
 
   return urls;
+}
+
+function amazonSearchQueriesForInput(inputUrl, asin) {
+  const queries = [];
+  const add = (value) => {
+    const query = normalizeAmazonSearchQuery(value, asin);
+    if (query && !queries.includes(query)) queries.push(query);
+  };
+
+  try {
+    const url = new URL(String(inputUrl || ''));
+    add(url.searchParams.get('keywords'));
+    add(url.searchParams.get('k'));
+    add(amazonTitleSlugFromPath(url.pathname, asin));
+  } catch {
+    // No URL-derived search queries.
+  }
+
+  return queries.slice(0, 4);
+}
+
+function amazonTitleSlugFromPath(pathname, asin) {
+  let decoded = '';
+  try {
+    decoded = decodeURIComponent(String(pathname || ''));
+  } catch {
+    decoded = String(pathname || '');
+  }
+
+  const parts = decoded.split('/').filter(Boolean);
+  const dpIndex = parts.findIndex((part, index) => /^dp$/i.test(part) && String(parts[index + 1] || '').toUpperCase() === asin);
+  const gpIndex = parts.findIndex(
+    (part, index) => /^gp$/i.test(part) && /^product$/i.test(parts[index + 1] || '') && String(parts[index + 2] || '').toUpperCase() === asin
+  );
+  const markerIndex = dpIndex >= 0 ? dpIndex : gpIndex;
+  return markerIndex > 0 ? parts[markerIndex - 1] : '';
+}
+
+function normalizeAmazonSearchQuery(value, asin) {
+  const text = cleanTitle(value)
+    .replace(new RegExp(escapeRegExp(asin), 'ig'), '')
+    .replace(/\b(?:ebook|kindle|edition|amazon|co|jp)\b/gi, ' ')
+    .replace(/[-_]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!text || text.length < 2) return '';
+  if (/^[A-Z0-9]{10}$/i.test(text)) return '';
+  return text;
 }
 
 function withAmazonSearchParams(value, params) {
