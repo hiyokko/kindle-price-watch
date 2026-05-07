@@ -2250,6 +2250,7 @@ function extractPrices(html) {
   const value = decodeJsonEscapes(decodeHtml(html));
   const pricePatterns = [
     /(?:￥|¥)\s*([0-9][0-9,]*)/g,
+    /\bJPY\s*([0-9][0-9,]*)/gi,
     /<span[^>]+class=["'][^"']*a-price-whole[^"']*["'][^>]*>\s*([0-9,]+)\s*<\/span>/gi,
     /["'](?:displayPrice|priceString|formattedPrice|buyingPrice)["']\s*:\s*["'][^"']*(?:￥|¥|JPY)\s*([0-9][0-9,]*)/gi
   ];
