@@ -1417,7 +1417,7 @@ function extractAmazonHtmlSnapshotFromHtml(html, asin, url, provider) {
   const base = extractAmazonHtmlSnapshotBase(html, asin, url, provider);
   const kindleOffer = extractKindlePurchaseOffer(html, asin);
   const allPrices = extractPrices(html);
-  let currentPrice = kindleOffer.price ?? chooseLikelyKindlePrice(allPrices);
+  let currentPrice = kindleOffer.price ?? chooseLikelyKindlePrice(allPrices, html);
   let listPrice = extractListPrice(html, currentPrice);
   let currentPoints =
     kindleOffer.price != null
@@ -1441,7 +1441,7 @@ function extractAmazonSearchSnapshotFromHtml(html, asin, url, provider) {
   if (!fragment) throw new Error('Amazon検索結果に商品が見つかりません');
 
   const prices = extractPrices(fragment);
-  let currentPrice = chooseLikelyKindlePrice(prices);
+  let currentPrice = chooseLikelyKindlePrice(prices, fragment);
   const title =
     cleanTitle(fragment.match(/<h2\b[^>]*aria-label=["']([^"']+)["']/i)?.[1] || '') ||
     cleanTitle(fragment.match(/<h2\b[\s\S]*?<span\b[^>]*>([\s\S]*?)<\/span>/i)?.[1] || '') ||
@@ -2265,8 +2265,10 @@ function extractStructuredJpyPrices(value) {
   return prices;
 }
 
-function chooseLikelyKindlePrice(prices) {
+function chooseLikelyKindlePrice(prices, html = '') {
   if (!prices.length) return null;
+  const priceWithPoints = prices.find((price) => extractPointsNearPrice(html, price) != null);
+  if (priceWithPoints != null) return priceWithPoints;
   return prices[0];
 }
 
