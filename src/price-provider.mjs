@@ -2226,10 +2226,11 @@ function extractLandingImage(html) {
 
 function extractPrices(html) {
   const prices = new Set();
-  const value = decodeHtml(html);
+  const value = decodeJsonEscapes(decodeHtml(html));
   const pricePatterns = [
     /(?:￥|¥)\s*([0-9][0-9,]*)/g,
-    /<span[^>]+class=["'][^"']*a-price-whole[^"']*["'][^>]*>\s*([0-9,]+)\s*<\/span>/gi
+    /<span[^>]+class=["'][^"']*a-price-whole[^"']*["'][^>]*>\s*([0-9,]+)\s*<\/span>/gi,
+    /["'](?:displayPrice|priceString|formattedPrice|buyingPrice)["']\s*:\s*["'][^"']*(?:￥|¥|JPY)\s*([0-9][0-9,]*)/gi
   ];
 
   for (const pattern of pricePatterns) {
@@ -2239,7 +2240,29 @@ function extractPrices(html) {
     }
   }
 
+  for (const price of extractStructuredJpyPrices(value)) prices.add(price);
+
   return [...prices].filter((price) => price >= 0).sort((a, b) => a - b);
+}
+
+function extractStructuredJpyPrices(value) {
+  const prices = [];
+  const text = String(value || '');
+  const amountKeys = '(?:priceAmount|amountToPay|amount|value)';
+  const currencyKeys = '(?:currencyCode|currency)';
+  const patterns = [
+    new RegExp(`["']${amountKeys}["']\\s*:\\s*["']?([0-9][0-9,]{1,8})(?:\\.0+)?["']?[\\s\\S]{0,160}?["']${currencyKeys}["']\\s*:\\s*["']JPY["']`, 'gi'),
+    new RegExp(`["']${currencyKeys}["']\\s*:\\s*["']JPY["'][\\s\\S]{0,160}?["']${amountKeys}["']\\s*:\\s*["']?([0-9][0-9,]{1,8})(?:\\.0+)?["']?`, 'gi')
+  ];
+
+  for (const pattern of patterns) {
+    for (const match of text.matchAll(pattern)) {
+      const price = parsePrice(match[1]);
+      if (price != null) prices.push(price);
+    }
+  }
+
+  return prices;
 }
 
 function chooseLikelyKindlePrice(prices) {
@@ -2540,6 +2563,13 @@ function decodeHtml(value) {
     .replace(/&#39;/g, "'")
     .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
     .replace(/&#([0-9]+);/g, (_, num) => String.fromCharCode(Number(num)));
+}
+
+function decodeJsonEscapes(value) {
+  return String(value || '')
+    .replace(/\\u([0-9a-f]{4})/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+    .replace(/\\"/g, '"')
+    .replace(/\\\//g, '/');
 }
 
 function escapeRegExp(value) {
