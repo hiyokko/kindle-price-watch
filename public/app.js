@@ -593,8 +593,8 @@ function groupBooks(books) {
   const groups = new Map();
 
   for (const book of books) {
-    const isSeries = book.importMode === 'kindle_series' || Boolean(book.seriesKey || book.sourceUrl);
-    const key = isSeries ? book.seriesKey || book.sourceUrl : `single:${book.id}`;
+    const isSeries = isSeriesBook(book);
+    const key = isSeries ? book.seriesKey || book.sourceUrl || `series:${book.id}` : `single:${book.id}`;
     if (!groups.has(key)) {
       groups.set(key, {
         key,
@@ -622,6 +622,14 @@ function groupBooks(books) {
     group.seriesDiscoveryError = latestSeriesDiscoveryError(group.books);
     return group;
   });
+}
+
+function isSeriesBook(book) {
+  return (
+    book.importMode === 'kindle_series' ||
+    Boolean(book.seriesKey) ||
+    Number(book.seriesExpectedCount || 0) > 1
+  );
 }
 
 function sortedGroups(groups) {
