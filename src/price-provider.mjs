@@ -1249,7 +1249,8 @@ function compactFetchErrors(errors) {
   if (unique.length <= 4) return unique.join(' / ');
 
   const readerError = unique.findLast((error) => error.startsWith('reader:'));
-  return [...unique.slice(0, readerError ? 3 : 4), readerError].filter(Boolean).join(' / ');
+  const searchError = unique.findLast((error) => error.startsWith('/s?'));
+  return [...new Set([...unique.slice(0, readerError ? 2 : 3), searchError, readerError].filter(Boolean))].join(' / ');
 }
 
 function extractAmazonHtmlSnapshotFromHtml(html, asin, url, provider) {

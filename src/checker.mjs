@@ -249,6 +249,10 @@ async function refreshExistingSingleBookFromInput(id, input) {
         book.lastError = snapshotResult.error;
         updated = true;
       }
+      if (isUnresolvedSingleBook(book) && book.lastCheckedAt) {
+        book.lastCheckedAt = null;
+        updated = true;
+      }
       if (updated) book.updatedAt = now;
       publicResult = publicBook(book);
       return store;
@@ -1392,7 +1396,7 @@ async function checkOneBook(bookRef, options = {}) {
     const previousLowestEffectivePrice = book.lowestEffectivePrice;
 
     if (!snapshotResult.ok) {
-      book.lastCheckedAt = now;
+      book.lastCheckedAt = isUnresolvedSingleBook(book) ? null : now;
       book.updatedAt = now;
       book.lastError = snapshotResult.error;
       if (options.updateCursor) updateCheckCursor(store, book, now);
@@ -1632,6 +1636,17 @@ function isAmazonErrorPageBookTitle(title) {
     /(?:503|ServiceUnavailable|サービスが利用できません)/i.test(value) ||
     /(?:RobotCheck|CAPTCHA|ショッピングを続けてください)/i.test(value) ||
     /^Amazon\.co\.jp$/i.test(value)
+  );
+}
+
+function isUnresolvedSingleBook(book) {
+  if (!book || book.currentPrice != null) return false;
+  if ((book.importMode || 'single') !== 'single') return false;
+  const title = String(book.title || '');
+  return (
+    /^ASIN\s+[A-Z0-9]{10}$/i.test(title) ||
+    isAmazonErrorPageBookTitle(title) ||
+    book.provider === 'pending'
   );
 }
 
