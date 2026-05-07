@@ -95,10 +95,18 @@ export async function fetchKindleSeriesItems(input, options = {}) {
 
 function buildKindleSeriesResult(series) {
   const limit = readPositiveInteger(process.env.SERIES_IMPORT_LIMIT, null);
+  const items = normalizeKindleSeriesItemVolumes(series.items || []);
   return {
     ...series,
-    items: limit == null ? series.items : series.items.slice(0, limit)
+    items: limit == null ? items : items.slice(0, limit)
   };
+}
+
+function normalizeKindleSeriesItemVolumes(items) {
+  return items.map((item, index) => ({
+    ...item,
+    volume: item.volume || extractExternalVolumeFromTitle(item.title) || String(index + 1)
+  }));
 }
 
 function shouldTryAmazonSeriesReaderFallback(series, error) {
