@@ -1420,7 +1420,10 @@ function extractAmazonHtmlSnapshotFromHtml(html, asin, url, provider) {
   const allPrices = extractPrices(html);
   let currentPrice = kindleOffer.price ?? chooseLikelyKindlePrice(allPrices, html);
   let listPrice = extractListPrice(html, currentPrice);
-  currentPrice ??= inferDiscountedKindlePrice(html, listPrice);
+  const inferredPrice = inferDiscountedKindlePrice(html, listPrice);
+  if (shouldPreferInferredDiscountPrice({ currentPrice, inferredPrice, listPrice, html, explicitOffer: isExplicitKindleOffer(kindleOffer) })) {
+    currentPrice = inferredPrice;
+  }
   let currentPoints =
     kindleOffer.price != null
       ? kindleOffer.points ?? extractKindlePurchasePoints(html, currentPrice) ?? 0
@@ -1451,7 +1454,10 @@ function extractAmazonSearchSnapshotFromHtml(html, asin, url, provider) {
   const imageUrl = extractItemImage(fragment);
   const productUrl = absoluteAmazonHref(extractAsinHref(fragment, asin)) || amazonUrlForAsin(asin);
   let listPrice = extractListPrice(fragment, currentPrice);
-  currentPrice ??= inferDiscountedKindlePrice(fragment, listPrice);
+  const inferredPrice = inferDiscountedKindlePrice(fragment, listPrice);
+  if (shouldPreferInferredDiscountPrice({ currentPrice, inferredPrice, listPrice, html: fragment })) {
+    currentPrice = inferredPrice;
+  }
   let currentPoints = extractPointsNearPrice(fragment, currentPrice) ?? extractPoints(fragment, currentPrice);
   const corrected = correctImplausibleKindlePrice({ currentPrice, currentPoints, listPrice, prices, html: fragment });
   currentPrice = corrected.currentPrice;
@@ -2389,18 +2395,34 @@ function chooseLikelyKindlePrice(prices, html = '') {
   if (!prices.length) return null;
   const priceWithPoints = prices.find((price) => extractPointsNearPrice(html, price) != null);
   if (priceWithPoints != null) return priceWithPoints;
+  const explicitlyDisplayed = prices.find((price) => hasExplicitPriceDisplay(html, price));
+  if (explicitlyDisplayed != null) return explicitlyDisplayed;
   return prices[0];
 }
 
 function correctImplausibleKindlePrice({ currentPrice, currentPoints, listPrice, prices, html }) {
-  if (
-    isSuspiciousDiscountLikePrice(currentPrice, currentPoints, listPrice, prices) ||
-    isSuspiciousAboveListPrice(currentPrice, listPrice)
-  ) {
+  if (isSuspiciousAboveListPrice(currentPrice, listPrice)) {
     return { currentPrice: null, currentPoints: 0 };
   }
 
-  return { currentPrice, currentPoints };
+  const inferred = inferDiscountedKindlePrice(html, listPrice);
+  if (
+    currentPrice != null &&
+    inferred != null &&
+    inferred !== currentPrice &&
+    !hasExplicitPriceDisplay(html, currentPrice) &&
+    (isDiscountPercentValue(html, currentPrice) || isSuspiciousDiscountLikePrice(currentPrice, currentPoints, listPrice, prices))
+  ) {
+    return {
+      currentPrice: inferred,
+      currentPoints: sanitizePoints(extractPointsNearPrice(html, inferred) ?? 0, inferred)
+    };
+  }
+
+  return {
+    currentPrice,
+    currentPoints: sanitizePoints(currentPoints, currentPrice)
+  };
 }
 
 function inferDiscountedKindlePrice(html, listPrice) {
@@ -2415,6 +2437,19 @@ function inferDiscountedKindlePrice(html, listPrice) {
   }
 
   return null;
+}
+
+function shouldPreferInferredDiscountPrice({ currentPrice, inferredPrice, listPrice, html, explicitOffer = false }) {
+  if (inferredPrice == null || explicitOffer) return false;
+  if (currentPrice == null) return true;
+  if (!Number.isFinite(Number(listPrice)) || Number(listPrice) <= 0) return false;
+  if (hasExplicitPriceDisplay(html, currentPrice) && Number(currentPrice) < Number(listPrice)) return false;
+  if (Number(currentPrice) >= Number(listPrice)) return true;
+  return isDiscountPercentValue(html, currentPrice) && !hasExplicitPriceDisplay(html, currentPrice);
+}
+
+function isExplicitKindleOffer(offer = {}) {
+  return ['purchase_text', 'bifrost'].includes(String(offer.source || ''));
 }
 
 function discountInferenceScopes(html, listPrice) {
@@ -2450,6 +2485,40 @@ function extractDiscountPercent(html) {
   }
 
   return null;
+}
+
+function hasExplicitPriceDisplay(html, price) {
+  if (price == null || !Number.isFinite(Number(price))) return false;
+  const rawPrice = escapeRegExp(String(Math.round(Number(price))));
+  const commaPrice = escapeRegExp(Number(price).toLocaleString('ja-JP'));
+  const pattern = new RegExp(`(?:￥|¥)\\s*(?:${rawPrice}|${commaPrice})(?!\\s*%)`);
+  return priceEvidenceScopes(html).some((scope) => pattern.test(decodeJsonEscapes(decodeHtml(scope))));
+}
+
+function priceEvidenceScopes(html) {
+  const value = String(html || '');
+  return [
+    extractKindleSwatch(value),
+    extractFragmentAroundPattern(value, /ebook-price-value|priceToPay|kindleExtraMessage|oneClick|one-click|buybox|CoP-ActualPrice/i, 2200, 5200),
+    value.length <= 20000 ? value : ''
+  ].filter(Boolean);
+}
+
+function isDiscountPercentValue(html, value) {
+  if (value == null || !Number.isFinite(Number(value))) return false;
+  const percent = Math.round(Number(value));
+  if (percent <= 0 || percent >= 100) return false;
+  const text = cleanText(decodeJsonEscapes(html)).replace(/\s+/g, '');
+  const escaped = escapeRegExp(String(percent));
+  return new RegExp(`(?:-|−)?${escaped}(?:パーセント|%)|${escaped}(?:パーセント|%)OFF|${escaped}(?:パーセント|%)オフ`, 'i').test(text);
+}
+
+function sanitizePoints(points, currentPrice) {
+  const pointValue = Number(points || 0);
+  const price = Number(currentPrice);
+  if (!Number.isFinite(pointValue) || pointValue < 0) return 0;
+  if (Number.isFinite(price) && price >= 0 && pointValue > price) return 0;
+  return Math.round(pointValue);
 }
 
 function isSuspiciousDiscountLikePrice(currentPrice, currentPoints, listPrice, prices = []) {
@@ -2589,7 +2658,8 @@ function extractPurchaseTextOffer(html) {
   const price = parsePrice(match[1]);
   return {
     price,
-    points: parseOptionalPoints(match[2] || match[3] || match[4])
+    points: parseOptionalPoints(match[2] || match[3] || match[4]),
+    source: 'purchase_text'
   };
 }
 
@@ -2603,12 +2673,13 @@ function extractScopedKindlePriceOffer(html) {
     if (points != null && points > nonZeroPrice) continue;
     return {
       price: nonZeroPrice,
-      points
+      points,
+      source: 'scoped_price'
     };
   }
 
   if (prices.includes(0) && !/Kindle Unlimited/i.test(text)) {
-    return { price: 0, points: 0 };
+    return { price: 0, points: 0, source: 'scoped_price' };
   }
 
   return { price: null, points: null };
@@ -2657,7 +2728,8 @@ function matchBifrostPrice(value, asin) {
   const match = text.match(pattern);
   return {
     price: match ? parsePrice(match[1]) : null,
-    points: null
+    points: null,
+    source: match ? 'bifrost' : ''
   };
 }
 

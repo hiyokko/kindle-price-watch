@@ -159,20 +159,15 @@ function suspiciousStoredPrice(book) {
   const points = Number(book.currentPoints || 0);
   if (Number.isFinite(points) && points > price) return true;
 
-  const reference = Math.max(Number(book.listPrice) || 0, Number(book.previousEffectivePrice) || 0);
-  return isSuspiciousLowPrice(price, reference);
+  const listPrice = Number(book.listPrice);
+  return Number.isFinite(listPrice) && listPrice > 0 && price > listPrice * 1.15;
 }
 
 function suspiciousStoredFloor(book) {
   const floor = Number(book.lowestPrice);
   if (!Number.isFinite(floor) || floor <= 0) return false;
-  const reference = Math.max(Number(book.currentPrice) || 0, Number(book.listPrice) || 0);
-  return isSuspiciousLowPrice(floor, reference);
-}
-
-function isSuspiciousLowPrice(price, reference) {
-  const lowPriceMax = positiveInteger(process.env.SUSPICIOUS_LOW_PRICE_MAX, 60);
-  return price <= lowPriceMax && Number.isFinite(reference) && reference >= price * 3;
+  const listPrice = Number(book.listPrice);
+  return Number.isFinite(listPrice) && listPrice > 0 && floor > listPrice * 1.15;
 }
 
 function positiveInteger(value, fallback) {

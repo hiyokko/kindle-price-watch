@@ -1068,23 +1068,8 @@ function isImplausibleStoredSeriesPrice(book, item) {
   if (book.currentPrice == null || item.currentPrice == null) return false;
   const listPrice = Number(book.listPrice ?? item.listPrice);
   if (Number.isFinite(listPrice) && listPrice > 0 && Number(book.currentPrice) > listPrice * 1.15) return true;
-  if (
-    Number.isFinite(listPrice) &&
-    listPrice > 0 &&
-    isExternalSeriesPriceProvider(item.provider) &&
-    String(book.provider || '').toLowerCase() === 'amazon_html' &&
-    Number(book.currentPrice) <= listPrice * 0.3 &&
-    Number(item.currentPrice) >= Number(book.currentPrice) * 2 &&
-    Number(item.currentPrice) <= listPrice * 1.15
-  ) {
-    return true;
-  }
   const currentPoints = Number(book.currentPoints || 0);
-  return (
-    currentPoints > 0 &&
-    currentPoints / Number(book.currentPrice) >= 0.5 &&
-    Number(item.currentPrice) >= Number(book.currentPrice) * 2
-  );
+  return currentPoints > Number(book.currentPrice);
 }
 
 function repairImplausibleSeriesPriceHistory(book, store) {
@@ -1104,21 +1089,18 @@ function hasImplausibleSeriesPriceHistory(book, store) {
 function hasImplausibleSeriesPriceFloor(book) {
   if (!book || book.currentPrice == null) return false;
   const floor = Number(book.lowestPrice);
-  const currentPrice = Number(book.currentPrice);
   const listPrice = Number(book.listPrice);
-  if (!Number.isFinite(floor) || !Number.isFinite(currentPrice) || floor <= 0) return false;
-  if (!Number.isFinite(listPrice) || listPrice <= 0) return currentPrice >= floor * 2;
-  return floor <= listPrice * 0.3 && currentPrice >= floor * 2 && currentPrice <= listPrice * 1.15;
+  if (!Number.isFinite(floor) || floor <= 0) return false;
+  return Number.isFinite(listPrice) && listPrice > 0 && floor > listPrice * 1.15;
 }
 
 function isImplausibleSeriesHistoryEntry(entry, book) {
   if (String(entry.provider || '').toLowerCase() !== 'amazon_html') return false;
   const historyPrice = Number(entry.price);
-  const currentPrice = Number(book.currentPrice);
   const listPrice = Number(book.listPrice);
-  if (!Number.isFinite(historyPrice) || !Number.isFinite(currentPrice) || historyPrice <= 0) return false;
-  if (!Number.isFinite(listPrice) || listPrice <= 0) return currentPrice >= historyPrice * 2;
-  return historyPrice <= listPrice * 0.3 && currentPrice >= historyPrice * 2 && currentPrice <= listPrice * 1.15;
+  if (!Number.isFinite(historyPrice) || historyPrice <= 0) return false;
+  if (Number(entry.points || 0) > historyPrice) return true;
+  return Number.isFinite(listPrice) && listPrice > 0 && historyPrice > listPrice * 1.15;
 }
 
 function shouldClearUnvalidatedSourcePrice(book, item) {
@@ -1288,10 +1270,6 @@ function suspiciousPriceReason({ price, points = 0, effectivePrice = null, listP
       .map((value) => Number(value))
       .filter((value) => Number.isFinite(value) && value > 0)
   );
-  const lowPriceMax = floorNumber(process.env.SUSPICIOUS_LOW_PRICE_MAX, 1, 60);
-  if (Number.isFinite(reference) && current <= lowPriceMax && reference >= current * 3) {
-    return '割引率またはポイントを価格として読んだ可能性があります';
-  }
 
   const effective = Number(effectivePrice);
   if (
