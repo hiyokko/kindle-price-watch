@@ -39,7 +39,11 @@ export async function addBook(input) {
     throw error;
   }
 
-  const book = await buildBookFromAsin(asin, { fetchDetails: true, inputUrl: input });
+  const book = await buildBookFromAsin(asin, {
+    fetchDetails: true,
+    inputUrl: input,
+    sourceUrl: String(input || '').trim()
+  });
   const now = book.createdAt;
 
   await updateStore((store) => {
@@ -1392,7 +1396,7 @@ function sharedWebhookUrlLoader() {
 
 async function settleSnapshot(asin, book = {}) {
   try {
-    const snapshot = await fetchBookSnapshot(asin, { url: book.amazonUrl || '' });
+    const snapshot = await fetchBookSnapshot(asin, { url: book.sourceUrl || book.amazonUrl || '' });
     return { ok: true, snapshot };
   } catch (error) {
     return { ok: false, error: error.message };
@@ -1471,7 +1475,7 @@ async function buildBookFromAsin(asin, options = {}) {
     lowestEffectivePrice: snapshot.effectivePrice,
     previousEffectivePrice: null,
     provider: snapshot.provider,
-    sourceUrl: options.sourceUrl || '',
+    sourceUrl: options.sourceUrl || seed.sourceUrl || '',
     importMode: options.importMode || 'single',
     seriesCompleted: Boolean(options.seriesCompleted || seed.seriesCompleted),
     seriesCompletedAt: options.seriesCompleted || seed.seriesCompleted ? now : '',
