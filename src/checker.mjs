@@ -64,7 +64,7 @@ export async function addBooksFromInput(input) {
   let series;
 
   if (explicitSeriesUrl) {
-    series = await fetchSeriesCandidates(input);
+    series = await fetchSeriesCandidates(input, { allowIncomplete: true });
     if (!series) {
       const error = new Error('シリーズ内のKindle ASINを取得できませんでした');
       error.status = 422;
@@ -373,7 +373,8 @@ async function fetchSeriesCandidates(input, options = {}) {
   if (candidates.length === 0) return null;
   const merged = candidates.reduce((result, series) => mergeSeriesCandidate(result, series));
   const resolved = await resolveSeriesCandidateDiffs(merged, candidates);
-  return isIncompleteSeriesCandidate(resolved) ? null : resolved;
+  if (!isIncompleteSeriesCandidate(resolved)) return resolved;
+  return options.allowIncomplete && resolved.items.length > 1 ? resolved : null;
 }
 
 function seriesNamesForSaleBon(candidates) {
@@ -545,9 +546,9 @@ function applySeriesDiscoveryMetadata(book, options = {}) {
 }
 
 function isIncompleteSeriesCandidate(series) {
-  const expected = Number(series?.expectedVolumeCount) || 0;
-  const actual = Array.isArray(series?.items) ? series.items.length : 0;
-  return expected > actual;
+  const items = Array.isArray(series?.items) ? series.items : [];
+  const expected = Math.max(Number(series?.expectedVolumeCount) || 0, maxSeriesItemVolume(items), items.length);
+  return seriesCompletenessErrors(items, expected).length > 0;
 }
 
 function mergeSeriesItemSeed(base, overlay) {
@@ -587,7 +588,13 @@ function chooseSeriesImageSeed(base, overlay) {
 
 async function resolveSeriesCandidateDiffs(series, candidates) {
   const diffAsins = findSeriesCandidateDiffAsins(candidates);
-  if (diffAsins.size === 0 && !hasSeriesItemsNeedingBackfill(series.items)) return series;
+  if (diffAsins.size === 0 && !hasSeriesItemsNeedingBackfill(series.items)) {
+    return withSeriesReconciliation(series, {
+      diffAsins,
+      enriched: 0,
+      errors: []
+    });
+  }
 
   const itemsByAsin = new Map(series.items.map((item) => [item.asin, { ...item }]));
   const candidateItemsByAsin = collectCandidateItemsByAsin(candidates);
@@ -656,27 +663,75 @@ async function resolveSeriesCandidateDiffs(series, candidates) {
     }
   }
 
-  const items = [...itemsByAsin.values()].sort(compareSeriesItemSeeds);
+  return withSeriesReconciliation({
+    ...series,
+    items: [...itemsByAsin.values()]
+  }, {
+    diffAsins,
+    enriched,
+    errors
+  });
+}
+
+function withSeriesReconciliation(series, metadata = {}) {
+  const items = [...(series.items || [])].sort(compareSeriesItemSeeds);
   const expectedVolumeCount = Math.max(
     Number(series.expectedVolumeCount) || 0,
     maxSeriesItemVolume(items),
     items.length
   );
-  const errorsWithIncomplete =
-    expectedVolumeCount > items.length
-      ? [...errors, `series incomplete: ${items.length}/${expectedVolumeCount} books resolved`]
-      : errors;
+  const errors = [
+    ...(metadata.errors || []),
+    ...seriesCompletenessErrors(items, expectedVolumeCount)
+  ];
+
   return {
     ...series,
     expectedVolumeCount,
     items,
     reconciliation: {
-      diffAsins: [...diffAsins],
-      enriched,
+      diffAsins: [...(metadata.diffAsins || [])],
+      enriched: metadata.enriched || 0,
       unresolvedAsins: items.filter((item) => item.currentPrice == null).map((item) => item.asin),
-      errors: errorsWithIncomplete
+      errors: [...new Set(errors)]
     }
   };
+}
+
+function seriesCompletenessErrors(items, expectedVolumeCount) {
+  const expected = Number(expectedVolumeCount) || 0;
+  if (!expected || !Array.isArray(items) || items.length === 0) return [];
+
+  const volumes = new Set(
+    items.map(seriesItemVolume).filter((value) => Number.isFinite(value) && value > 0)
+  );
+  const missingVolumes = [];
+  for (let volume = 1; volume <= expected; volume += 1) {
+    if (!volumes.has(volume)) missingVolumes.push(volume);
+  }
+
+  if (expected <= items.length && missingVolumes.length === 0) return [];
+
+  const missingText = missingVolumes.length
+    ? `; missing volumes ${compactNumberRanges(missingVolumes).join(',')}`
+    : '';
+  return [`series incomplete: ${items.length}/${expected} books resolved${missingText}`];
+}
+
+function compactNumberRanges(numbers) {
+  const sorted = [...new Set(numbers)].sort((left, right) => left - right);
+  const ranges = [];
+  for (let index = 0; index < sorted.length;) {
+    const start = sorted[index];
+    let end = start;
+    while (sorted[index + 1] === end + 1) {
+      index += 1;
+      end = sorted[index];
+    }
+    ranges.push(start === end ? String(start) : `${start}-${end}`);
+    index += 1;
+  }
+  return ranges;
 }
 
 function shouldUseSourcePriceFallback(series, itemsByAsin) {
@@ -1557,7 +1612,7 @@ async function discoverSeriesUpdates(options = {}) {
     }
 
     try {
-      const result = await addBooksFromInput(group.sourceUrl);
+      const result = await addBooksFromInput(seriesDiscoveryInput(group.sourceUrl, group.seriesKey));
       const newBooks = Number(result.imported || 0);
       const seriesCompleted = Boolean(result.seriesCompleted);
       added += newBooks;
@@ -1644,7 +1699,12 @@ function rotateSeriesGroupsAfterCursor(groups, lastSeriesKey = '') {
 
 function seriesInputFromSeriesKey(seriesKey = '') {
   const match = String(seriesKey).match(/^series:asin:([A-Z0-9]{10})$/i);
-  return match ? amazonUrlForAsin(match[1].toUpperCase()) : '';
+  return match ? kindleSeriesUrlForAsin(match[1].toUpperCase()) : '';
+}
+
+function seriesDiscoveryInput(sourceUrl = '', seriesKey = '') {
+  const asin = extractAsin(sourceUrl) || String(seriesKey || '').match(/^series:asin:([A-Z0-9]{10})$/i)?.[1];
+  return asin ? kindleSeriesUrlForAsin(asin.toUpperCase()) : sourceUrl;
 }
 
 function seriesTitleFromBook(book) {
@@ -2150,7 +2210,14 @@ function seriesKeyForSeries(input, series = {}) {
 
 function seriesSourceUrlFor(input, series = {}) {
   const asin = series.sourceAsin || extractAsin(input);
-  return asin ? amazonUrlForAsin(asin) : String(input || '').trim();
+  return asin ? kindleSeriesUrlForAsin(asin) : String(input || '').trim();
+}
+
+function kindleSeriesUrlForAsin(asin) {
+  const url = new URL(amazonUrlForAsin(asin));
+  url.searchParams.set('binding', 'kindle_edition');
+  url.searchParams.set('ref_', 'dbs_s_ks_series_rwt_tkin');
+  return url.toString();
 }
 
 function isSameSeriesSource(left, right, sourceAsin = '') {

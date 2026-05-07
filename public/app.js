@@ -571,7 +571,9 @@ function addResultMessage(data) {
     }
     const skipped = data.skippedDuplicates > 0 ? `、重複${data.skippedDuplicates}冊をスキップ` : '';
     const updated = data.updatedDuplicates > 0 ? `、既存${data.updatedDuplicates}冊を補完` : '';
-    return `シリーズから${data.imported}冊を追加しました${skipped}${updated}`;
+    const incomplete = Array.isArray(data.errors) && data.errors.some((entry) => /series incomplete/i.test(String(entry)));
+    const incompleteText = incomplete ? '（一部未取得。次回以降も補完します）' : '';
+    return `シリーズから${data.imported}冊を追加しました${skipped}${updated}${incompleteText}`;
   }
 
   if (data.book) {
