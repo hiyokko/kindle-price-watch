@@ -199,7 +199,11 @@ export async function addBooksFromInput(input) {
 }
 
 async function detectCollectionSeries(input) {
-  return fetchSeriesCandidates(input, { requireCollectionPage: true });
+  return fetchSeriesCandidates(input, {
+    requireCollectionPage: true,
+    allowReaderFallback: false,
+    skipExternalFallback: true
+  });
 }
 
 async function fetchSeriesCandidates(input, options = {}) {
@@ -212,19 +216,21 @@ async function fetchSeriesCandidates(input, options = {}) {
     // Fall back below.
   }
 
-  try {
-    const series = await fetchExternalKindleSeriesItems(input);
-    if (series?.items?.length > 1) candidates.push(series);
-  } catch {
-    // No usable external fallback.
-  }
-
-  for (const seriesName of seriesNamesForSaleBon(candidates)) {
+  if (!options.skipExternalFallback) {
     try {
-      const series = await fetchSaleBonKindleSeriesItems(seriesName, { sourceAsin: extractAsin(input) });
+      const series = await fetchExternalKindleSeriesItems(input);
       if (series?.items?.length > 1) candidates.push(series);
     } catch {
-      // Sale-bon is an optional fallback; ignore failures and use the other candidates.
+      // No usable external fallback.
+    }
+
+    for (const seriesName of seriesNamesForSaleBon(candidates)) {
+      try {
+        const series = await fetchSaleBonKindleSeriesItems(seriesName, { sourceAsin: extractAsin(input) });
+        if (series?.items?.length > 1) candidates.push(series);
+      } catch {
+        // Sale-bon is an optional fallback; ignore failures and use the other candidates.
+      }
     }
   }
 

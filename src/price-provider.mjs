@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 
 const ASIN_PATTERN = /[A-Z0-9]{10}/i;
 const ASIN_GLOBAL_PATTERN = /[A-Z0-9]{10}/gi;
+const DEFAULT_FETCH_TIMEOUT_MS = 4000;
 
 const AMAZON_HEADERS = {
   Accept: 'text/html,application/xhtml+xml',
@@ -61,7 +62,7 @@ export async function fetchKindleSeriesItems(input, options = {}) {
   let amazonError = null;
 
   try {
-    const { url, html } = await fetchAmazonSeriesHtml(input);
+    const { url, html } = await fetchAmazonSeriesHtml(input, options);
     let items = extractKindleSeriesItemsFromHtml(html);
 
     if (options.requireCollectionPage && !isKindleCollectionPage(html, sourceAsin, items)) {
@@ -80,7 +81,7 @@ export async function fetchKindleSeriesItems(input, options = {}) {
     amazonError = error;
   }
 
-  if (shouldTryAmazonSeriesReaderFallback(amazonResult, amazonError)) {
+  if (options.allowReaderFallback !== false && shouldTryAmazonSeriesReaderFallback(amazonResult, amazonError)) {
     try {
       const readerResult = await fetchKindleSeriesItemsFromAmazonReader(input, options);
       if (isBetterKindleSeriesResult(readerResult, amazonResult)) return readerResult;
@@ -129,13 +130,13 @@ function isBetterKindleSeriesResult(candidate, current) {
   return false;
 }
 
-async function fetchAmazonSeriesHtml(input) {
+async function fetchAmazonSeriesHtml(input, options = {}) {
   const urls = kindleSeriesCandidateUrls(input);
   let lastError;
 
   for (const url of urls) {
     try {
-      return { url, html: await fetchAmazonHtml(url) };
+      return { url, html: await fetchAmazonHtml(url, options) };
     } catch (error) {
       lastError = error;
     }
@@ -810,7 +811,7 @@ async function fetchKindleSeriesItemsFromAmazonReader(input, options = {}) {
 
   for (const sourceUrl of urls) {
     try {
-      const text = await fetchHtml(amazonReaderUrl(sourceUrl));
+      const text = await fetchHtml(amazonReaderUrl(sourceUrl), options);
       const result = extractKindleSeriesItemsFromAmazonReaderText(text, input, sourceUrl, options);
       if (result.items.length > 1) return result;
       lastError = new Error('readerでシリーズ内のKindle ASINを取得できませんでした');
@@ -1300,23 +1301,66 @@ function safeExtractAmazonHtmlSnapshotFromHtml(html, asin, url, provider) {
   }
 }
 
-async function fetchAmazonHtml(url) {
-  return fetchHtml(url, { rejectRobotCheck: true });
+async function fetchAmazonHtml(url, options = {}) {
+  return fetchHtml(url, { ...options, rejectRobotCheck: true });
 }
 
 async function fetchHtml(url, options = {}) {
-  const response = await fetch(url, { headers: AMAZON_HEADERS });
+  const timeoutMs = readPositiveInteger(
+    options.timeoutMs ?? process.env.HTTP_FETCH_TIMEOUT_MS,
+    DEFAULT_FETCH_TIMEOUT_MS
+  );
+  const { signal, cleanup } = requestSignal(options.signal, timeoutMs);
 
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}`);
+  try {
+    const response = await fetch(url, { headers: AMAZON_HEADERS, signal });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const html = await response.text();
+    if (options.rejectRobotCheck && /captcha|robot check|自動化されたアクセス/i.test(html)) {
+      throw new Error('Amazonにブロックされました');
+    }
+
+    return html;
+  } catch (error) {
+    if (isAbortError(error) || signal?.aborted) {
+      throw new Error('HTTP取得がタイムアウトしました');
+    }
+    throw error;
+  } finally {
+    cleanup();
+  }
+}
+
+function requestSignal(externalSignal, timeoutMs) {
+  if (!externalSignal && !timeoutMs) return { signal: undefined, cleanup: () => {} };
+
+  const controller = new AbortController();
+  let timeoutId = null;
+  const abort = () => {
+    if (!controller.signal.aborted) controller.abort();
+  };
+
+  if (externalSignal) {
+    if (externalSignal.aborted) abort();
+    else externalSignal.addEventListener('abort', abort, { once: true });
   }
 
-  const html = await response.text();
-  if (options.rejectRobotCheck && /captcha|robot check|自動化されたアクセス/i.test(html)) {
-    throw new Error('Amazonにブロックされました');
-  }
+  if (timeoutMs) timeoutId = setTimeout(abort, timeoutMs);
 
-  return html;
+  return {
+    signal: controller.signal,
+    cleanup: () => {
+      if (timeoutId) clearTimeout(timeoutId);
+      if (externalSignal) externalSignal.removeEventListener('abort', abort);
+    }
+  };
+}
+
+function isAbortError(error) {
+  return error?.name === 'AbortError' || error?.code === 'ABORT_ERR';
 }
 
 function normalizeSnapshot(snapshot) {
