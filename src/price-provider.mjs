@@ -1257,12 +1257,16 @@ function extractAmazonHtmlSnapshotFromHtml(html, asin, url, provider) {
   const base = extractAmazonHtmlSnapshotBase(html, asin, url, provider);
   const kindleOffer = extractKindlePurchaseOffer(html, asin);
   const allPrices = extractPrices(html);
-  const currentPrice = kindleOffer.price ?? chooseLikelyKindlePrice(allPrices);
-  const listPrice = extractListPrice(html, currentPrice);
-  const currentPoints =
+  let currentPrice = kindleOffer.price ?? chooseLikelyKindlePrice(allPrices);
+  let listPrice = extractListPrice(html, currentPrice);
+  let currentPoints =
     kindleOffer.price != null
       ? kindleOffer.points ?? 0
       : extractPointsNearPrice(html, currentPrice) ?? extractPoints(html, currentPrice);
+  const corrected = correctImplausibleKindlePrice({ currentPrice, currentPoints, listPrice, prices: allPrices, html });
+  currentPrice = corrected.currentPrice;
+  currentPoints = corrected.currentPoints;
+  listPrice = extractListPrice(html, currentPrice) ?? listPrice;
 
   return normalizeSnapshot({
     ...base,
@@ -1277,13 +1281,19 @@ function extractAmazonSearchSnapshotFromHtml(html, asin, url, provider) {
   if (!fragment) throw new Error('Amazon検索結果に商品が見つかりません');
 
   const prices = extractPrices(fragment);
-  const currentPrice = chooseLikelyKindlePrice(prices);
+  let currentPrice = chooseLikelyKindlePrice(prices);
   const title =
     cleanTitle(fragment.match(/<h2\b[^>]*aria-label=["']([^"']+)["']/i)?.[1] || '') ||
     cleanTitle(fragment.match(/<h2\b[\s\S]*?<span\b[^>]*>([\s\S]*?)<\/span>/i)?.[1] || '') ||
     extractItemTitle(fragment, asin);
   const imageUrl = extractItemImage(fragment);
   const productUrl = absoluteAmazonHref(extractAsinHref(fragment, asin)) || amazonUrlForAsin(asin);
+  let currentPoints = extractPointsNearPrice(fragment, currentPrice) ?? extractPoints(fragment, currentPrice);
+  let listPrice = extractListPrice(fragment, currentPrice);
+  const corrected = correctImplausibleKindlePrice({ currentPrice, currentPoints, listPrice, prices, html: fragment });
+  currentPrice = corrected.currentPrice;
+  currentPoints = corrected.currentPoints;
+  listPrice = extractListPrice(fragment, currentPrice) ?? listPrice;
 
   return normalizeSnapshot({
     asin,
@@ -1293,8 +1303,8 @@ function extractAmazonSearchSnapshotFromHtml(html, asin, url, provider) {
     imageUrl,
     amazonUrl: productUrl,
     currentPrice,
-    currentPoints: extractPoints(fragment),
-    listPrice: extractListPrice(fragment, currentPrice),
+    currentPoints,
+    listPrice,
     provider
   });
 }
@@ -2075,6 +2085,33 @@ function extractPrices(html) {
 function chooseLikelyKindlePrice(prices) {
   if (!prices.length) return null;
   return prices[0];
+}
+
+function correctImplausibleKindlePrice({ currentPrice, currentPoints, listPrice, prices, html }) {
+  if (!isSuspiciousDiscountLikePrice(currentPrice, currentPoints, listPrice, prices)) {
+    return { currentPrice, currentPoints };
+  }
+
+  const maxReference = Math.max(listPrice || 0, ...prices);
+  const replacement = prices
+    .filter((price) => price > currentPrice)
+    .filter((price) => !maxReference || price <= maxReference)
+    .filter((price) => !listPrice || price >= listPrice * 0.5 || price === maxReference)
+    .sort((a, b) => a - b)[0];
+  if (replacement == null) return { currentPrice, currentPoints };
+
+  return {
+    currentPrice: replacement,
+    currentPoints: extractPointsNearPrice(html, replacement) ?? extractPoints(html, replacement)
+  };
+}
+
+function isSuspiciousDiscountLikePrice(currentPrice, currentPoints, listPrice, prices = []) {
+  if (currentPrice == null || currentPrice <= 0) return false;
+  if (!currentPoints || currentPoints / currentPrice < 0.5) return false;
+  const maxPrice = Math.max(listPrice || 0, ...prices);
+  if (!maxPrice || maxPrice < currentPrice * 4) return false;
+  return !listPrice || currentPrice <= listPrice * 0.3;
 }
 
 function extractBulkOfferUnitPrice(html, expectedCount = 0) {
