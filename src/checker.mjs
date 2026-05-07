@@ -922,6 +922,7 @@ function shouldRefreshSeriesPrice(book, item) {
   if (item.currentPrice == null) return false;
   if (book.currentPrice == null) return true;
   if (book.currentPrice === 0 && item.currentPrice > 0) return true;
+  if (isImplausibleStoredSeriesPrice(book, item)) return true;
   if (seriesPriceProviderRank(item.provider) > seriesPriceProviderRank(book.provider)) return true;
   if (
     seriesPriceProviderRank(item.provider) === seriesPriceProviderRank(book.provider) &&
@@ -932,6 +933,18 @@ function shouldRefreshSeriesPrice(book, item) {
     return true;
   }
   return book.provider === 'curated_series' && item.provider && item.provider !== 'curated_series';
+}
+
+function isImplausibleStoredSeriesPrice(book, item) {
+  if (book.currentPrice == null || item.currentPrice == null) return false;
+  const listPrice = Number(book.listPrice ?? item.listPrice);
+  if (Number.isFinite(listPrice) && listPrice > 0 && Number(book.currentPrice) > listPrice * 1.15) return true;
+  const currentPoints = Number(book.currentPoints || 0);
+  return (
+    currentPoints > 0 &&
+    currentPoints / Number(book.currentPrice) >= 0.5 &&
+    Number(item.currentPrice) >= Number(book.currentPrice) * 2
+  );
 }
 
 function shouldClearUnvalidatedSourcePrice(book, item) {
