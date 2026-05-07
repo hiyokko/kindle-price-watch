@@ -220,7 +220,8 @@ async function fetchSeriesCandidates(input, options = {}) {
 
   if (candidates.length === 0) return null;
   const merged = candidates.reduce((result, series) => mergeSeriesCandidate(result, series));
-  return resolveSeriesCandidateDiffs(merged, candidates);
+  const resolved = await resolveSeriesCandidateDiffs(merged, candidates);
+  return isIncompleteSeriesCandidate(resolved) ? null : resolved;
 }
 
 function seriesNamesForSaleBon(candidates) {
@@ -265,6 +266,12 @@ function mergeSeriesCandidate(primary, secondary) {
     provider: [base.provider, overlay.provider].filter(Boolean).join('+') || base.provider,
     items
   };
+}
+
+function isIncompleteSeriesCandidate(series) {
+  const expected = Number(series?.expectedVolumeCount) || 0;
+  const actual = Array.isArray(series?.items) ? series.items.length : 0;
+  return expected > actual;
 }
 
 function mergeSeriesItemSeed(base, overlay) {

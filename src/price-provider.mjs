@@ -89,10 +89,12 @@ export async function fetchExternalKindleSeriesItems(input) {
       const items = extractExternalKindleSeriesItemsFromHtml(html, sourceAsin);
       if (items.length > 1) {
         const limit = readPositiveInteger(process.env.SERIES_IMPORT_LIMIT, null);
+        const expectedVolumeCount = externalExpectedVolumeCount(html, items);
+        if (limit == null && expectedVolumeCount > items.length) continue;
         return {
           seriesName: extractExternalSeriesName(html),
           sourceAsin,
-          expectedVolumeCount: extractSeriesExpectedCount(html) || maxSeriesItemVolume(items) || items.length,
+          expectedVolumeCount,
           items: limit == null ? items : items.slice(0, limit),
           provider: 'external_series'
         };
@@ -203,9 +205,13 @@ export function extractExternalKindleSeriesItemsFromHtml(html, sourceAsin = '') 
 
   const context = { seriesName, seriesImageUrl };
   const cardItems = extractExternalSeriesCardItems(value, context);
-  const items = cardItems.length > 1 ? cardItems : extractExternalSeriesLinkItems(value, context);
+  const items = cardItems.length > 0 ? cardItems : extractExternalSeriesLinkItems(value, context);
 
   return items.sort(compareExternalSeriesItems);
+}
+
+function externalExpectedVolumeCount(html, items) {
+  return extractSeriesExpectedCount(html) || maxSeriesItemVolume(items) || items.length;
 }
 
 function extractExternalAmazonLinks(html) {
