@@ -3,7 +3,10 @@ import path from 'node:path';
 
 export function loadEnv() {
   const envPath = path.join(process.cwd(), '.env');
-  if (!existsSync(envPath)) return;
+  if (!existsSync(envPath)) {
+    normalizeRuntimeEnv();
+    return;
+  }
 
   const content = readFileSync(envPath, 'utf8');
   for (const rawLine of content.split(/\r?\n/)) {
@@ -23,9 +26,43 @@ export function loadEnv() {
     }
 
     if (!process.env[key]) {
-      process.env[key] = value;
+      process.env[key] = normalizeEnvValue(value, key);
     }
   }
+
+  normalizeRuntimeEnv();
+}
+
+function normalizeRuntimeEnv() {
+  const names = [
+    'BLOB_READ_WRITE_TOKEN',
+    'DISCORD_WEBHOOK_URL',
+    'DISCORD_WEBHOOK_URLS',
+    'APP_PASSWORD',
+    'APP_SESSION_SECRET',
+    'CRON_SECRET',
+    'KEEPA_API_KEY'
+  ];
+
+  for (const name of names) {
+    if (process.env[name] != null) {
+      process.env[name] = normalizeEnvValue(process.env[name], name);
+    }
+  }
+}
+
+function normalizeEnvValue(value, key = '') {
+  let normalized = String(value || '').trim();
+  if (key && normalized.startsWith(`${key}=`)) {
+    normalized = normalized.slice(key.length + 1).trim();
+  }
+  if (
+    (normalized.startsWith('"') && normalized.endsWith('"')) ||
+    (normalized.startsWith("'") && normalized.endsWith("'"))
+  ) {
+    normalized = normalized.slice(1, -1);
+  }
+  return normalized;
 }
 
 export function readBooleanEnv(name, fallback) {
