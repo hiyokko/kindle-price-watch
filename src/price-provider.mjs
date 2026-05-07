@@ -157,9 +157,15 @@ function kindleSeriesCandidateUrls(input) {
   const asin = extractAsin(input);
   if (asin) {
     const host = process.env.AMAZON_HOST || 'www.amazon.co.jp';
+    add(`https://${host}/dp/${asin}`);
     add(`https://${host}/dp/${asin}?binding=kindle_edition&ref_=dbs_s_ks_series_rwt_tkin`);
     add(`https://${host}/dp/${asin}?binding=kindle_edition&ref=dbs_dp_rwt_sb_pc_tkin`);
+    add(`https://${host}/gp/product/${asin}`);
+    add(`https://${host}/gp/product/${asin}?storeType=ebooks`);
     add(`https://${host}/gp/product/${asin}?binding=kindle_edition&ref_=dbs_s_ks_series_rwt_tkin`);
+    add(`https://${host}/kindle-dbs/product/${asin}`);
+    add(`https://${host}/-/en/dp/${asin}`);
+    add(`https://${host}/-/en/gp/product/${asin}`);
   }
 
   return urls;
