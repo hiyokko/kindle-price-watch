@@ -9,8 +9,8 @@ on:
         type: boolean
         default: true
   schedule:
-    # Daily 03:00 JST. GitHub cron uses UTC.
-    - cron: "0 18 * * *"
+    # Daily 16:00 JST. GitHub cron uses UTC.
+    - cron: "0 7 * * *"
 
 concurrency:
   group: kindle-price-check
