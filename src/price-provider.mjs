@@ -1422,8 +1422,8 @@ function extractAmazonHtmlSnapshotFromHtml(html, asin, url, provider) {
   currentPrice ??= inferDiscountedKindlePrice(html, listPrice);
   let currentPoints =
     kindleOffer.price != null
-      ? kindleOffer.points ?? 0
-      : extractPointsNearPrice(html, currentPrice) ?? extractPoints(html, currentPrice);
+      ? kindleOffer.points ?? extractKindlePurchasePoints(html, currentPrice) ?? 0
+      : extractPointsNearPrice(html, currentPrice) ?? extractKindlePurchasePoints(html, currentPrice) ?? extractPoints(html, currentPrice);
   const corrected = correctImplausibleKindlePrice({ currentPrice, currentPoints, listPrice, prices: allPrices, html });
   currentPrice = corrected.currentPrice;
   currentPoints = corrected.currentPoints;
@@ -2514,6 +2514,23 @@ function extractScopedKindlePriceOffer(html) {
   }
 
   return { price: null, points: null };
+}
+
+function extractKindlePurchasePoints(html, currentPrice) {
+  const scopes = [
+    extractKindleSwatch(html),
+    extractFragmentAroundPattern(html, /ebook-price-value|priceToPay|kindleExtraMessage|oneClick|one-click|buybox|CoP-ActualPrice/i, 2200, 5200)
+  ].filter(Boolean);
+
+  for (const scope of scopes) {
+    const near = extractPointsNearPrice(scope, currentPrice);
+    if (near != null) return near;
+
+    const scoped = extractPoints(scope, currentPrice);
+    if (scoped > 0) return scoped;
+  }
+
+  return null;
 }
 
 function extractBifrostOffer(html, asin) {
