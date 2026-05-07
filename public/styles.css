@@ -442,6 +442,64 @@ button:disabled {
   overflow: hidden;
 }
 
+.book-grid > .book-card {
+  grid-template-columns: 64px minmax(0, 1fr);
+  min-height: 112px;
+}
+
+.book-grid > .book-card .book-body {
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "head actions"
+    "prices prices"
+    "error error";
+  gap: 8px 12px;
+  padding: 12px;
+  align-content: center;
+}
+
+.book-grid > .book-card .book-head {
+  grid-area: head;
+  align-items: flex-start;
+}
+
+.book-grid > .book-card .price-strip {
+  grid-area: prices;
+}
+
+.book-grid > .book-card .price-strip > div {
+  min-height: 46px;
+  padding: 6px 8px;
+}
+
+.book-grid > .book-card .price-strip strong {
+  font-size: 15px;
+}
+
+.book-grid > .book-card .error-text {
+  grid-area: error;
+}
+
+.book-grid > .book-card .book-actions {
+  grid-area: actions;
+  align-self: start;
+  justify-content: flex-end;
+  flex-wrap: nowrap;
+}
+
+.book-grid > .book-card .book-actions .secondary-button,
+.book-grid > .book-card .book-actions .ghost-button,
+.book-grid > .book-card .book-actions .danger-button {
+  min-height: 32px;
+  padding: 0 10px;
+  font-size: 13px;
+}
+
+.book-grid > .book-card .book-title {
+  font-size: 16px;
+  line-height: 1.3;
+}
+
 .book-card.pending {
   border-color: #ecd6a4;
 }
@@ -693,6 +751,20 @@ button:disabled {
 
   .book-card {
     grid-template-columns: 92px minmax(0, 1fr);
+  }
+
+  .book-grid > .book-card .book-body {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "head"
+      "prices"
+      "error"
+      "actions";
+  }
+
+  .book-grid > .book-card .book-actions {
+    justify-content: flex-start;
+    flex-wrap: wrap;
   }
 
   .series-card-header {

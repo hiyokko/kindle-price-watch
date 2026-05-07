@@ -56,23 +56,69 @@ export function isKindleSeriesUrl(input) {
 }
 
 export async function fetchKindleSeriesItems(input, options = {}) {
-  const { url, html } = await fetchAmazonSeriesHtml(input);
   const sourceAsin = extractAsin(input);
-  let items = extractKindleSeriesItemsFromHtml(html);
+  let amazonResult = null;
+  let amazonError = null;
 
-  if (options.requireCollectionPage && !isKindleCollectionPage(html, sourceAsin, items)) {
-    items = [];
+  try {
+    const { url, html } = await fetchAmazonSeriesHtml(input);
+    let items = extractKindleSeriesItemsFromHtml(html);
+
+    if (options.requireCollectionPage && !isKindleCollectionPage(html, sourceAsin, items)) {
+      items = [];
+    }
+
+    amazonResult = buildKindleSeriesResult({
+      seriesName: extractSeriesName(html),
+      sourceAsin,
+      sourcePriceSeed: extractSeriesSourcePriceSeedFromHtml(html, sourceAsin, url, items),
+      expectedVolumeCount: extractSeriesExpectedCount(html) || maxSeriesItemVolume(items) || items.length,
+      completed: extractSeriesCompletionStatus(html),
+      items
+    });
+  } catch (error) {
+    amazonError = error;
   }
 
+  if (shouldTryAmazonSeriesReaderFallback(amazonResult, amazonError)) {
+    try {
+      const readerResult = await fetchKindleSeriesItemsFromAmazonReader(input, options);
+      if (isBetterKindleSeriesResult(readerResult, amazonResult)) return readerResult;
+    } catch (error) {
+      if (!amazonResult) amazonError = error;
+    }
+  }
+
+  if (amazonResult) return amazonResult;
+  throw amazonError || new Error('Amazonシリーズページを取得できませんでした');
+}
+
+function buildKindleSeriesResult(series) {
   const limit = readPositiveInteger(process.env.SERIES_IMPORT_LIMIT, null);
   return {
-    seriesName: extractSeriesName(html),
-    sourceAsin,
-    sourcePriceSeed: extractSeriesSourcePriceSeedFromHtml(html, sourceAsin, url, items),
-    expectedVolumeCount: extractSeriesExpectedCount(html) || maxSeriesItemVolume(items) || items.length,
-    completed: extractSeriesCompletionStatus(html),
-    items: limit == null ? items : items.slice(0, limit)
+    ...series,
+    items: limit == null ? series.items : series.items.slice(0, limit)
   };
+}
+
+function shouldTryAmazonSeriesReaderFallback(series, error) {
+  if (!shouldUseAmazonReaderFallback()) return false;
+  if (error || !series) return true;
+  if (!Array.isArray(series.items) || series.items.length <= 1) return true;
+
+  const expected = Number(series.expectedVolumeCount) || 0;
+  return expected > series.items.length;
+}
+
+function isBetterKindleSeriesResult(candidate, current) {
+  if (!candidate?.items?.length) return false;
+  if (!current?.items?.length) return true;
+  if (candidate.items.length > current.items.length) return true;
+
+  const candidateExpected = Number(candidate.expectedVolumeCount) || 0;
+  const currentExpected = Number(current.expectedVolumeCount) || 0;
+  if (candidateExpected > currentExpected && candidate.items.length >= candidateExpected) return true;
+  return false;
 }
 
 async function fetchAmazonSeriesHtml(input) {
@@ -745,9 +791,308 @@ function shouldUseAmazonReaderFallback() {
 
 async function fetchFromAmazonReader(asin, inputUrl = '') {
   const sourceUrl = amazonProductCandidateUrls(asin, inputUrl)[0] || amazonUrlForAsin(asin);
-  const readerUrl = `https://r.jina.ai/http://${sourceUrl}`;
+  const readerUrl = amazonReaderUrl(sourceUrl);
   const text = await fetchHtml(readerUrl);
   return extractAmazonReaderSnapshotFromText(text, asin, sourceUrl, 'amazon_reader');
+}
+
+async function fetchKindleSeriesItemsFromAmazonReader(input, options = {}) {
+  const urls = kindleSeriesCandidateUrls(input);
+  let lastError;
+
+  for (const sourceUrl of urls) {
+    try {
+      const text = await fetchHtml(amazonReaderUrl(sourceUrl));
+      const result = extractKindleSeriesItemsFromAmazonReaderText(text, input, sourceUrl, options);
+      if (result.items.length > 1) return result;
+      lastError = new Error('readerでシリーズ内のKindle ASINを取得できませんでした');
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError || new Error('readerでシリーズページを取得できませんでした');
+}
+
+function amazonReaderUrl(sourceUrl) {
+  return `https://r.jina.ai/http://${sourceUrl}`;
+}
+
+function extractKindleSeriesItemsFromAmazonReaderText(text, input, sourceUrl, options = {}) {
+  const value = String(text || '');
+  const sourceAsin = extractAsin(input);
+  const seriesName = extractAmazonReaderSeriesName(value);
+  const expectedVolumeCount = extractAmazonReaderSeriesExpectedCount(value);
+  let items = extractAmazonReaderSeriesItems(value, {
+    seriesName,
+    expectedVolumeCount
+  });
+
+  if (options.requireCollectionPage && !isAmazonReaderSeriesPage(value, expectedVolumeCount, items)) {
+    items = [];
+  }
+
+  return buildKindleSeriesResult({
+    seriesName,
+    sourceAsin,
+    sourcePriceSeed: null,
+    expectedVolumeCount: expectedVolumeCount || maxSeriesItemVolume(items) || items.length,
+    completed: extractAmazonReaderSeriesCompletionStatus(value),
+    items,
+    provider: 'amazon_series_reader',
+    sourceUrl
+  });
+}
+
+function extractAmazonReaderSeriesName(text) {
+  const heading =
+    String(text || '').match(/^#\s+(.+?\([0-9０-９]+\s+book\s+series\).*?)$/im)?.[1] ||
+    String(text || '').match(/^Title:\s*(.+?\([0-9０-９]+\s+book\s+series\).*?)$/im)?.[1] ||
+    String(text || '').match(/^#\s+(.+)$/m)?.[1] ||
+    '';
+
+  return cleanTitle(heading)
+    .replace(/^Amazon\.co\.jp:\s*/i, '')
+    .replace(/\s*\(\s*[0-9０-９]+\s+book\s+series\s*\)\s*Kindle Edition.*$/i, '')
+    .replace(/\s*Kindle Edition.*$/i, '')
+    .replace(/\s*:\s*Kindle Store.*$/i, '')
+    .trim() || 'Kindle シリーズ';
+}
+
+function extractAmazonReaderSeriesExpectedCount(text) {
+  const value = cleanText(text);
+  const patterns = [
+    /\(\s*([0-9０-９]{1,3})\s+book\s+series\s*\)/gi,
+    /There are\s+([0-9０-９]{1,3})\s+volumes?\s+in\s+this\s+series/gi,
+    /This option includes\s+([0-9０-９]{1,3})\s+volumes/gi,
+    /All\s+([0-9０-９]{1,3})\s+Kindle/gi
+  ];
+  const counts = [];
+
+  for (const pattern of patterns) {
+    for (const match of value.matchAll(pattern)) {
+      const count = Number(toHalfWidthNumber(match?.[1] || ''));
+      if (Number.isFinite(count) && count > 0) counts.push(count);
+    }
+  }
+
+  if (counts.length) return Math.max(...counts);
+  return extractVolumeCount(value);
+}
+
+function extractAmazonReaderSeriesItems(text, options = {}) {
+  const expectedVolumeCount = Number(options.expectedVolumeCount) || 0;
+  const seriesName = options.seriesName || '';
+  const block = extractAmazonReaderSeriesBlock(text);
+  const candidates = preferredAmazonReaderSeriesLinkCandidates(
+    extractAmazonReaderSeriesLinkCandidates(block),
+    expectedVolumeCount
+  )
+    .filter((candidate) => isAmazonReaderSeriesLinkCandidate(candidate, seriesName, expectedVolumeCount))
+    .sort((left, right) => left.index - right.index);
+  const items = [];
+  const byAsin = new Map();
+
+  for (const candidate of candidates) {
+    const existing = byAsin.get(candidate.asin);
+    if (existing) {
+      existing.title = betterText(existing.title, candidate.title);
+      if (!existing.imageUrl && candidate.imageUrl) {
+        existing.imageUrl = candidate.imageUrl;
+        existing.imageSource = 'amazon_series_reader';
+      }
+      continue;
+    }
+
+    if (expectedVolumeCount > 0 && items.length >= expectedVolumeCount) break;
+
+    const volume = readerSeriesVolumeFromCandidate(candidate, items.length + 1, expectedVolumeCount);
+    const item = {
+      asin: candidate.asin,
+      title: cleanAmazonReaderSeriesItemTitle(candidate.title, candidate.asin, seriesName, volume),
+      imageUrl: candidate.imageUrl || '',
+      imageSource: candidate.imageUrl ? 'amazon_series_reader' : '',
+      amazonUrl: amazonUrlForAsin(candidate.asin),
+      volume,
+      currentPrice: null,
+      currentPoints: 0,
+      effectivePrice: null,
+      listPrice: null,
+      provider: 'amazon_series_reader'
+    };
+    items.push(item);
+    byAsin.set(candidate.asin, item);
+  }
+
+  return dedupeSeriesItems(items);
+}
+
+function extractAmazonReaderSeriesBlock(text) {
+  const value = String(text || '');
+  const startPatterns = [
+    /^#\s+.+?\([0-9０-９]+\s+book\s+series\).*$/im,
+    /There are\s+[0-9０-９]{1,3}\s+volumes?\s+in\s+this\s+series/i,
+    /This option includes\s+[0-9０-９]{1,3}\s+volumes/i
+  ];
+  const starts = startPatterns
+    .map((pattern) => value.search(pattern))
+    .filter((index) => index >= 0);
+  const start = starts.length ? Math.min(...starts) : 0;
+  const suffix = value.slice(start + 1);
+  const endPatterns = [
+    /^##\s+Report an issue/im,
+    /^##\s+Product details/im,
+    /^##\s+From the Publisher/im,
+    /^##\s+Customers/im,
+    /^##\s+Products related/im,
+    /^###\s+Product details/im,
+    /^###\s+Popular/im
+  ];
+  const endOffsets = endPatterns
+    .map((pattern) => suffix.search(pattern))
+    .filter((index) => index >= 0);
+  const end = endOffsets.length ? start + 1 + Math.min(...endOffsets) : value.length;
+  return value.slice(start, end);
+}
+
+function extractAmazonReaderSeriesLinkCandidates(text) {
+  const value = String(text || '');
+  const candidates = [];
+
+  for (const match of value.matchAll(/\[!\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)\]\(([^)\s]+)(?:\s+"([^"]*)")?\)/g)) {
+    const href = cleanMarkdownUrl(match[3]);
+    const asin = extractAsin(href) || extractAsin(decodeURIComponentSafe(href));
+    const imageUrl = decodeHtml(match[2]);
+    if (!asin || !isProbablyBookAsin(asin)) continue;
+    candidates.push({
+      asin,
+      href,
+      title: cleanMarkdownText(match[4] || match[1] || ''),
+      alt: cleanMarkdownText(match[1] || ''),
+      imageUrl: isAmazonImage(imageUrl) ? imageUrl : '',
+      index: match.index ?? 0,
+      kind: 'image'
+    });
+  }
+
+  for (const match of value.matchAll(/\[([^\]\n]{1,300})\]\(([^)\s]+)(?:\s+"([^"]*)")?\)/g)) {
+    const rawTitle = match[1] || '';
+    if (rawTitle.startsWith('!')) continue;
+    const href = cleanMarkdownUrl(match[2]);
+    const asin = extractAsin(href) || extractAsin(decodeURIComponentSafe(href));
+    if (!asin || !isProbablyBookAsin(asin)) continue;
+    candidates.push({
+      asin,
+      href,
+      title: cleanMarkdownText(match[3] || rawTitle),
+      alt: '',
+      imageUrl: '',
+      index: match.index ?? 0,
+      kind: 'link'
+    });
+  }
+
+  return candidates;
+}
+
+function preferredAmazonReaderSeriesLinkCandidates(candidates, expectedVolumeCount) {
+  const imageCandidates = candidates.filter((candidate) => candidate.kind === 'image' && candidate.imageUrl);
+  if (imageCandidates.length > 1) {
+    const uniqueImageAsins = new Set(imageCandidates.map((candidate) => candidate.asin));
+    if (!expectedVolumeCount || uniqueImageAsins.size >= Math.min(expectedVolumeCount, 2)) {
+      return imageCandidates;
+    }
+  }
+  return candidates;
+}
+
+function cleanMarkdownUrl(value) {
+  return decodeHtml(String(value || '').trim().replace(/^<|>$/g, ''));
+}
+
+function cleanMarkdownText(value) {
+  return cleanTitle(
+    decodeHtml(String(value || '').replace(/\\([\\`*_{}\[\]()#+\-.!])/g, '$1'))
+  );
+}
+
+function isAmazonReaderSeriesLinkCandidate(candidate, seriesName, expectedVolumeCount) {
+  if (!candidate?.asin || !isProbablyBookAsin(candidate.asin)) return false;
+  if (isAmazonReaderNoiseLinkCandidate(candidate)) return false;
+
+  const href = decodeURIComponentSafe(candidate.href || '');
+  if (/saga_sdp|hulkbuy|dbs_|dbs-|series|binding=kindle_edition|kindle_edition/i.test(href)) {
+    return true;
+  }
+
+  const normalizedSeriesName = normalizeReaderImageText(seriesName);
+  const normalizedTitle = normalizeReaderImageText(`${candidate.title || ''} ${candidate.alt || ''}`);
+  if (
+    normalizedSeriesName &&
+    normalizedSeriesName !== normalizeReaderImageText('Kindle シリーズ') &&
+    normalizedTitle.includes(normalizedSeriesName)
+  ) {
+    return true;
+  }
+
+  return candidate.kind === 'image' && expectedVolumeCount > 1;
+}
+
+function isAmazonReaderNoiseLinkCandidate(candidate) {
+  const href = decodeURIComponentSafe(candidate.href || '');
+  const title = cleanText(`${candidate.title || ''} ${candidate.alt || ''}`);
+
+  return (
+    /customerReviews|product-reviews|\/ap\/signin|\/ap\/register|#customerReviews/i.test(href) ||
+    /^(?:See included items|Share this item|Sold by:|Amazon\.co\.jp)$/i.test(title) ||
+    /\bout of 5 stars\b/i.test(title)
+  );
+}
+
+function readerSeriesVolumeFromCandidate(candidate, fallbackIndex, expectedVolumeCount) {
+  return (
+    extractExternalVolumeFromTitle(candidate.title) ||
+    extractExternalVolumeFromTitle(candidate.alt) ||
+    readerJapaneseVolumeWord(candidate.title, expectedVolumeCount) ||
+    readerJapaneseVolumeWord(candidate.alt, expectedVolumeCount) ||
+    String(fallbackIndex)
+  );
+}
+
+function readerJapaneseVolumeWord(text, expectedVolumeCount) {
+  const value = cleanTitle(text);
+  if (/(?:^|[　\s（(])上(?:巻)?(?:$|[　\s）)])/u.test(value)) return '1';
+  if (/(?:^|[　\s（(])中(?:巻)?(?:$|[　\s）)])/u.test(value)) return '2';
+  if (/(?:^|[　\s（(])下(?:巻)?(?:$|[　\s）)])/u.test(value)) {
+    return expectedVolumeCount > 0 && expectedVolumeCount <= 3 ? String(expectedVolumeCount) : '3';
+  }
+  return '';
+}
+
+function cleanAmazonReaderSeriesItemTitle(title, asin, seriesName, volume) {
+  const cleaned = cleanTitle(title)
+    .replace(/^Image\s+\d+\s*:\s*/i, '')
+    .replace(/\s*Kindle Edition.*$/i, '')
+    .trim();
+  if (cleaned && !/^ASIN\s+[A-Z0-9]{10}$/i.test(cleaned)) return cleaned;
+  return `${seriesName || 'Kindle シリーズ'} ${volume || asin}`.trim();
+}
+
+function isAmazonReaderSeriesPage(text, expectedVolumeCount, items) {
+  const value = cleanText(text);
+  return (
+    expectedVolumeCount > 1 ||
+    (items.length > 1 && /\bbook\s+series\b|volumes?\s+in\s+this\s+series|This option includes/i.test(value))
+  );
+}
+
+function extractAmazonReaderSeriesCompletionStatus(text) {
+  const value = cleanText(text);
+  return (
+    /(?:全\s*)?[0-9０-９]{1,3}\s*巻\s*(?:完結|完)/.test(value) ||
+    /(?:完結済み|完結作品|シリーズ完結|全巻完結)/.test(value) ||
+    /\b(?:completed|complete)\s+series\b/i.test(value)
+  );
 }
 
 function extractAmazonReaderSnapshotFromText(text, asin, url, provider) {
