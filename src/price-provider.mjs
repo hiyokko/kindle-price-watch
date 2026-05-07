@@ -1419,6 +1419,7 @@ function extractAmazonHtmlSnapshotFromHtml(html, asin, url, provider) {
   const allPrices = extractPrices(html);
   let currentPrice = kindleOffer.price ?? chooseLikelyKindlePrice(allPrices, html);
   let listPrice = extractListPrice(html, currentPrice);
+  currentPrice ??= inferDiscountedKindlePrice(html, listPrice);
   let currentPoints =
     kindleOffer.price != null
       ? kindleOffer.points ?? 0
@@ -1448,8 +1449,9 @@ function extractAmazonSearchSnapshotFromHtml(html, asin, url, provider) {
     extractItemTitle(fragment, asin);
   const imageUrl = extractItemImage(fragment);
   const productUrl = absoluteAmazonHref(extractAsinHref(fragment, asin)) || amazonUrlForAsin(asin);
-  let currentPoints = extractPointsNearPrice(fragment, currentPrice) ?? extractPoints(fragment, currentPrice);
   let listPrice = extractListPrice(fragment, currentPrice);
+  currentPrice ??= inferDiscountedKindlePrice(fragment, listPrice);
+  let currentPoints = extractPointsNearPrice(fragment, currentPrice) ?? extractPoints(fragment, currentPrice);
   const corrected = correctImplausibleKindlePrice({ currentPrice, currentPoints, listPrice, prices, html: fragment });
   currentPrice = corrected.currentPrice;
   currentPoints = corrected.currentPoints;
@@ -2300,6 +2302,55 @@ function correctImplausibleKindlePrice({ currentPrice, currentPoints, listPrice,
   }
 
   return { currentPrice, currentPoints };
+}
+
+function inferDiscountedKindlePrice(html, listPrice) {
+  if (!Number.isFinite(listPrice) || listPrice <= 0) return null;
+
+  for (const scope of discountInferenceScopes(html, listPrice)) {
+    const percent = extractDiscountPercent(scope);
+    if (percent == null || percent <= 0 || percent >= 100) continue;
+
+    const inferred = Math.round((listPrice * (100 - percent)) / 100);
+    if (inferred >= 0 && inferred < listPrice) return inferred;
+  }
+
+  return null;
+}
+
+function discountInferenceScopes(html, listPrice) {
+  const value = String(html || '');
+  return [
+    extractKindleSwatch(value),
+    extractFragmentAroundPattern(value, /ebook-price-value|priceToPay|kindleExtraMessage|oneClick|one-click|buybox/i, 2000, 5000),
+    extractFragmentAroundPrice(value, listPrice)
+  ].filter(Boolean);
+}
+
+function extractFragmentAroundPrice(html, price) {
+  if (!Number.isFinite(price)) return '';
+  const value = String(html || '');
+  const rawPrice = escapeRegExp(String(price));
+  const commaPrice = escapeRegExp(Number(price).toLocaleString('ja-JP'));
+  const pattern = new RegExp(`(?:￥|¥)\\s*(?:${rawPrice}|${commaPrice})`);
+  return extractFragmentAroundPattern(value, pattern, 2200, 4200);
+}
+
+function extractDiscountPercent(html) {
+  const text = cleanText(decodeJsonEscapes(html)).replace(/\s+/g, '');
+  const patterns = [
+    /([0-9]{1,2})\s*(?:パーセント|%)の?割引/,
+    /([0-9]{1,2})\s*%OFF/i,
+    /([0-9]{1,2})\s*%オフ/i,
+    /(?:割引率|値引率|discount)\s*[:：]?\s*([0-9]{1,2})\s*%/i
+  ];
+
+  for (const pattern of patterns) {
+    const percent = Number.parseInt(text.match(pattern)?.[1] || '', 10);
+    if (Number.isFinite(percent)) return percent;
+  }
+
+  return null;
 }
 
 function isSuspiciousDiscountLikePrice(currentPrice, currentPoints, listPrice, prices = []) {
