@@ -326,7 +326,12 @@ async function fetchSeriesCandidates(input, options = {}) {
       // No usable external fallback.
     }
 
-    for (const seriesName of seriesNamesForSaleBon(candidates)) {
+    const saleBonNames = new Set(seriesNamesForSaleBon(candidates));
+    if (saleBonNames.size === 0) {
+      for (const seriesName of await sourceSeriesNamesForSaleBon(input)) saleBonNames.add(seriesName);
+    }
+
+    for (const seriesName of saleBonNames) {
       try {
         const series = await fetchSaleBonKindleSeriesItems(seriesName, { sourceAsin: extractAsin(input) });
         if (series?.items?.length > 1) candidates.push(series);
@@ -350,6 +355,98 @@ function seriesNamesForSaleBon(candidates) {
         .filter((name) => name && name !== 'Kindle シリーズ')
     )
   ];
+}
+
+async function sourceSeriesNamesForSaleBon(input) {
+  const asin = extractAsin(input);
+  if (!asin) return [];
+  const names = new Set(seriesNameCandidatesFromAmazonSlug(input));
+
+  try {
+    const snapshot = await fetchBookSnapshot(asin, { url: input });
+    for (const seriesName of seriesNameCandidatesFromBookTitle(snapshot.title)) names.add(seriesName);
+  } catch {
+    // URL slug candidates remain useful when Amazon product/search pages are blocked.
+  }
+
+  return [...names].slice(0, 8);
+}
+
+function seriesNameCandidatesFromBookTitle(title) {
+  const cleaned = cleanBookTitleForSeriesName(title);
+  const withoutImprint = stripTrailingImprint(cleaned);
+  const candidates = [stripVolumeSuffix(withoutImprint), stripVolumeSuffix(cleaned), withoutImprint, cleaned]
+    .map((value) => value.replace(/\s+/g, ' ').trim())
+    .filter((value) => value && !/^ASIN\s+[A-Z0-9]{10}$/i.test(value))
+    .filter((value) => value !== 'Kindle シリーズ');
+  return [...new Set(candidates)];
+}
+
+function seriesNameCandidatesFromAmazonSlug(input) {
+  let pathname = '';
+  try {
+    pathname = decodeURIComponent(new URL(String(input || '')).pathname);
+  } catch {
+    return [];
+  }
+
+  const parts = pathname.split('/').filter(Boolean);
+  const dpIndex = parts.findIndex((part, index) => /^dp$/i.test(part) && /^[A-Z0-9]{10}$/i.test(parts[index + 1] || ''));
+  const gpIndex = parts.findIndex(
+    (part, index) => /^gp$/i.test(part) && /^product$/i.test(parts[index + 1] || '') && /^[A-Z0-9]{10}$/i.test(parts[index + 2] || '')
+  );
+  const markerIndex = dpIndex >= 0 ? dpIndex : gpIndex;
+  const slug = markerIndex > 0 ? parts[markerIndex - 1] : '';
+  if (!slug || /^[A-Z0-9]{10}$/i.test(slug)) return [];
+
+  const tokens = slug
+    .split(/[-_]+/)
+    .map((part) => cleanBookTitleForSeriesName(part))
+    .filter((part) => part && !/^(?:ebook|kindle|amazon|jp|co)$/i.test(part));
+  const candidates = [];
+  for (let length = 1; length <= Math.min(tokens.length, 5); length += 1) {
+    candidates.push(stripVolumeSuffix(stripTrailingImprint(tokens.slice(0, length).join(' '))));
+  }
+  candidates.push(stripVolumeSuffix(stripTrailingImprint(tokens.join(' '))));
+
+  return [...new Set(candidates.map((value) => value.trim()).filter(Boolean))];
+}
+
+function cleanBookTitleForSeriesName(title) {
+  return String(title || '')
+    .replace(/\s+\|.*$/, '')
+    .replace(/\s*-\s*Amazon.*$/i, '')
+    .replace(/\s*\(Kindle版\)\s*$/i, '')
+    .replace(/\s*\[Kindle版\]\s*$/i, '')
+    .trim();
+}
+
+function stripTrailingImprint(title) {
+  let value = String(title || '').trim();
+  for (let index = 0; index < 2; index += 1) {
+    const next = value
+      .replace(/\s*[（(][^（）()]{0,80}(?:コミックス|コミック|文庫|新書|DX|KC|REX|ZERO-SUM|モーニング|イブニング|アフタヌーン|ビッグ|スピリッツ|ジャンプ|マガジン|サンデー|チャンピオン|ヒーローズ|A\.?L\.?C\.?|L\.?C\.?|ebook|Kindle)[^（）()]{0,80}[）)]\s*$/i, '')
+      .trim();
+    if (next === value) break;
+    value = next;
+  }
+  return value;
+}
+
+function stripVolumeSuffix(title) {
+  let value = String(title || '').trim();
+  for (let index = 0; index < 3; index += 1) {
+    const next = value
+      .replace(/\s*[（(]\s*(?:第\s*)?[0-9０-９]{1,3}\s*(?:巻)?\s*[）)]\s*$/i, '')
+      .replace(/\s*(?:第\s*)?[0-9０-９]{1,3}\s*巻\s*$/i, '')
+      .replace(/\s+[0-9０-９]{1,3}\s*$/i, '')
+      .replace(/\s*[（(]\s*(?:上|中|下|前|後|前編|後編|上巻|中巻|下巻)\s*[）)]\s*$/i, '')
+      .replace(/\s*(?:上巻|中巻|下巻|前編|後編)\s*$/i, '')
+      .trim();
+    if (next === value) break;
+    value = next;
+  }
+  return value;
 }
 
 function mergeSeriesCandidate(primary, secondary) {
