@@ -776,7 +776,9 @@ function amazonProductCandidateUrls(asin, inputUrl = '') {
   try {
     const baseUrl = new URL(base);
     const host = baseUrl.host;
+    add(`https://${host}/-/en/dp/${normalizedAsin}`);
     add(`https://${host}/gp/product/${normalizedAsin}`);
+    add(`https://${host}/-/en/gp/product/${normalizedAsin}`);
     add(`https://${host}/gp/product/${normalizedAsin}?storeType=ebooks`);
     add(`https://${host}/gp/product/${normalizedAsin}?binding=kindle_edition&ref=dbs_dp_rwt_sb_pc_tkin`);
     add(`https://${host}/gp/aw/d/${normalizedAsin}`);
