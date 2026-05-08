@@ -9,8 +9,8 @@ on:
         type: boolean
         default: true
   schedule:
-    # Hourly. The app setting decides which JST hour opens the daily check window.
-    - cron: "0 * * * *"
+    # Daily at 16:00 JST.
+    - cron: "0 7 * * *"
 
 concurrency:
   group: kindle-price-check

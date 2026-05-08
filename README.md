@@ -98,7 +98,7 @@ Vercel Hobbyでは登録時に全巻の詳細取得まで行うとタイムア�
 
 ## 定期実行
 
-GitHub Actionsでは毎時Workflowを起動し、アプリ画面に保存したJSTの実行時刻になった後だけ自動チェックします。再確認間隔は24時間差分ではなく、24時間なら毎日定時、48時間なら2日ごとの定時、72時間なら3日ごとの定時として判定します。1000冊規模でもAmazonや補助サイトに連続アクセスしすぎないよう、`CHECK_REQUEST_DELAY_MS` / `CHECK_REQUEST_JITTER_MS` / `HTTP_REQUEST_MIN_INTERVAL_MS` で待機時間を調整します。429/503/CAPTCHA系の応答を検知した場合は、`CHECK_BLOCK_COOLDOWN_MS` / `HTTP_BLOCK_COOLDOWN_MS` のクールダウンを挟みます。
+GitHub Actionsでは毎日JST 16:00にWorkflowを起動します。アプリ画面の実行時刻もJST 16:00にしておくと、その起動で自動チェックが始まります。再確認間隔は24時間差分ではなく、24時間なら毎日定時、48時間なら2日ごとの定時、72時間なら3日ごとの定時として判定します。1000冊規模でもAmazonや補助サイトに連続アクセスしすぎないよう、`CHECK_REQUEST_DELAY_MS` / `CHECK_REQUEST_JITTER_MS` / `HTTP_REQUEST_MIN_INTERVAL_MS` で待機時間を調整します。429/503/CAPTCHA系の応答を検知した場合は、`CHECK_BLOCK_COOLDOWN_MS` / `HTTP_BLOCK_COOLDOWN_MS` のクールダウンを挟みます。
 
 Blob Advanced Operationsを抑えるため、定期実行では本ごとに保存せず、価格チェック・通知状態・シリーズ新刊探索結果・カーソルをメモリ上で更新して最後にまとめて保存します。正常終了またはアプリ側のランタイム停止判定で終了した場合は、最後に確認できた本を `checkCursor` として保存し、次回はその続きから確認します。
 
