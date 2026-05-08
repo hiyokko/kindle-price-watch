@@ -740,6 +740,8 @@ function mergeSeriesItemSeed(base, overlay) {
   const priceSeed = chooseSeriesPriceSeed(base, overlay);
   const imageSeed = chooseSeriesImageSeed(base, overlay);
   const currentPrice = priceSeed?.currentPrice ?? null;
+  const provider = priceSeed?.provider || base.provider || overlay.provider;
+  const listPrice = trustedListPriceFor(currentPrice, priceSeed?.listPrice ?? overlay.listPrice ?? base.listPrice, provider);
   return {
     ...base,
     title: base.title || overlay.title,
@@ -751,8 +753,8 @@ function mergeSeriesItemSeed(base, overlay) {
     currentPrice,
     currentPoints: priceSeed?.currentPoints ?? 0,
     effectivePrice: priceSeed?.effectivePrice ?? effectivePriceFromSeed(priceSeed || {}),
-    listPrice: priceSeed?.listPrice ?? overlay.listPrice ?? base.listPrice,
-    provider: priceSeed?.provider || base.provider || overlay.provider,
+    listPrice,
+    provider,
     lastError: currentPrice == null ? overlay.lastError || base.lastError || '' : ''
   };
 }
@@ -1072,6 +1074,12 @@ function collectCandidateItemsByAsin(candidates) {
 function mergeAmazonSnapshotIntoSeriesItem(item, snapshot) {
   const useSnapshotPrice = shouldUseAmazonSnapshotPriceForSeriesItem(item, snapshot);
   const currentPrice = useSnapshotPrice ? snapshot.currentPrice : item.currentPrice;
+  const provider = useSnapshotPrice ? snapshot.provider || item.provider : item.provider || snapshot.provider;
+  const listPrice = trustedListPriceFor(
+    currentPrice,
+    useSnapshotPrice ? snapshot.listPrice ?? item.listPrice ?? null : item.listPrice ?? snapshot.listPrice ?? null,
+    provider
+  );
   return {
     ...item,
     title: preferSnapshotText(snapshot.title, item.title),
@@ -1083,8 +1091,8 @@ function mergeAmazonSnapshotIntoSeriesItem(item, snapshot) {
     currentPrice,
     currentPoints: useSnapshotPrice ? snapshot.currentPoints ?? 0 : item.currentPoints ?? 0,
     effectivePrice: useSnapshotPrice ? snapshot.effectivePrice ?? effectivePriceFromSeed(snapshot) : item.effectivePrice,
-    listPrice: useSnapshotPrice ? snapshot.listPrice ?? item.listPrice ?? null : item.listPrice ?? snapshot.listPrice ?? null,
-    provider: useSnapshotPrice ? snapshot.provider || item.provider : item.provider || snapshot.provider,
+    listPrice,
+    provider,
     lastError: currentPrice == null ? item.lastError || '' : ''
   };
 }
@@ -1161,6 +1169,8 @@ function updateExistingSeriesBook(book, item, options) {
   if (shouldRefreshSeriesPrice(book, item)) {
     const correctingImplausiblePrice = isImplausibleStoredSeriesPrice(book, item);
     const effectivePrice = item.effectivePrice ?? effectivePriceFromSeed(item);
+    const provider = item.provider || book.provider;
+    const listPrice = trustedListPriceFor(item.currentPrice, item.listPrice, provider);
     book.currentPrice = item.currentPrice;
     book.currentPoints = item.currentPoints ?? 0;
     book.effectivePrice = effectivePrice;
@@ -1169,7 +1179,8 @@ function updateExistingSeriesBook(book, item, options) {
       book.lowestEffectivePrice =
         book.lowestEffectivePrice == null ? effectivePrice : Math.min(book.lowestEffectivePrice, effectivePrice);
     }
-    if (item.listPrice != null && book.listPrice == null) book.listPrice = item.listPrice;
+    if (shouldIgnoreListPriceForProvider(book.currentPrice, book.listPrice, provider)) book.listPrice = null;
+    if (listPrice != null && book.listPrice == null) book.listPrice = listPrice;
     if (item.provider) book.provider = item.provider;
     book.lastCheckedAt = book.lastCheckedAt || options.now;
     book.lastError = '';
@@ -1339,6 +1350,8 @@ function repairSuspiciousPriceState(book, store, options = {}) {
   let currentCleared = false;
   let currentRestored = false;
 
+  if (clearUnreliableStoredListPrice(book)) changed = true;
+
   if (options.clearCurrent && (suspiciousStoredCurrentPriceReason(book) || hasUnvalidatedSeriesPrice(book))) {
     book.currentPrice = null;
     book.currentPoints = 0;
@@ -1463,13 +1476,14 @@ function isUnvalidatedSeriesPriceProvider(provider) {
 }
 
 function suspiciousStoredCurrentPriceReason(book) {
+  const listPrice = trustedListPriceFor(book.currentPrice, book.listPrice, book.provider);
   return suspiciousPriceReason({
     price: book.currentPrice,
     points: book.currentPoints,
     effectivePrice: book.effectivePrice,
-    listPrice: book.listPrice,
+    listPrice,
     referencePrices: [
-      book.listPrice,
+      listPrice,
       book.previousEffectivePrice,
       book.lowestPrice && Number(book.lowestPrice) !== Number(book.currentPrice) ? book.lowestPrice : null
     ]
@@ -1477,46 +1491,73 @@ function suspiciousStoredCurrentPriceReason(book) {
 }
 
 function isSuspiciousHistoryEntry(entry, book) {
+  const provider = entry.provider || book.provider;
+  const listPrice = trustedListPriceFor(entry.price, entry.listPrice ?? book.listPrice, provider);
   return Boolean(
     suspiciousPriceReason({
       price: entry.price,
       points: entry.points,
       effectivePrice: entry.effectivePrice,
-      listPrice: entry.listPrice ?? book.listPrice,
-      referencePrices: [book.currentPrice, book.effectivePrice, book.listPrice]
+      listPrice,
+      referencePrices: [book.currentPrice, book.effectivePrice, listPrice]
     })
   );
 }
 
 function isSuspiciousNotificationEntry(entry, book) {
+  const listPrice = trustedListPriceFor(entry.effectivePrice, book.listPrice, book.provider);
   return Boolean(
     suspiciousPriceReason({
       price: entry.effectivePrice,
       points: 0,
       effectivePrice: entry.effectivePrice,
-      listPrice: book.listPrice,
-      referencePrices: [book.currentPrice, book.effectivePrice, book.listPrice]
+      listPrice,
+      referencePrices: [book.currentPrice, book.effectivePrice, listPrice]
     })
   );
 }
 
 function hasSuspiciousStoredPriceFloor(book) {
+  const lowestListPrice = trustedListPriceFor(book.lowestPrice, book.listPrice, book.provider);
+  const lowestEffectiveListPrice = trustedListPriceFor(book.lowestEffectivePrice, book.listPrice, book.provider);
   return Boolean(
     suspiciousPriceReason({
       price: book.lowestPrice,
       points: 0,
       effectivePrice: book.lowestEffectivePrice,
-      listPrice: book.listPrice,
-      referencePrices: [book.currentPrice, book.effectivePrice, book.listPrice]
+      listPrice: lowestListPrice,
+      referencePrices: [book.currentPrice, book.effectivePrice, lowestListPrice]
     }) ||
       suspiciousPriceReason({
         price: book.lowestEffectivePrice,
         points: 0,
         effectivePrice: book.lowestEffectivePrice,
-        listPrice: book.listPrice,
-        referencePrices: [book.currentPrice, book.effectivePrice, book.listPrice]
+        listPrice: lowestEffectiveListPrice,
+        referencePrices: [book.currentPrice, book.effectivePrice, lowestEffectiveListPrice]
       })
   );
+}
+
+function clearUnreliableStoredListPrice(book) {
+  if (!shouldIgnoreListPriceForProvider(book.currentPrice, book.listPrice, book.provider)) return false;
+  book.listPrice = null;
+  return true;
+}
+
+function trustedListPriceFor(currentPrice, listPrice, provider) {
+  return shouldIgnoreListPriceForProvider(currentPrice, listPrice, provider) ? null : listPrice ?? null;
+}
+
+function shouldIgnoreListPriceForProvider(currentPrice, listPrice, provider) {
+  if (!isSeriesDerivedPriceProvider(provider)) return false;
+  const current = Number(currentPrice);
+  const list = Number(listPrice);
+  return Number.isFinite(current) && current > 0 && Number.isFinite(list) && list > 0 && current > list * 1.15;
+}
+
+function isSeriesDerivedPriceProvider(provider) {
+  const normalized = String(provider || '').toLowerCase();
+  return normalized.includes('_series') || normalized === 'amazon_series_bulk' || normalized === 'amazon_series_reader';
 }
 
 function suspiciousPriceReason({ price, points = 0, effectivePrice = null, listPrice = null, referencePrices = [] }) {
@@ -2568,6 +2609,11 @@ async function buildBookFromAsin(asin, options = {}) {
         : '';
   }
 
+  const fallbackProvider = seedPriceIsUnvalidated
+    ? (fetchDetails ? 'pending' : 'pending_series')
+    : seed.provider || (fetchDetails ? 'pending' : 'pending_series');
+  const fallbackCurrentPrice = seedCurrentPrice;
+  const fallbackListPrice = trustedListPriceFor(fallbackCurrentPrice, seed.listPrice, fallbackProvider);
   const fallback = {
     asin,
     title: seed.title || `ASIN ${asin}`,
@@ -2576,13 +2622,11 @@ async function buildBookFromAsin(asin, options = {}) {
     imageUrl: seed.imageUrl || '',
     imageSource: seed.imageSource || '',
     amazonUrl: seed.amazonUrl || amazonUrlForAsin(asin),
-    currentPrice: seedCurrentPrice,
+    currentPrice: fallbackCurrentPrice,
     currentPoints: seedPriceIsUnvalidated ? 0 : seed.currentPoints ?? 0,
     effectivePrice: seedPriceIsUnvalidated ? null : seed.effectivePrice ?? effectivePriceFromSeed(seed),
-    listPrice: seed.listPrice ?? null,
-    provider: seedPriceIsUnvalidated
-      ? (fetchDetails ? 'pending' : 'pending_series')
-      : seed.provider || (fetchDetails ? 'pending' : 'pending_series')
+    listPrice: fallbackListPrice,
+    provider: fallbackProvider
   };
   snapshot = mergeSnapshot(fallback, snapshot);
   if (snapshot.currentPrice == null && !lastError) {
