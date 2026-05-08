@@ -28,6 +28,8 @@ const UNVALIDATED_SERIES_PRICE_PROVIDERS = new Set([
   'amazon_series_source_price',
   'amazon_series_unit_price'
 ]);
+const SINGLE_EPISODE_SERIES_PRICE_MAX = 250;
+const SUSPICIOUS_BULK_SERIES_COUNT_MIN = 20;
 
 export async function listBooks() {
   const store = await readStoreWithPriceRepairs();
@@ -399,13 +401,9 @@ async function importSeriesIntoStore(store, input, series, options = {}) {
       .map((book) => book.id)
   );
   if (obsoleteIds.size > 0) {
-    store.books = store.books.filter((book) => !obsoleteIds.has(book.id));
-    store.priceHistory = store.priceHistory.filter((entry) => !obsoleteIds.has(entry.bookId));
-    store.notifications = store.notifications.filter((entry) => !obsoleteIds.has(entry.bookId));
-    resetCursorIfDeleted(store, obsoleteIds);
+    removeStoreBooksById(store, obsoleteIds);
   }
 
-  const existingByAsin = new Map(store.books.map((book) => [book.asin, book]));
   const seriesIdentity = {
     input,
     sourceUrl,
@@ -414,6 +412,18 @@ async function importSeriesIntoStore(store, input, series, options = {}) {
     seriesName
   };
   const seriesItems = mergeWithKnownSeriesItems(series.items, store.books, seriesIdentity);
+  const currentSeriesAsins = new Set(seriesItems.map((item) => item.asin).filter(Boolean));
+  const obsoleteEpisodeIds = new Set(
+    store.books
+      .filter((book) => isKnownBookForSeries(book, seriesIdentity))
+      .filter((book) => isLikelyObsoleteSingleEpisodeSeriesBook(book, currentSeriesAsins))
+      .map((book) => book.id)
+  );
+  if (obsoleteEpisodeIds.size > 0) {
+    removeStoreBooksById(store, obsoleteEpisodeIds);
+  }
+
+  const existingByAsin = new Map(store.books.map((book) => [book.asin, book]));
   const seriesExpectedCount = normalizeSeriesExpectedCount(series, seriesItems);
   const existingSeriesBooks = store.books.filter((book) => isKnownBookForSeries(book, seriesIdentity));
   const weakImageUrls = weakSeriesImageUrls([...seriesItems, ...existingSeriesBooks]);
@@ -658,12 +668,82 @@ async function fetchSeriesCandidates(input, options = {}) {
   }
 
   if (candidates.length === 0) return null;
-  const merged = candidates.reduce((result, series) => mergeSeriesCandidate(result, series));
+  const usableCandidates = filterSuspiciousSeriesCandidates(candidates);
+  if (usableCandidates.length === 0) return null;
+  const merged = usableCandidates.reduce((result, series) => mergeSeriesCandidate(result, series));
   const resolved = options.skipBackfill
     ? withSeriesReconciliation(merged)
-    : await resolveSeriesCandidateDiffs(merged, candidates);
+    : await resolveSeriesCandidateDiffs(merged, usableCandidates);
   if (!isIncompleteSeriesCandidate(resolved)) return resolved;
   return options.allowIncomplete && resolved.items.length > 1 ? resolved : null;
+}
+
+function filterSuspiciousSeriesCandidates(candidates) {
+  const alternatives = candidates.filter((series) => !isMostlyAmazonBulkSeriesCandidate(series));
+  return candidates.filter((series) => !isSuspiciousAmazonBulkSeriesCandidate(series, alternatives));
+}
+
+function isSuspiciousAmazonBulkSeriesCandidate(series, alternatives = []) {
+  if (!isMostlyAmazonBulkSeriesCandidate(series)) return false;
+  const prices = seriesPriceValues(series);
+  const medianPrice = medianNumber(prices);
+  if (!Number.isFinite(medianPrice) || medianPrice <= 0 || medianPrice > SINGLE_EPISODE_SERIES_PRICE_MAX) {
+    return false;
+  }
+
+  const items = Array.isArray(series?.items) ? series.items : [];
+  const expected = Number(series?.expectedVolumeCount) || 0;
+  const countMismatch = expected > 0 && items.length > Math.max(expected * 2, expected + 5);
+  const betterAlternative = alternatives.some((candidate) => isBetterNonBulkAlternative(series, candidate));
+
+  return betterAlternative || (countMismatch && items.length >= SUSPICIOUS_BULK_SERIES_COUNT_MIN);
+}
+
+function isMostlyAmazonBulkSeriesCandidate(series) {
+  const items = Array.isArray(series?.items) ? series.items : [];
+  if (items.length === 0) return false;
+  const bulkItems = items.filter((item) => String(item?.provider || '').toLowerCase() === 'amazon_series_bulk');
+  return bulkItems.length / items.length >= 0.75;
+}
+
+function isBetterNonBulkAlternative(series, candidate) {
+  const items = Array.isArray(series?.items) ? series.items : [];
+  const candidateItems = Array.isArray(candidate?.items) ? candidate.items : [];
+  if (candidateItems.length < 2 || candidateItems.length >= items.length) return false;
+  if (!isSameNamedSeries(series, candidate)) return false;
+
+  const candidateVolumes = candidateItems.map(seriesItemVolume).filter((volume) => volume > 0);
+  const candidateExpected = Number(candidate?.expectedVolumeCount) || 0;
+  const candidateLooksComplete =
+    candidateExpected > 0
+      ? candidateItems.length >= Math.min(candidateExpected, Math.max(...candidateVolumes, 0))
+      : candidateVolumes.length >= candidateItems.length;
+  return candidateLooksComplete;
+}
+
+function isSameNamedSeries(left, right) {
+  const leftName = normalizeSeriesNameForComparison(left?.seriesName);
+  const rightName = normalizeSeriesNameForComparison(right?.seriesName);
+  return Boolean(leftName && rightName && leftName === rightName);
+}
+
+function normalizeSeriesNameForComparison(value) {
+  return String(value || '')
+    .replace(/[！-～]/g, (char) => String.fromCharCode(char.charCodeAt(0) - 0xfee0))
+    .replace(/\s+/g, '')
+    .toLowerCase();
+}
+
+function seriesPriceValues(series) {
+  return (Array.isArray(series?.items) ? series.items : [])
+    .map((item) => Number(item?.currentPrice))
+    .filter((price) => Number.isFinite(price) && price > 0);
+}
+
+function medianNumber(values) {
+  if (!values.length) return NaN;
+  const sorted = [...values].sort((left, right) => left - right);
+  return sorted[Math.floor(sorted.length / 2)];
 }
 
 function seriesNamesForSaleBon(candidates) {
@@ -1811,13 +1891,45 @@ function mergeWithKnownSeriesItems(items, books, options) {
   for (const item of items) {
     if (item.asin) merged.set(item.asin, item);
   }
+  const currentSeriesAsins = new Set(merged.keys());
 
   for (const book of books) {
     if (!isKnownBookForSeries(book, options) || merged.has(book.asin)) continue;
+    if (isLikelyObsoleteSingleEpisodeSeriesBook(book, currentSeriesAsins)) continue;
     merged.set(book.asin, seedFromExistingBook(book));
   }
 
   return [...merged.values()].sort(compareSeriesItemSeeds);
+}
+
+function removeStoreBooksById(store, ids) {
+  if (!ids?.size) return;
+  store.books = store.books.filter((book) => !ids.has(book.id));
+  store.priceHistory = store.priceHistory.filter((entry) => !ids.has(entry.bookId));
+  store.notifications = store.notifications.filter((entry) => !ids.has(entry.bookId));
+  resetCursorIfDeleted(store, ids);
+}
+
+function isLikelyObsoleteSingleEpisodeSeriesBook(book, currentSeriesAsins) {
+  if (!book?.asin || currentSeriesAsins.has(book.asin)) return false;
+  if (isSingleEpisodeLikeTitle(book.title)) return true;
+  return isCheapAmazonBulkSeriesBook(book);
+}
+
+function isSingleEpisodeLikeTitle(title) {
+  const value = String(title || '');
+  return /単話|分冊|全\s*[0-9０-９]{1,4}\s*話中第\s*[0-9０-９]{1,4}\s*話|第\s*[0-9０-９]{1,4}\s*話/u.test(value);
+}
+
+function isCheapAmazonBulkSeriesBook(book) {
+  const provider = String(book?.provider || '').toLowerCase();
+  const price = Number(book?.currentPrice);
+  return (
+    provider === 'amazon_series_bulk' &&
+    Number.isFinite(price) &&
+    price > 0 &&
+    price <= SINGLE_EPISODE_SERIES_PRICE_MAX
+  );
 }
 
 function isKnownBookForSeries(book, options) {
