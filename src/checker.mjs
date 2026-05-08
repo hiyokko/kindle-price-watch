@@ -786,16 +786,14 @@ function shouldUseSourcePriceFallback(series, itemsByAsin) {
   const sourcePrice = series?.sourcePriceSeed?.currentPrice;
   if (sourcePrice == null) return false;
   if (!Number.isFinite(Number(sourcePrice)) || Number(sourcePrice) <= 0) return false;
+  if (isSeriesUnitPriceSeed(series.sourcePriceSeed)) return false;
 
   const items = [...itemsByAsin.values()];
   if (items.length === 0) return false;
   if (items.some((item) => item.currentPrice != null)) return false;
 
   const sourceProvider = String(series?.sourcePriceSeed?.provider || '').toLowerCase();
-  const maxCount =
-    sourceProvider === 'amazon_series_unit_price'
-      ? floorNumber(process.env.SERIES_UNIT_PRICE_FALLBACK_MAX_COUNT, 1, 200)
-      : floorNumber(process.env.SERIES_SOURCE_PRICE_FALLBACK_MAX_COUNT, 1, 12);
+  const maxCount = floorNumber(process.env.SERIES_SOURCE_PRICE_FALLBACK_MAX_COUNT, 1, 12);
   const expectedCount = Math.max(Number(series?.expectedVolumeCount) || 0, maxSeriesItemVolume(items), items.length);
   if (expectedCount > maxCount || items.length > maxCount) return false;
 
@@ -1375,7 +1373,7 @@ function seriesPriceProviderRank(provider) {
   if (normalized === 'amazon_reader') return 90;
   if (normalized === 'listasin') return 85;
   if (normalized === 'amazon_series_bulk') return 95;
-  if (normalized === 'amazon_series_unit_price') return 90;
+  if (normalized === 'amazon_series_unit_price') return 50;
   if (normalized === 'amazon_series_reader') return 70;
   if (normalized === 'efox') return 82;
   if (normalized === 'efox_series') return 79;
