@@ -1,5 +1,6 @@
 const state = {
   books: [],
+  groups: [],
   settings: null,
   automation: null,
   discordConfigured: false,
@@ -206,6 +207,7 @@ function populateExecutionHourOptions() {
 async function loadBooks() {
   const data = await api('/api/books');
   state.books = data.books;
+  state.groups = groupBooks(state.books);
   const bookIds = new Set(state.books.map((book) => book.id));
   state.selectedBookIds = new Set([...state.selectedBookIds].filter((id) => bookIds.has(id)));
   renderBooks();
@@ -216,7 +218,7 @@ async function loadBooks() {
 function renderSummary() {
   els.bookCount.textContent = String(state.books.length);
   els.dropCount.textContent = String(state.books.filter(isBelowList).length);
-  els.bestCount.textContent = String(groupBooks(state.books).filter(isGroupAtBestEver).length);
+  els.bestCount.textContent = String(state.groups.filter(isGroupAtBestEver).length);
   els.bookCount.classList.toggle('active', state.activeFilter === 'all');
   els.bookCount.setAttribute('aria-pressed', String(state.activeFilter === 'all'));
   els.bestCount.classList.toggle('active', state.activeFilter === 'best');
@@ -302,9 +304,8 @@ function renderBooks() {
 }
 
 function filteredGroups() {
-  const groups = groupBooks(state.books);
-  if (state.activeFilter === 'best') return groups.filter(isGroupAtBestEver);
-  return groups;
+  if (state.activeFilter === 'best') return state.groups.filter(isGroupAtBestEver);
+  return state.groups;
 }
 
 function visibleBookIds() {
@@ -640,6 +641,7 @@ function groupBooks(books) {
     group.seriesCompleted = group.books.some((book) => book.seriesCompleted);
     group.seriesLastDiscoveredAt = latestSeriesDiscoveredAt(group.books);
     group.seriesDiscoveryError = latestSeriesDiscoveryError(group.books);
+    group.totalMetrics = seriesTotalMetrics(group);
     return group;
   });
 }
@@ -658,8 +660,8 @@ function sortedGroups(groups) {
 }
 
 function compareGroupsByTotalPrice(a, b) {
-  const am = seriesTotalMetrics(a);
-  const bm = seriesTotalMetrics(b);
+  const am = a.totalMetrics || seriesTotalMetrics(a);
+  const bm = b.totalMetrics || seriesTotalMetrics(b);
   const ar = totalPriceSortRank(am);
   const br = totalPriceSortRank(bm);
   if (ar !== br) return ar - br;
@@ -697,9 +699,14 @@ function latestSeriesDiscoveredAt(books) {
 }
 
 function latestSeriesDiscoveryError(books) {
-  return [...books]
-    .sort((a, b) => new Date(b.seriesLastDiscoveredAt || 0) - new Date(a.seriesLastDiscoveredAt || 0))
-    .find((book) => book.seriesDiscoveryError)?.seriesDiscoveryError || '';
+  let latest = null;
+  for (const book of books) {
+    if (!book.seriesDiscoveryError) continue;
+    const rawTime = new Date(book.seriesLastDiscoveredAt || 0).getTime();
+    const time = Number.isFinite(rawTime) ? rawTime : 0;
+    if (!latest || time > latest.time) latest = { time, error: book.seriesDiscoveryError };
+  }
+  return latest?.error || '';
 }
 
 function compareBooksWithinGroup(a, b) {
@@ -764,7 +771,8 @@ function formatPrice(book) {
 }
 
 function seriesTotalLabel(group) {
-  const { pricedCount, totalPrice, totalPoints, effectiveTotal, missing, unregistered } = seriesTotalMetrics(group);
+  const { pricedCount, totalPrice, totalPoints, effectiveTotal, missing, unregistered } =
+    group.totalMetrics || seriesTotalMetrics(group);
   if (pricedCount === 0) return '合計 未取得';
 
   const points = totalPoints > 0 ? ` / ${totalPoints.toLocaleString('ja-JP')}pt（実質 ${yen(effectiveTotal)}）` : '';
@@ -856,7 +864,7 @@ function isAtBestEver(book) {
 function isGroupAtBestEver(group) {
   if (!group.isSeries) return isAtBestEver(group.books[0]);
 
-  const metrics = seriesTotalMetrics(group);
+  const metrics = group.totalMetrics || seriesTotalMetrics(group);
   return (
     metrics.complete &&
     metrics.lowestPricedCount === group.books.length &&

@@ -88,10 +88,6 @@ function mergeStore(store) {
 }
 
 export async function readStore() {
-  if (hasSupabaseConfig()) {
-    return readSupabaseStore();
-  }
-
   if (hasBlobConfig()) {
     return readBlobStore();
   }
@@ -102,10 +98,6 @@ export async function readStore() {
 }
 
 export async function updateStore(mutator) {
-  if (hasSupabaseConfig()) {
-    return updateSupabaseStore(mutator);
-  }
-
   if (hasBlobConfig()) {
     return updateBlobStore(mutator);
   }
@@ -226,10 +218,6 @@ function normalizeAutomation(automation) {
     ...defaultStore.automation,
     ...(automation || {})
   };
-}
-
-function hasSupabaseConfig() {
-  return Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY);
 }
 
 function hasBlobConfig() {
@@ -453,58 +441,4 @@ function cloneJson(value) {
 function blobStoreMemoryCacheMs() {
   const value = Number(process.env.BLOB_STORE_MEMORY_CACHE_MS);
   return Number.isFinite(value) && value >= 0 ? Math.round(value) : 15000;
-}
-
-async function readSupabaseStore() {
-  const rows = await supabaseFetch('/rest/v1/app_state?key=eq.store&select=value');
-  if (Array.isArray(rows) && rows[0]?.value) {
-    return mergeStore(rows[0].value);
-  }
-
-  await writeSupabaseStore(defaultStore);
-  return mergeStore(defaultStore);
-}
-
-async function updateSupabaseStore(mutator) {
-  const store = await readSupabaseStore();
-  const next = mergeStore(await mutator(store));
-  await writeSupabaseStore(next);
-  return next;
-}
-
-async function writeSupabaseStore(store) {
-  await supabaseFetch('/rest/v1/app_state?on_conflict=key', {
-    method: 'POST',
-    headers: {
-      Prefer: 'resolution=merge-duplicates'
-    },
-    body: JSON.stringify({
-      key: 'store',
-      value: store,
-      updated_at: new Date().toISOString()
-    })
-  });
-}
-
-async function supabaseFetch(pathname, options = {}) {
-  const baseUrl = process.env.SUPABASE_URL.replace(/\/$/, '');
-  const response = await fetch(`${baseUrl}${pathname}`, {
-    method: options.method || 'GET',
-    headers: {
-      apikey: process.env.SUPABASE_SERVICE_ROLE_KEY,
-      Authorization: `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}`,
-      'Content-Type': 'application/json',
-      ...(options.headers || {})
-    },
-    body: options.body
-  });
-
-  if (!response.ok) {
-    const body = await response.text().catch(() => '');
-    throw new Error(`Supabase HTTP ${response.status}: ${body.slice(0, 160)}`);
-  }
-
-  if (response.status === 204) return null;
-  const text = await response.text();
-  return text ? JSON.parse(text) : null;
 }

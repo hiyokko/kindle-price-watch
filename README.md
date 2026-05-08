@@ -17,7 +17,7 @@ npm start
 
 ## Vercel無料枠で使う
 
-Vercelのファイルシステムは永続保存に向かないため、GUIとAPIはVercel、データ保存はVercel Blobを使います。保存先の優先順位は `Supabase > Vercel Blob > ローカルJSON` です。
+Vercelのファイルシステムは永続保存に向かないため、GUIとAPIはVercel、データ保存はVercel Blobを使います。ローカル開発では `data/store.json` を使います。
 
 ### 1. Vercel Blobを作成
 
@@ -65,18 +65,6 @@ BLOB_READ_WRITE_TOKEN=Vercel BlobのRead Write Token
 ```
 
 Discord Webhookはアプリ画面から保存済みであればBlobから読み込まれます。GitHub Actions側だけで通知先を指定したい場合は、追加で `DISCORD_WEBHOOK_URL` をSecretに登録します。
-
-### Supabaseを使う場合
-
-Supabaseを使う場合はSQL Editorで次を実行し、`SUPABASE_URL` と `SUPABASE_SERVICE_ROLE_KEY` をVercel環境変数に設定します。Supabase設定がある場合はBlobより優先されます。
-
-```sql
-create table if not exists app_state (
-  key text primary key,
-  value jsonb not null,
-  updated_at timestamptz not null default now()
-);
-```
 
 ## 価格取得について
 

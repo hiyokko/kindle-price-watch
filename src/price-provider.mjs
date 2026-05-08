@@ -661,20 +661,7 @@ function externalSeriesBaseName(title) {
     .trim();
 }
 
-export async function fetchKindleSeriesAsins(input) {
-  const series = await fetchKindleSeriesItems(input);
-  return series.items.map((item) => item.asin);
-}
-
-export function extractKindleSeriesAsinsFromHtml(html) {
-  return extractKindleSeriesItemsFromHtml(html).map((item) => item.asin);
-}
-
-export function isKindleCollectionPageHtml(html, sourceAsin = '') {
-  return isKindleCollectionPage(html, sourceAsin, extractKindleSeriesItemsFromHtml(html));
-}
-
-export function extractKindleSeriesItemsFromHtml(html) {
+function extractKindleSeriesItemsFromHtml(html) {
   const ordered = new Map();
   const value = String(html || '');
   const seriesName = extractSeriesName(value);
@@ -728,7 +715,7 @@ export function extractKindleSeriesItemsFromHtml(html) {
   return [...ordered.values()].filter((item) => isProbablyBookAsin(item.asin));
 }
 
-export function extractExternalKindleSeriesItemsFromHtml(html, sourceAsin = '') {
+function extractExternalKindleSeriesItemsFromHtml(html, sourceAsin = '') {
   const block = extractExternalMainSeriesBlock(html);
   const seriesName = extractExternalSeriesName(html);
   const seriesImageUrl = extractExternalSeriesImage(html);
