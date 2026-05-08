@@ -2496,7 +2496,8 @@ function shouldRunBookImportQueue(source, options = {}) {
 
 async function processBookImportQueueInStore(store, options = {}) {
   const now = options.now || new Date().toISOString();
-  const inputs = await loadBookImportQueueInputs();
+  const inputs = await loadBookImportQueueInputs(store);
+  const pending = new Map((store.importQueue?.pending || []).map((entry) => [entry.key, entry]));
   const completed = new Map((store.importQueue?.completed || []).map((entry) => [entry.key, entry]));
   const existingErrors = new Map((store.importQueue?.errors || []).map((entry) => [entry.key, entry]));
   const results = [];
@@ -2507,7 +2508,7 @@ async function processBookImportQueueInStore(store, options = {}) {
   let skippedCompleted = 0;
   let stoppedByRuntimeLimit = false;
 
-  store.importQueue = store.importQueue || { completed: [], errors: [] };
+  store.importQueue = store.importQueue || { pending: [], completed: [], errors: [] };
 
   for (const input of inputs) {
     if (shouldStopForRuntimeLimit(options.startedAt, options.maxRuntimeMs, results.length + errors.length)) {
@@ -2517,6 +2518,7 @@ async function processBookImportQueueInStore(store, options = {}) {
 
     const key = bookImportQueueKey(input);
     if (completed.has(key)) {
+      pending.delete(key);
       skippedCompleted += 1;
       continue;
     }
@@ -2533,6 +2535,7 @@ async function processBookImportQueueInStore(store, options = {}) {
         updatedDuplicates: Number(result.updatedDuplicates || 0)
       };
       completed.set(key, entry);
+      pending.delete(key);
       existingErrors.delete(key);
       imported += entry.imported;
       skippedDuplicates += entry.skippedDuplicates;
@@ -2550,6 +2553,7 @@ async function processBookImportQueueInStore(store, options = {}) {
     }
   }
 
+  store.importQueue.pending = [...pending.values()];
   store.importQueue.completed = [...completed.values()].slice(-200);
   store.importQueue.errors = [...existingErrors.values()].slice(-100);
 
@@ -2566,8 +2570,12 @@ async function processBookImportQueueInStore(store, options = {}) {
   };
 }
 
-async function loadBookImportQueueInputs() {
+async function loadBookImportQueueInputs(store = null) {
   const inputs = new Map();
+  for (const entry of store?.importQueue?.pending || []) {
+    if (entry?.input) inputs.set(bookImportQueueKey(entry.input), entry.input);
+  }
+
   for (const input of parseBookImportInputs(process.env.BOOK_IMPORT_INPUTS || '')) {
     inputs.set(bookImportQueueKey(input), input);
   }
@@ -2710,8 +2718,79 @@ export async function getSettingsSummary() {
   return {
     settings: mergedRuntimeSettings(store.settings),
     automation: store.automation || {},
+    importQueue: importQueueSummary(store.importQueue),
     discordConfigured: webhooks.count > 0,
     discordWebhookCount: webhooks.count
+  };
+}
+
+export async function getBookImportQueue() {
+  const store = await readStore();
+  return publicBookImportQueue(store.importQueue);
+}
+
+export async function saveBookImportQueue(inputs) {
+  const parsedInputs = Array.isArray(inputs)
+    ? inputs.map(normalizeBookImportInput).filter(Boolean)
+    : parseBookImportInputs(inputs);
+  const deduped = [...new Map(parsedInputs.map((input) => [bookImportQueueKey(input), input])).values()];
+  const now = new Date().toISOString();
+  let result;
+
+  await updateStore((store) => {
+    store.importQueue = store.importQueue || { pending: [], completed: [], errors: [] };
+    const previousPending = new Map((store.importQueue.pending || []).map((entry) => [entry.key, entry]));
+    store.importQueue.pending = deduped.map((input) => {
+      const key = bookImportQueueKey(input);
+      const previous = previousPending.get(key);
+      return {
+        key,
+        input,
+        addedAt: previous?.addedAt || now
+      };
+    });
+    result = publicBookImportQueue(store.importQueue);
+    return store;
+  });
+
+  return result;
+}
+
+function publicBookImportQueue(queue = {}) {
+  const pending = (queue.pending || []).map((entry) => ({
+    key: entry.key,
+    input: entry.input,
+    addedAt: entry.addedAt || ''
+  }));
+  const completed = (queue.completed || []).map((entry) => ({
+    key: entry.key,
+    input: entry.input,
+    importedAt: entry.importedAt || '',
+    mode: entry.mode || '',
+    imported: Number(entry.imported || 0),
+    skippedDuplicates: Number(entry.skippedDuplicates || 0),
+    updatedDuplicates: Number(entry.updatedDuplicates || 0)
+  }));
+  const errors = (queue.errors || []).map((entry) => ({
+    key: entry.key,
+    input: entry.input,
+    checkedAt: entry.checkedAt || '',
+    error: entry.error || ''
+  }));
+
+  return {
+    pending,
+    completed,
+    errors,
+    summary: importQueueSummary({ pending, completed, errors })
+  };
+}
+
+function importQueueSummary(queue = {}) {
+  return {
+    pendingCount: Array.isArray(queue.pending) ? queue.pending.length : 0,
+    completedCount: Array.isArray(queue.completed) ? queue.completed.length : 0,
+    errorCount: Array.isArray(queue.errors) ? queue.errors.length : 0
   };
 }
 

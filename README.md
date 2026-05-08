@@ -90,6 +90,8 @@ Vercel Hobbyでは登録時に全巻の詳細取得まで行うとタイムア�
 
 Blob Advanced Operationsを増やさずに本を追加したい場合は、GUIで都度保存せず、`data/import-queue.txt` にAmazon Kindle URLまたはASINを1行ずつ追加します。GitHub ActionsのJST 16:00実行時に未処理の行だけを取り込み、価格チェック・シリーズ新刊探索と同じ最後の一括保存に含めます。環境変数で渡す場合は `BOOK_IMPORT_INPUTS` に改行区切りまたはJSON配列を設定できます。キューファイルを使わない場合は `BOOK_IMPORT_QUEUE_PATH=false` にします。
 
+画面上部の「追加キュー」からも次回追加予定のURL/ASINを保存できます。画面で保存したキューはBlobの `importQueue.pending` に入り、`data/import-queue.txt` や `BOOK_IMPORT_INPUTS` と同じく次回のGitHub Actions実行時に処理されます。成功した入力はpendingから外れ、直近の処理済み・エラー履歴は画面で確認できます。
+
 ## 定期実行
 
 GitHub Actionsでは毎日JST 16:00にWorkflowを起動します。アプリ画面の実行時刻もJST 16:00にしておくと、その起動で自動チェックが始まります。再確認間隔は24時間差分ではなく、24時間なら毎日定時、48時間なら2日ごとの定時、72時間なら3日ごとの定時として判定します。1000冊規模でもAmazonや補助サイトに連続アクセスしすぎないよう、`CHECK_REQUEST_DELAY_MS` / `CHECK_REQUEST_JITTER_MS` / `HTTP_REQUEST_MIN_INTERVAL_MS` で待機時間を調整します。429/503/CAPTCHA系の応答を検知した場合は、`CHECK_BLOCK_COOLDOWN_MS` / `HTTP_BLOCK_COOLDOWN_MS` のクールダウンを挟みます。GitHub Actions側では `CHECK_MAX_RUNTIME_MS=18000000` を設定し、Workflowの強制終了より前にアプリ自身が停止して一括保存できるようにします。

@@ -8,12 +8,14 @@ import {
   deleteBooks,
   deleteSeries,
   getDiscordWebhooks,
+  getBookImportQueue,
   getHistory,
   getSettingsSummary,
   listBooks,
   repairBookPricesByAsins,
   runDueChecks,
   saveDiscordWebhooks,
+  saveBookImportQueue,
   saveSettings,
   sendTestNotification
 } from './checker.mjs';
@@ -81,6 +83,14 @@ export async function settingsPayload() {
     ...(await getSettingsSummary()),
     ...diagnosticsPayload()
   };
+}
+
+export async function importQueuePayload() {
+  return getBookImportQueue();
+}
+
+export async function saveImportQueuePayload(body = {}) {
+  return saveBookImportQueue(Array.isArray(body.inputs) ? body.inputs : body.text || body.urls || '');
 }
 
 export async function saveSettingsPayload(body = {}) {

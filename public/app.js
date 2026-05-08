@@ -3,6 +3,7 @@ const state = {
   groups: [],
   settings: null,
   automation: null,
+  importQueue: { pending: [], completed: [], errors: [], summary: { pendingCount: 0, completedCount: 0, errorCount: 0 } },
   discordConfigured: false,
   discordWebhookCount: 0,
   discordWebhookUrls: [],
@@ -33,6 +34,7 @@ const els = {
   bookCount: document.getElementById('bookCount'),
   dropCount: document.getElementById('dropCount'),
   bestCount: document.getElementById('bestCount'),
+  importQueueState: document.getElementById('importQueueState'),
   discordState: document.getElementById('discordState'),
   cronState: document.getElementById('cronState'),
   historyDialog: document.getElementById('historyDialog'),
@@ -44,7 +46,17 @@ const els = {
   webhookList: document.getElementById('webhookList'),
   addWebhookButton: document.getElementById('addWebhookButton'),
   saveWebhookButton: document.getElementById('saveWebhookButton'),
-  closeWebhookButton: document.getElementById('closeWebhookButton')
+  closeWebhookButton: document.getElementById('closeWebhookButton'),
+  importQueueDialog: document.getElementById('importQueueDialog'),
+  importQueueForm: document.getElementById('importQueueForm'),
+  importQueueInput: document.getElementById('importQueueInput'),
+  importQueuePendingCount: document.getElementById('importQueuePendingCount'),
+  importQueueCompletedCount: document.getElementById('importQueueCompletedCount'),
+  importQueueErrorCount: document.getElementById('importQueueErrorCount'),
+  importQueueErrors: document.getElementById('importQueueErrors'),
+  closeImportQueueButton: document.getElementById('closeImportQueueButton'),
+  clearImportQueueButton: document.getElementById('clearImportQueueButton'),
+  saveImportQueueButton: document.getElementById('saveImportQueueButton')
 };
 
 populateExecutionHourOptions();
@@ -108,6 +120,7 @@ els.refreshButton.addEventListener('click', load);
 els.bookCount.addEventListener('click', () => setBookFilter('all'));
 els.bestCount.addEventListener('click', () => setBookFilter(state.activeFilter === 'best' ? 'all' : 'best'));
 els.discordState.addEventListener('click', openWebhookDialog);
+els.importQueueState.addEventListener('click', openImportQueueDialog);
 els.sortInput.value = state.sortMode;
 els.sortInput.addEventListener('change', () => {
   state.sortMode = els.sortInput.value;
@@ -131,7 +144,12 @@ els.testNotifyButton.addEventListener('click', async () => {
 
 els.closeHistoryButton.addEventListener('click', () => els.historyDialog.close());
 els.closeWebhookButton.addEventListener('click', () => els.webhookDialog.close());
+els.closeImportQueueButton.addEventListener('click', () => els.importQueueDialog.close());
 els.addWebhookButton.addEventListener('click', () => addWebhookRow('', true));
+els.clearImportQueueButton.addEventListener('click', () => {
+  els.importQueueInput.value = '';
+  els.importQueueInput.focus();
+});
 els.webhookForm.addEventListener('submit', async (event) => {
   event.preventDefault();
   setBusy(els.saveWebhookButton, true, '保存中');
@@ -149,6 +167,25 @@ els.webhookForm.addEventListener('submit', async (event) => {
     setMessage(error.message, 'error');
   } finally {
     setBusy(els.saveWebhookButton, false, '保存');
+  }
+});
+els.importQueueForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  setBusy(els.saveImportQueueButton, true, '保存中');
+  try {
+    const data = await api('/api/import-queue', {
+      method: 'PUT',
+      body: { text: els.importQueueInput.value }
+    });
+    state.importQueue = data;
+    renderImportQueue(data);
+    renderSummary();
+    setMessage('追加キューを保存しました', 'success');
+    els.importQueueDialog.close();
+  } catch (error) {
+    setMessage(error.message, 'error');
+  } finally {
+    setBusy(els.saveImportQueueButton, false, '保存');
   }
 });
 
@@ -184,6 +221,7 @@ async function loadSettings() {
   const data = await api('/api/settings');
   state.settings = data.settings;
   state.automation = data.automation || null;
+  state.importQueue = { ...state.importQueue, summary: data.importQueue || state.importQueue.summary };
   state.discordConfigured = data.discordConfigured;
   state.discordWebhookCount = data.discordWebhookCount || 0;
   els.thresholdInput.value = String(data.settings.notificationThreshold);
@@ -219,6 +257,7 @@ function renderSummary() {
   els.bookCount.textContent = String(state.books.length);
   els.dropCount.textContent = String(state.books.filter(isBelowList).length);
   els.bestCount.textContent = String(state.groups.filter(isGroupAtBestEver).length);
+  els.importQueueState.textContent = String(state.importQueue?.summary?.pendingCount || 0);
   els.bookCount.classList.toggle('active', state.activeFilter === 'all');
   els.bookCount.setAttribute('aria-pressed', String(state.activeFilter === 'all'));
   els.bestCount.classList.toggle('active', state.activeFilter === 'best');
@@ -248,6 +287,39 @@ async function openWebhookDialog() {
   } catch (error) {
     setMessage(error.message, 'error');
   }
+}
+
+async function openImportQueueDialog() {
+  try {
+    const data = await api('/api/import-queue');
+    state.importQueue = data;
+    renderImportQueue(data);
+    renderSummary();
+    els.importQueueDialog.showModal();
+  } catch (error) {
+    setMessage(error.message, 'error');
+  }
+}
+
+function renderImportQueue(data) {
+  const pending = data.pending || [];
+  const completed = data.completed || [];
+  const errors = data.errors || [];
+  const summary = data.summary || {
+    pendingCount: pending.length,
+    completedCount: completed.length,
+    errorCount: errors.length
+  };
+  state.importQueue = { pending, completed, errors, summary };
+  els.importQueueInput.value = pending.map((entry) => entry.input).join('\n');
+  els.importQueuePendingCount.textContent = String(summary.pendingCount || 0);
+  els.importQueueCompletedCount.textContent = String(summary.completedCount || 0);
+  els.importQueueErrorCount.textContent = String(summary.errorCount || 0);
+  const visibleErrors = errors.slice(-5).reverse();
+  els.importQueueErrors.hidden = visibleErrors.length === 0;
+  els.importQueueErrors.innerHTML = visibleErrors
+    .map((entry) => `<div class="import-queue-error"><strong>${escapeHtml(entry.input)}</strong><br>${escapeHtml(entry.error)}</div>`)
+    .join('');
 }
 
 function renderWebhookRows(urls) {

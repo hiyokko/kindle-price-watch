@@ -12,10 +12,12 @@ import {
   deleteBooksPayload,
   deleteSeriesPayload,
   historyPayload,
+  importQueuePayload,
   listBooksPayload,
   repairBookPricesPayload,
   runChecksPayload,
   saveSettingsPayload,
+  saveImportQueuePayload,
   saveWebhooksPayload,
   settingsPayload,
   testNotificationPayload,
@@ -105,6 +107,16 @@ async function handleApi(req, res, url) {
 
   if (method === 'POST' && url.pathname === '/api/books/repair-prices') {
     sendJson(res, 200, await repairBookPricesPayload(await readBody(req)));
+    return;
+  }
+
+  if (method === 'GET' && url.pathname === '/api/import-queue') {
+    sendJson(res, 200, await importQueuePayload());
+    return;
+  }
+
+  if (method === 'PUT' && url.pathname === '/api/import-queue') {
+    sendJson(res, 200, await saveImportQueuePayload(await readBody(req)));
     return;
   }
 

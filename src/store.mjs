@@ -47,6 +47,7 @@ const defaultStore = {
     checkedAt: ''
   },
   importQueue: {
+    pending: [],
     completed: [],
     errors: []
   }
@@ -188,9 +189,17 @@ function normalizeSeriesDiscoveryCursor(cursor) {
 }
 
 function normalizeImportQueue(queue) {
+  const pending = Array.isArray(queue?.pending) ? queue.pending : [];
   const completed = Array.isArray(queue?.completed) ? queue.completed : [];
   const errors = Array.isArray(queue?.errors) ? queue.errors : [];
   return {
+    pending: pending
+      .filter((entry) => entry && entry.key && entry.input)
+      .map((entry) => ({
+        key: String(entry.key),
+        input: String(entry.input),
+        addedAt: entry.addedAt || ''
+      })),
     completed: completed
       .filter((entry) => entry && entry.key && entry.input)
       .map((entry) => ({
@@ -360,6 +369,13 @@ function compactHistoryEntryForWrite(entry) {
 
 function compactImportQueueForWrite(queue = {}) {
   return compactObject({
+    pending: (queue.pending || []).map((entry) =>
+      compactObject({
+        key: entry.key,
+        input: entry.input,
+        addedAt: emptyToUndefined(entry.addedAt)
+      })
+    ),
     completed: (queue.completed || []).map((entry) =>
       compactObject({
         key: entry.key,

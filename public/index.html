@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Kindle Price Watch</title>
-    <link rel="stylesheet" href="/styles.css?v=20260509-2">
+    <link rel="stylesheet" href="/styles.css?v=20260509-3">
   </head>
   <body>
     <header class="topbar">
@@ -42,6 +42,10 @@
         <div class="summary">
           <span class="summary-value compact" id="cronState">未実行</span>
           <span class="summary-label">自動実行</span>
+        </div>
+        <div class="summary">
+          <button class="summary-value summary-button" id="importQueueState" type="button">0</button>
+          <span class="summary-label">追加キュー</span>
         </div>
       </section>
 
@@ -134,6 +138,41 @@
       </form>
     </dialog>
 
+    <dialog class="import-queue-dialog" id="importQueueDialog">
+      <div class="dialog-header">
+        <div>
+          <p class="eyebrow">一括追加</p>
+          <h2>追加キュー</h2>
+        </div>
+        <button class="icon-button" id="closeImportQueueButton" type="button" title="閉じる" aria-label="閉じる">×</button>
+      </div>
+      <form class="import-queue-form" id="importQueueForm">
+        <label class="field">
+          <span>次回追加予定</span>
+          <textarea id="importQueueInput" rows="8" placeholder="Amazon Kindle URL または ASIN を1行ずつ入力"></textarea>
+        </label>
+        <div class="import-queue-stats">
+          <div>
+            <span class="price-label">予定</span>
+            <strong id="importQueuePendingCount">0</strong>
+          </div>
+          <div>
+            <span class="price-label">処理済み</span>
+            <strong id="importQueueCompletedCount">0</strong>
+          </div>
+          <div>
+            <span class="price-label">エラー</span>
+            <strong id="importQueueErrorCount">0</strong>
+          </div>
+        </div>
+        <div class="import-queue-errors" id="importQueueErrors" hidden></div>
+        <div class="dialog-actions">
+          <button class="ghost-button" id="clearImportQueueButton" type="button">入力クリア</button>
+          <button class="secondary-button" id="saveImportQueueButton" type="submit">保存</button>
+        </div>
+      </form>
+    </dialog>
+
     <template id="bookTemplate">
       <article class="book-card">
         <label class="book-select" title="選択">
@@ -176,6 +215,6 @@
       </article>
     </template>
 
-    <script src="/app.js?v=20260509-3" type="module"></script>
+    <script src="/app.js?v=20260509-4" type="module"></script>
   </body>
 </html>
