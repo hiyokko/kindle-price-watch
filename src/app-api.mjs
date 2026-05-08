@@ -11,6 +11,7 @@ import {
   getHistory,
   getSettingsSummary,
   listBooks,
+  repairBookPricesByAsins,
   runDueChecks,
   saveDiscordWebhooks,
   saveSettings,
@@ -63,6 +64,12 @@ export async function checkBookPayload(bookId) {
     ...(await checkBookById(bookId, { notify: true })),
     diagnostics: diagnosticsPayload()
   };
+}
+
+export async function repairBookPricesPayload(body = {}) {
+  return repairBookPricesByAsins(body.asins || [], {
+    notify: body.notify === true
+  });
 }
 
 export async function runChecksPayload(options = {}) {

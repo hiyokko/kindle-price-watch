@@ -1303,7 +1303,11 @@ function updateExistingSeriesBook(book, item, options) {
     if (correctingImplausiblePrice) repairImplausibleSeriesPriceHistory(book, options.store);
     changed = true;
   }
-  if (book.currentPrice != null && item.currentPrice != null && /価格補完/.test(book.lastError || '')) {
+  if (
+    book.currentPrice != null &&
+    item.currentPrice != null &&
+    (/価格補完/.test(book.lastError || '') || isTransientSnapshotError(book.lastError))
+  ) {
     book.lastError = '';
     changed = true;
   }
@@ -1353,6 +1357,7 @@ function shouldRefreshSeriesTitle(book, item) {
 
 function shouldRefreshSeriesPrice(book, item) {
   if (item.currentPrice == null) return false;
+  if (isUnverifiedFreeSeriesPriceProvider(item.provider, item.currentPrice)) return false;
   if (book.currentPrice == null) return true;
   if (book.currentPrice === 0 && item.currentPrice > 0) return true;
   if (isImplausibleStoredSeriesPrice(book, item)) return true;
@@ -1409,8 +1414,7 @@ function isImplausibleSeriesHistoryEntry(entry, book) {
 
 function shouldClearUnvalidatedSourcePrice(book, item) {
   return (
-    isUnvalidatedSeriesPriceProvider(book.provider) &&
-    book.currentPrice != null &&
+    hasUnvalidatedSeriesPrice(book) &&
     item.currentPrice == null &&
     item.lastError
   );
@@ -1467,6 +1471,17 @@ function repairSuspiciousPriceState(book, store, options = {}) {
   let currentRestored = false;
 
   if (clearUnreliableStoredListPrice(book)) changed = true;
+
+  if (
+    book.currentPrice != null &&
+    Number(book.currentPrice) > 0 &&
+    book.lastError &&
+    isTransientSnapshotError(book.lastError) &&
+    !suspiciousStoredCurrentPriceReason(book)
+  ) {
+    book.lastError = '';
+    changed = true;
+  }
 
   if (options.clearCurrent && (suspiciousStoredCurrentPriceReason(book) || hasUnvalidatedSeriesPrice(book))) {
     book.currentPrice = null;
@@ -1568,7 +1583,10 @@ function repairStorePriceState(store, options = {}) {
 }
 
 function hasUnvalidatedSeriesPrice(book) {
-  return isUnvalidatedSeriesPriceProvider(book.provider) && book.currentPrice != null;
+  return (
+    (isUnvalidatedSeriesPriceProvider(book.provider) || isUnverifiedFreeSeriesPriceProvider(book.provider, book.currentPrice)) &&
+    book.currentPrice != null
+  );
 }
 
 function latestValidPriceHistoryEntry(book, store) {
@@ -1584,11 +1602,22 @@ function latestValidPriceHistoryEntry(book, store) {
 }
 
 function isUnvalidatedSeriesPriceHistoryEntry(entry) {
-  return isUnvalidatedSeriesPriceProvider(entry?.provider) && entry.price != null;
+  return (
+    (isUnvalidatedSeriesPriceProvider(entry?.provider) || isUnverifiedFreeSeriesPriceProvider(entry?.provider, entry?.price)) &&
+    entry.price != null
+  );
 }
 
 function isUnvalidatedSeriesPriceProvider(provider) {
   return UNVALIDATED_SERIES_PRICE_PROVIDERS.has(String(provider || '').toLowerCase());
+}
+
+function isUnverifiedFreeSeriesPriceProvider(provider, currentPrice) {
+  const price = Number(currentPrice);
+  if (!Number.isFinite(price) || price !== 0) return false;
+  const normalized = String(provider || '').toLowerCase();
+  if (['amazon_html', 'amazon_reader', 'listasin', 'keepa'].includes(normalized)) return false;
+  return isSeriesDerivedPriceProvider(normalized);
 }
 
 function suspiciousStoredCurrentPriceReason(book) {
@@ -1925,6 +1954,92 @@ export async function checkBookById(id, options = {}) {
     throw error;
   }
   return checkOneBook(book, options);
+}
+
+export async function repairBookPricesByAsins(asins, options = {}) {
+  const requestedAsins = [
+    ...new Set(
+      (Array.isArray(asins) ? asins : [])
+        .map((asin) => String(asin || '').trim().toUpperCase())
+        .filter(isProbablyBookAsin)
+    )
+  ];
+  if (requestedAsins.length === 0) {
+    const error = new Error('修復対象のASINを指定してください');
+    error.status = 400;
+    throw error;
+  }
+  if (requestedAsins.length > 30) {
+    const error = new Error('一度に修復できるASINは30件までです');
+    error.status = 400;
+    throw error;
+  }
+
+  const now = options.now || new Date().toISOString();
+  const currentStore = await readStore();
+  const booksByAsin = new Map((currentStore.books || []).map((book) => [book.asin, book]));
+  const snapshotResults = [];
+  const missing = [];
+
+  for (const asin of requestedAsins) {
+    const book = booksByAsin.get(asin);
+    if (!book) {
+      missing.push(asin);
+      continue;
+    }
+    snapshotResults.push({
+      asin,
+      bookId: book.id,
+      snapshotResult: await settleSnapshot(asin, book)
+    });
+  }
+
+  const summary = {
+    mode: 'price_repair',
+    total: requestedAsins.length,
+    processed: 0,
+    repaired: 0,
+    failed: 0,
+    missing,
+    results: []
+  };
+
+  await updateStore((store) => {
+    for (const entry of snapshotResults) {
+      const bookBefore = store.books.find((book) => book.id === entry.bookId);
+      const before = bookBefore ? priceStateForComparison(bookBefore) : null;
+      const applied = applyCheckResultToStore(
+        store,
+        { id: entry.bookId, asin: entry.asin },
+        entry.snapshotResult,
+        now,
+        {
+          updateCursor: false,
+          recordNotifications: false
+        }
+      );
+      const bookAfter = applied.checkedBook;
+      const after = bookAfter ? priceStateForComparison(bookAfter) : null;
+      const changed = JSON.stringify(before) !== JSON.stringify(after);
+
+      summary.processed += 1;
+      if (entry.snapshotResult.ok) {
+        if (changed) summary.repaired += 1;
+      } else {
+        summary.failed += 1;
+      }
+      summary.results.push({
+        asin: entry.asin,
+        ok: Boolean(entry.snapshotResult.ok),
+        changed,
+        error: entry.snapshotResult.ok ? '' : entry.snapshotResult.error || '',
+        book: bookAfter ? publicBook(bookAfter) : null
+      });
+    }
+    return store;
+  });
+
+  return summary;
 }
 
 export async function runDueChecks(options = {}) {
@@ -2550,24 +2665,29 @@ function applyCheckResultToStore(store, bookRef, snapshotResult, now, options = 
   }
   repairSuspiciousPriceState(book, store);
 
-  const events = detectEvents({
-    book,
-    previousEffectivePrice,
-    previousLowestEffectivePrice,
-    settings
-  }).filter((event) => !alreadyNotified(store, book.id, event));
+  const events =
+    options.recordNotifications === false
+      ? []
+      : detectEvents({
+          book,
+          previousEffectivePrice,
+          previousLowestEffectivePrice,
+          settings
+        }).filter((event) => !alreadyNotified(store, book.id, event));
 
-  for (const event of events) {
-    store.notifications.push({
-      id: crypto.randomUUID(),
-      bookId: book.id,
-      asin: book.asin,
-      type: event.type,
-      effectivePrice: book.effectivePrice,
-      previousEffectivePrice,
-      createdAt: now,
-      status: 'pending'
-    });
+  if (options.recordNotifications !== false) {
+    for (const event of events) {
+      store.notifications.push({
+        id: crypto.randomUUID(),
+        bookId: book.id,
+        asin: book.asin,
+        type: event.type,
+        effectivePrice: book.effectivePrice,
+        previousEffectivePrice,
+        createdAt: now,
+        status: 'pending'
+      });
+    }
   }
 
   return { checkedBook: { ...book }, events };
@@ -2699,7 +2819,8 @@ async function findBookById(id) {
 async function buildBookFromAsin(asin, options = {}) {
   const fetchDetails = options.fetchDetails !== false;
   const seed = options.seed || {};
-  const seedPriceIsUnvalidated = isUnvalidatedSeriesPriceProvider(seed.provider);
+  const seedPriceIsUnvalidated =
+    isUnvalidatedSeriesPriceProvider(seed.provider) || isUnverifiedFreeSeriesPriceProvider(seed.provider, seed.currentPrice);
   const seedCurrentPrice = seedPriceIsUnvalidated ? null : seed.currentPrice ?? null;
   const now = options.createdAt || new Date().toISOString();
   let snapshot;
@@ -2942,6 +3063,21 @@ function samePriceHistoryState(left, right) {
     nullableNumber(left.effectivePrice) === nullableNumber(right.effectivePrice) &&
     nullableNumber(left.listPrice) === nullableNumber(right.listPrice)
   );
+}
+
+function priceStateForComparison(book) {
+  return {
+    title: book.title || '',
+    currentPrice: book.currentPrice ?? null,
+    currentPoints: book.currentPoints ?? 0,
+    effectivePrice: book.effectivePrice ?? null,
+    listPrice: book.listPrice ?? null,
+    lowestPrice: book.lowestPrice ?? null,
+    lowestEffectivePrice: book.lowestEffectivePrice ?? null,
+    provider: book.provider || '',
+    lastCheckedAt: book.lastCheckedAt || '',
+    lastError: book.lastError || ''
+  };
 }
 
 function nullableNumber(value) {

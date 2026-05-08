@@ -13,6 +13,7 @@ import {
   deleteSeriesPayload,
   historyPayload,
   listBooksPayload,
+  repairBookPricesPayload,
   runChecksPayload,
   saveSettingsPayload,
   saveWebhooksPayload,
@@ -99,6 +100,11 @@ async function handleApi(req, res, url) {
 
   if (method === 'POST' && url.pathname === '/api/check') {
     sendJson(res, 200, await runChecksPayload({ source: 'manual' }));
+    return;
+  }
+
+  if (method === 'POST' && url.pathname === '/api/books/repair-prices') {
+    sendJson(res, 200, await repairBookPricesPayload(await readBody(req)));
     return;
   }
 
