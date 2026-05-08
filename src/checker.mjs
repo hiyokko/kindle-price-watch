@@ -1160,7 +1160,7 @@ function isImplausibleSeriesHistoryEntry(entry, book) {
 
 function shouldClearUnvalidatedSourcePrice(book, item) {
   return (
-    book.provider === 'amazon_series_source_price' &&
+    (book.provider === 'amazon_series_source_price' || book.provider === 'amazon_series_unit_price') &&
     book.currentPrice != null &&
     item.currentPrice == null &&
     item.lastError
@@ -1217,11 +1217,11 @@ function repairSuspiciousPriceState(book, store, options = {}) {
   let currentCleared = false;
   let currentRestored = false;
 
-  if (options.clearCurrent && suspiciousStoredCurrentPriceReason(book)) {
+  if (options.clearCurrent && (suspiciousStoredCurrentPriceReason(book) || hasUnvalidatedSeriesUnitPrice(book))) {
     book.currentPrice = null;
     book.currentPoints = 0;
     book.effectivePrice = null;
-    book.provider = book.provider === 'amazon_html' ? 'pending' : book.provider;
+    book.provider = book.provider === 'amazon_html' || book.provider === 'amazon_series_unit_price' ? 'pending' : book.provider;
     currentCleared = true;
     changed = true;
   }
@@ -1260,6 +1260,10 @@ function repairSuspiciousPriceState(book, store, options = {}) {
   }
 
   return { changed, currentCleared, currentRestored, removedHistory, removedNotifications };
+}
+
+function hasUnvalidatedSeriesUnitPrice(book) {
+  return book.provider === 'amazon_series_unit_price' && book.currentPrice != null;
 }
 
 function latestValidPriceHistoryEntry(book, store) {
