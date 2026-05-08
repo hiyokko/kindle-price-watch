@@ -7,6 +7,11 @@ const blobWebhookPath = process.env.WEBHOOK_STORE_PATH || 'kindle-price-watch/we
 
 let writeQueue = Promise.resolve();
 let blobSdkPromise;
+let blobWebhookCache = {
+  expiresAt: 0,
+  store: null,
+  promise: null
+};
 
 export async function readWebhookStore() {
   if (hasBlobConfig()) return readBlobWebhookStore();
@@ -62,6 +67,22 @@ function hasBlobConfig() {
 }
 
 async function readBlobWebhookStore() {
+  const now = Date.now();
+  if (blobWebhookCache.store && blobWebhookCache.expiresAt > now) return cloneWebhookStore(blobWebhookCache.store);
+  if (blobWebhookCache.promise) return cloneWebhookStore(await blobWebhookCache.promise);
+
+  const promise = fetchBlobWebhookStore();
+  blobWebhookCache.promise = promise;
+  try {
+    const store = await promise;
+    setBlobWebhookCache(store);
+    return cloneWebhookStore(store);
+  } finally {
+    if (blobWebhookCache.promise === promise) blobWebhookCache.promise = null;
+  }
+}
+
+async function fetchBlobWebhookStore() {
   const { get } = await getBlobSdk();
   let result;
   try {
@@ -85,9 +106,27 @@ async function writeBlobWebhookStore(store) {
     contentType: 'application/json',
     cacheControlMaxAge: 0
   });
+  setBlobWebhookCache(store);
 }
 
 async function getBlobSdk() {
   blobSdkPromise ||= import('@vercel/blob');
   return blobSdkPromise;
+}
+
+function setBlobWebhookCache(store) {
+  blobWebhookCache = {
+    expiresAt: Date.now() + blobWebhookMemoryCacheMs(),
+    store: cloneWebhookStore(store),
+    promise: null
+  };
+}
+
+function cloneWebhookStore(store) {
+  return normalizeWebhookStore(JSON.parse(JSON.stringify(store || {})));
+}
+
+function blobWebhookMemoryCacheMs() {
+  const value = Number(process.env.BLOB_WEBHOOK_MEMORY_CACHE_MS ?? process.env.BLOB_STORE_MEMORY_CACHE_MS);
+  return Number.isFinite(value) && value >= 0 ? Math.round(value) : 15000;
 }

@@ -45,6 +45,11 @@ const defaultStore = {
 
 let writeQueue = Promise.resolve();
 let blobSdkPromise;
+let blobStoreCache = {
+  expiresAt: 0,
+  metadata: null,
+  promise: null
+};
 
 async function ensureStore() {
   await fs.mkdir(dataDir, { recursive: true });
@@ -188,7 +193,7 @@ async function readBlobStore() {
 
 async function updateBlobStore(mutator) {
   writeQueue = writeQueue.then(async () => {
-    const { store } = await readBlobStoreWithMetadata();
+    const { store } = await readBlobStoreWithMetadata({ force: true });
     const next = mergeStore(await mutator(store));
     await writeBlobStore(next);
     return next;
@@ -197,7 +202,27 @@ async function updateBlobStore(mutator) {
   return writeQueue;
 }
 
-async function readBlobStoreWithMetadata() {
+async function readBlobStoreWithMetadata(options = {}) {
+  const now = Date.now();
+  if (!options.force && blobStoreCache.metadata && blobStoreCache.expiresAt > now) {
+    return cloneBlobMetadata(blobStoreCache.metadata);
+  }
+  if (!options.force && blobStoreCache.promise) {
+    return cloneBlobMetadata(await blobStoreCache.promise);
+  }
+
+  const promise = fetchBlobStoreWithMetadata();
+  if (!options.force) blobStoreCache.promise = promise;
+  try {
+    const metadata = await promise;
+    setBlobStoreCache(metadata);
+    return cloneBlobMetadata(metadata);
+  } finally {
+    if (blobStoreCache.promise === promise) blobStoreCache.promise = null;
+  }
+}
+
+async function fetchBlobStoreWithMetadata() {
   const { get } = await getBlobSdk();
   const result = await get(blobStorePath, { access: 'private', useCache: false });
 
@@ -220,11 +245,36 @@ async function writeBlobStore(store) {
     contentType: 'application/json',
     cacheControlMaxAge: 0
   });
+  setBlobStoreCache({ store, etag: '' });
 }
 
 async function getBlobSdk() {
   blobSdkPromise ||= import('@vercel/blob');
   return blobSdkPromise;
+}
+
+function setBlobStoreCache(metadata) {
+  blobStoreCache = {
+    expiresAt: Date.now() + blobStoreMemoryCacheMs(),
+    metadata: cloneBlobMetadata(metadata),
+    promise: null
+  };
+}
+
+function cloneBlobMetadata(metadata) {
+  return {
+    store: cloneJson(metadata.store),
+    etag: metadata.etag || ''
+  };
+}
+
+function cloneJson(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function blobStoreMemoryCacheMs() {
+  const value = Number(process.env.BLOB_STORE_MEMORY_CACHE_MS);
+  return Number.isFinite(value) && value >= 0 ? Math.round(value) : 15000;
 }
 
 async function readSupabaseStore() {

@@ -38,6 +38,8 @@ DISCORD_WEBHOOK_URL=DiscordのWebhook URL（複数はカンマ区切り）
 APP_PASSWORD=ログイン用パスワード
 BLOB_READ_WRITE_TOKEN=Vercel BlobのRead Write Token
 BLOB_STORE_PATH=kindle-price-watch/store.json
+BLOB_STORE_MEMORY_CACHE_MS=15000
+PRICE_HISTORY_MAX_ENTRIES_PER_BOOK=120
 PRICE_PROVIDER=amazon_html
 CHECK_MAX_RUNTIME_MS=8000
 ```
@@ -101,6 +103,8 @@ Vercel Hobbyでは登録時に全巻の詳細取得まで行うとタイムア�
 GitHub Actionsでは毎日JST 16:00にWorkflowを起動します。アプリ画面の実行時刻もJST 16:00にしておくと、その起動で自動チェックが始まります。再確認間隔は24時間差分ではなく、24時間なら毎日定時、48時間なら2日ごとの定時、72時間なら3日ごとの定時として判定します。1000冊規模でもAmazonや補助サイトに連続アクセスしすぎないよう、`CHECK_REQUEST_DELAY_MS` / `CHECK_REQUEST_JITTER_MS` / `HTTP_REQUEST_MIN_INTERVAL_MS` で待機時間を調整します。429/503/CAPTCHA系の応答を検知した場合は、`CHECK_BLOCK_COOLDOWN_MS` / `HTTP_BLOCK_COOLDOWN_MS` のクールダウンを挟みます。
 
 Blob Advanced Operationsを抑えるため、定期実行では本ごとに保存せず、価格チェック・通知状態・シリーズ新刊探索結果・カーソルをメモリ上で更新して最後にまとめて保存します。正常終了またはアプリ側のランタイム停止判定で終了した場合は、最後に確認できた本を `checkCursor` として保存し、次回はその続きから確認します。
+
+Fast Origin Transferを抑えるため、Blob読み込みはプロセス内で短時間キャッシュします。`BLOB_STORE_MEMORY_CACHE_MS` でキャッシュ時間を調整できます。また、価格履歴は価格・ポイント・実質価格・定価が変わった時だけ追加し、`PRICE_HISTORY_MAX_ENTRIES_PER_BOOK` 件まで保持します。
 
 定期実行時は、登録済みシリーズのAmazonシリーズページも巡回し、新しい巻が見つかった場合は自動で追加します。明示的に完結が確認できたシリーズには完結フラグを保存し、次回以降の新刊探索から除外します。`SERIES_DISCOVERY_BATCH_SIZE` を設定すると、1回の実行で探索するシリーズ数を調整できます。`SERIES_DISCOVERY_INTERVAL_HOURS` の既定値は24時間です。
 

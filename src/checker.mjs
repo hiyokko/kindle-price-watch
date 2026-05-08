@@ -79,9 +79,7 @@ export async function addBook(input) {
 
   await updateStore((store) => {
     store.books.push(book);
-    if (book.effectivePrice != null) {
-      store.priceHistory.push(historyEntry(book, now));
-    }
+    appendPriceHistoryEntry(store, book, now);
     return store;
   });
 
@@ -253,9 +251,7 @@ async function importSeriesIntoStore(store, input, series, options = {}) {
 
   store.books.push(...additions);
   for (const book of additions) {
-    if (book.effectivePrice != null) {
-      store.priceHistory.push(historyEntry(book, now));
-    }
+    appendPriceHistoryEntry(store, book, now);
   }
 
   for (const book of store.books.filter((item) => isKnownBookForSeries(item, seriesIdentity))) {
@@ -367,9 +363,7 @@ async function refreshExistingSingleBookFromInput(id, input) {
     updated = true;
     repairStoredBookTitle(book);
 
-    if (book.effectivePrice != null) {
-      store.priceHistory.push(historyEntry(book, now));
-    }
+    appendPriceHistoryEntry(store, book, now);
     if (repairSuspiciousPriceState(book, store).changed) {
       updated = true;
     }
@@ -1339,6 +1333,12 @@ function repairStorePriceState(store, options = {}) {
     summary.removedNotifications += repair.removedNotifications;
   }
 
+  const compacted = compactPriceHistory(store);
+  if (compacted.removed > 0) {
+    summary.changed = true;
+    summary.removedHistory += compacted.removed;
+  }
+
   return summary;
 }
 
@@ -2156,7 +2156,7 @@ function applyCheckResultToStore(store, bookRef, snapshotResult, now, options = 
   }
   if (snapshot.effectivePrice != null) {
     book.lowestEffectivePrice = minNullable(book.lowestEffectivePrice, snapshot.effectivePrice);
-    store.priceHistory.push(historyEntry(book, now));
+    appendPriceHistoryEntry(store, book, now);
   }
   repairSuspiciousPriceState(book, store);
 
@@ -2496,6 +2496,65 @@ function historyEntry(book, checkedAt) {
     provider: book.provider,
     checkedAt
   };
+}
+
+function appendPriceHistoryEntry(store, book, checkedAt) {
+  if (book.effectivePrice == null) return false;
+  const entry = historyEntry(book, checkedAt);
+  const latest = latestPriceHistoryEntry(store, book.id);
+  if (latest && samePriceHistoryState(latest, entry)) return false;
+  store.priceHistory.push(entry);
+  return true;
+}
+
+function latestPriceHistoryEntry(store, bookId) {
+  return store.priceHistory
+    .filter((entry) => entry.bookId === bookId)
+    .sort((a, b) => new Date(b.checkedAt || 0) - new Date(a.checkedAt || 0))[0] || null;
+}
+
+function compactPriceHistory(store) {
+  if (!Array.isArray(store.priceHistory) || store.priceHistory.length === 0) return { removed: 0 };
+
+  const originalCount = store.priceHistory.length;
+  const maxEntriesPerBook = floorNumber(process.env.PRICE_HISTORY_MAX_ENTRIES_PER_BOOK, 1, 120);
+  const existingBookIds = new Set((store.books || []).map((book) => book.id));
+  const byBook = new Map();
+
+  for (const entry of store.priceHistory) {
+    if (!entry?.bookId || !existingBookIds.has(entry.bookId)) continue;
+    if (!byBook.has(entry.bookId)) byBook.set(entry.bookId, []);
+    byBook.get(entry.bookId).push(entry);
+  }
+
+  const compacted = [];
+  for (const entries of byBook.values()) {
+    const reduced = [];
+    for (const entry of entries.sort((a, b) => new Date(a.checkedAt || 0) - new Date(b.checkedAt || 0))) {
+      const previous = reduced[reduced.length - 1];
+      if (previous && samePriceHistoryState(previous, entry)) continue;
+      reduced.push(entry);
+    }
+    compacted.push(...reduced.slice(-maxEntriesPerBook));
+  }
+
+  store.priceHistory = compacted.sort((a, b) => new Date(a.checkedAt || 0) - new Date(b.checkedAt || 0));
+  return { removed: originalCount - store.priceHistory.length };
+}
+
+function samePriceHistoryState(left, right) {
+  return (
+    nullableNumber(left.price) === nullableNumber(right.price) &&
+    nullableNumber(left.points) === nullableNumber(right.points) &&
+    nullableNumber(left.effectivePrice) === nullableNumber(right.effectivePrice) &&
+    nullableNumber(left.listPrice) === nullableNumber(right.listPrice)
+  );
+}
+
+function nullableNumber(value) {
+  if (value == null || value === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
 }
 
 function detectEvents({ book, previousEffectivePrice, previousLowestEffectivePrice, settings }) {
