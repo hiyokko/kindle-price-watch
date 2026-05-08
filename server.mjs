@@ -73,7 +73,7 @@ const server = createServer(async (req, res) => {
 
 server.listen(port, () => {
   console.log(`Kindle Price Watch: http://localhost:${port}`);
-  if (readBooleanEnv('AUTO_CHECK_ENABLED', true)) {
+  if (readBooleanEnv('AUTO_CHECK_ENABLED', false)) {
     startScheduler();
   }
 });

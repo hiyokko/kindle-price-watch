@@ -54,7 +54,7 @@ vercel blob put data/store.json --pathname kindle-price-watch/store.json --acces
 
 ### 4. GitHub Actionsで定期実行
 
-Vercel Cronは使わず、`.github/workflows/kindle-price-check.yml` で価格チェックだけをGitHub Actions上で実行します。VercelはWeb GUIとAPI、Vercel Blobはデータ保存先として使います。
+Vercel Cronは使わず、`.github/workflows/kindle-price-check.yml` で価格チェックとシリーズ新刊探索をGitHub Actions上で実行します。VercelはWeb GUIとAPI、Vercel Blobはデータ保存先として使います。Vercel上の常駐スケジューラは `AUTO_CHECK_ENABLED=false` のままにしてください。
 
 GitHubリポジトリの Settings > Secrets and variables > Actions に、少なくとも次を登録します。
 
@@ -100,9 +100,9 @@ Vercel Hobbyでは登録時に全巻の詳細取得まで行うとタイムア�
 
 GitHub Actionsでは毎時Workflowを起動し、アプリ画面に保存したJSTの実行時刻になった後だけ自動チェックします。再確認間隔は24時間差分ではなく、24時間なら毎日定時、48時間なら2日ごとの定時、72時間なら3日ごとの定時として判定します。1000冊規模でもAmazonや補助サイトに連続アクセスしすぎないよう、`CHECK_REQUEST_DELAY_MS` / `CHECK_REQUEST_JITTER_MS` / `HTTP_REQUEST_MIN_INTERVAL_MS` で待機時間を調整します。429/503/CAPTCHA系の応答を検知した場合は、`CHECK_BLOCK_COOLDOWN_MS` / `HTTP_BLOCK_COOLDOWN_MS` のクールダウンを挟みます。
 
-価格チェックは最後に確認できた本を `checkCursor` として保存します。途中で停止した場合でも、次回はその続きから確認します。期限切れの本を最後まで確認して枠が余った場合のみ、先頭に戻って前回分を重複チェックします。
+Blob Advanced Operationsを抑えるため、定期実行では本ごとに保存せず、価格チェック・通知状態・シリーズ新刊探索結果・カーソルをメモリ上で更新して最後にまとめて保存します。正常終了またはアプリ側のランタイム停止判定で終了した場合は、最後に確認できた本を `checkCursor` として保存し、次回はその続きから確認します。
 
-定期実行時は、登録済みシリーズのAmazonシリーズページも巡回し、新しい巻が見つかった場合は自動で追加します。明示的に完結が確認できたシリーズには完結フラグを保存し、次回以降の新刊探索から除外します。`SERIES_DISCOVERY_BATCH_SIZE` を設定すると、1回の実行で探索するシリーズ数を調整できます。
+定期実行時は、登録済みシリーズのAmazonシリーズページも巡回し、新しい巻が見つかった場合は自動で追加します。明示的に完結が確認できたシリーズには完結フラグを保存し、次回以降の新刊探索から除外します。`SERIES_DISCOVERY_BATCH_SIZE` を設定すると、1回の実行で探索するシリーズ数を調整できます。`SERIES_DISCOVERY_INTERVAL_HOURS` の既定値は24時間です。
 
 GitHub Actionsの手動実行では、`force_all` を有効にすると24時間以内に確認済みの本も保存した件数まで再確認します。
 

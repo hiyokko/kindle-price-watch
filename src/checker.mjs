@@ -141,6 +141,37 @@ export async function addBooksFromInput(input) {
 
   const fetchDetails = String(process.env.SERIES_IMPORT_FETCH_DETAILS || '').toLowerCase() === 'true';
   const now = new Date().toISOString();
+  let result;
+  await updateStore(async (store) => {
+    result = await importSeriesIntoStore(store, input, series, { fetchDetails, now });
+    return store;
+  });
+
+  return result;
+}
+
+async function addSeriesBooksFromInputInStore(store, input, options = {}) {
+  const explicitSeriesUrl = isKindleSeriesUrl(input);
+  const series = explicitSeriesUrl
+    ? await fetchSeriesCandidates(input, { allowIncomplete: true })
+    : await detectCollectionSeries(input);
+  const asins = series?.items?.map((item) => item.asin) || [];
+
+  if (!series || asins.length === 0) {
+    const error = new Error('シリーズ内のKindle ASINを取得できませんでした');
+    error.status = 422;
+    throw error;
+  }
+
+  return importSeriesIntoStore(store, input, series, {
+    fetchDetails: String(process.env.SERIES_IMPORT_FETCH_DETAILS || '').toLowerCase() === 'true',
+    now: options.now || new Date().toISOString()
+  });
+}
+
+async function importSeriesIntoStore(store, input, series, options = {}) {
+  const fetchDetails = Boolean(options.fetchDetails);
+  const now = options.now || new Date().toISOString();
   let importedBooks = [];
   let skippedDuplicates = 0;
   let updatedDuplicates = 0;
@@ -149,94 +180,91 @@ export async function addBooksFromInput(input) {
   const sourceUrl = seriesSourceUrlFor(input, series);
   const seriesCompleted = Boolean(series.completed);
 
-  await updateStore(async (store) => {
-    const sourceIsSeriesItem = Boolean(series.sourceAsin && series.items.some((item) => item.asin === series.sourceAsin));
-    const obsoleteIds = new Set(
-      store.books
-        .filter(
-          (book) =>
-            series.sourceAsin &&
-            book.asin === series.sourceAsin &&
-            !sourceIsSeriesItem &&
-            (isSameSeriesSource(book.sourceUrl, sourceUrl, series.sourceAsin) || !book.seriesKey)
-        )
-        .map((book) => book.id)
-    );
-    if (obsoleteIds.size > 0) {
-      store.books = store.books.filter((book) => !obsoleteIds.has(book.id));
-      store.priceHistory = store.priceHistory.filter((entry) => !obsoleteIds.has(entry.bookId));
-      store.notifications = store.notifications.filter((entry) => !obsoleteIds.has(entry.bookId));
-      resetCursorIfDeleted(store, obsoleteIds);
+  const sourceIsSeriesItem = Boolean(series.sourceAsin && series.items.some((item) => item.asin === series.sourceAsin));
+  const obsoleteIds = new Set(
+    store.books
+      .filter(
+        (book) =>
+          series.sourceAsin &&
+          book.asin === series.sourceAsin &&
+          !sourceIsSeriesItem &&
+          (isSameSeriesSource(book.sourceUrl, sourceUrl, series.sourceAsin) || !book.seriesKey)
+      )
+      .map((book) => book.id)
+  );
+  if (obsoleteIds.size > 0) {
+    store.books = store.books.filter((book) => !obsoleteIds.has(book.id));
+    store.priceHistory = store.priceHistory.filter((entry) => !obsoleteIds.has(entry.bookId));
+    store.notifications = store.notifications.filter((entry) => !obsoleteIds.has(entry.bookId));
+    resetCursorIfDeleted(store, obsoleteIds);
+  }
+
+  const existingByAsin = new Map(store.books.map((book) => [book.asin, book]));
+  const seriesIdentity = {
+    input,
+    sourceUrl,
+    sourceAsin: series.sourceAsin,
+    seriesKey,
+    seriesName
+  };
+  const seriesItems = mergeWithKnownSeriesItems(series.items, store.books, seriesIdentity);
+  const seriesExpectedCount = normalizeSeriesExpectedCount(series, seriesItems);
+  const existingSeriesBooks = store.books.filter((book) => isKnownBookForSeries(book, seriesIdentity));
+  const weakImageUrls = weakSeriesImageUrls([...seriesItems, ...existingSeriesBooks]);
+  const additions = [];
+
+  for (const [index, item] of seriesItems.entries()) {
+    const asin = item.asin;
+    const existingBook = existingByAsin.get(asin);
+    if (existingBook) {
+      skippedDuplicates += 1;
+      if (
+        updateExistingSeriesBook(existingBook, item, {
+          now,
+          sourceUrl,
+          seriesKey,
+          seriesName,
+          seriesExpectedCount,
+          volume: seriesItemVolume(item) || index + 1,
+          weakImageUrls,
+          store
+        })
+      ) {
+        updatedDuplicates += 1;
+      }
+      continue;
     }
 
-    const existingByAsin = new Map(store.books.map((book) => [book.asin, book]));
-    const seriesIdentity = {
-      input,
+    const book = await buildBookFromAsin(asin, {
+      fetchDetails,
+      seed: item,
       sourceUrl,
-      sourceAsin: series.sourceAsin,
+      importMode: 'kindle_series',
+      createdAt: now,
       seriesKey,
-      seriesName
-    };
-    const seriesItems = mergeWithKnownSeriesItems(series.items, store.books, seriesIdentity);
-    const seriesExpectedCount = normalizeSeriesExpectedCount(series, seriesItems);
-    const existingSeriesBooks = store.books.filter((book) => isKnownBookForSeries(book, seriesIdentity));
-    const weakImageUrls = weakSeriesImageUrls([...seriesItems, ...existingSeriesBooks]);
-    const additions = [];
+      seriesName,
+      seriesExpectedCount,
+      volume: seriesItemVolume(item) || index + 1
+    });
+    additions.push(book);
+    importedBooks.push(publicBook(book));
+    existingByAsin.set(asin, book);
+  }
 
-    for (const [index, item] of seriesItems.entries()) {
-      const asin = item.asin;
-      const existingBook = existingByAsin.get(asin);
-      if (existingBook) {
-        skippedDuplicates += 1;
-        if (
-          updateExistingSeriesBook(existingBook, item, {
-            now,
-            sourceUrl,
-            seriesKey,
-            seriesName,
-            seriesExpectedCount,
-            volume: seriesItemVolume(item) || index + 1,
-            weakImageUrls,
-            store
-          })
-        ) {
-          updatedDuplicates += 1;
-        }
-        continue;
-      }
-
-      const book = await buildBookFromAsin(asin, {
-        fetchDetails,
-        seed: item,
-        sourceUrl,
-        importMode: 'kindle_series',
-        createdAt: now,
-        seriesKey,
-        seriesName,
-        seriesExpectedCount,
-        volume: seriesItemVolume(item) || index + 1
-      });
-      additions.push(book);
-      importedBooks.push(publicBook(book));
-      existingByAsin.set(asin, book);
+  store.books.push(...additions);
+  for (const book of additions) {
+    if (book.effectivePrice != null) {
+      store.priceHistory.push(historyEntry(book, now));
     }
+  }
 
-    store.books.push(...additions);
-    for (const book of additions) {
-      if (book.effectivePrice != null) {
-        store.priceHistory.push(historyEntry(book, now));
-      }
-    }
-
-    for (const book of store.books.filter((item) => isKnownBookForSeries(item, seriesIdentity))) {
-      applySeriesDiscoveryMetadata(book, {
-        now,
-        completed: seriesCompleted,
-        error: ''
-      });
-    }
-    return store;
-  });
+  for (const book of store.books.filter((item) => isKnownBookForSeries(item, seriesIdentity))) {
+    applySeriesDiscoveryMetadata(book, {
+      now,
+      completed: seriesCompleted,
+      error: ''
+    });
+  }
 
   return {
     mode: 'kindle_series',
@@ -1677,17 +1705,9 @@ export async function runDueChecks(options = {}) {
       return result;
     }
 
-    if (source === 'cron') {
-      await recordCronRun({
-        lastCronStartedAt: cronStartedAt,
-        lastCronError: ''
-      });
-    }
-
-    const seriesDiscovery = shouldRunSeriesDiscovery(source, options)
-      ? await discoverSeriesUpdates({ startedAt, maxRuntimeMs })
+    const seriesDiscovery = shouldRunSeriesDiscovery(source, options, store, settings, startedAt)
+      ? await discoverSeriesUpdates(store, { startedAt, maxRuntimeMs })
       : null;
-    store = await readStoreWithPriceRepairs();
     settings = mergedRuntimeSettings(store.settings);
     const plan = planDueChecks(store, settings, startedAt, { forceAll });
     const pacing = checkPacing();
@@ -1695,6 +1715,7 @@ export async function runDueChecks(options = {}) {
 
     const results = [];
     let stoppedByRuntimeLimit = false;
+    const processedBookIds = new Set();
     for (let index = 0; index < plan.books.length; index += 1) {
       if (shouldStopForRuntimeLimit(startedAt, maxRuntimeMs, results.length)) {
         stoppedByRuntimeLimit = true;
@@ -1707,9 +1728,9 @@ export async function runDueChecks(options = {}) {
       }
 
       const book = plan.books[index];
-      const result = await checkOneBook(book, { ...options, updateCursor: false, getWebhookUrls });
+      const result = await checkOneBookInStore(store, book, { ...options, updateCursor: true, getWebhookUrls });
       results.push(result);
-      await recordCursorForCompletedBook(book, result);
+      processedBookIds.add(book.id);
 
       if (isBlockingCheckResult(result)) {
         if (!(await waitAfterBlockedCheck(pacing, startedAt, maxRuntimeMs))) {
@@ -1719,12 +1740,11 @@ export async function runDueChecks(options = {}) {
       }
     }
 
-    const finalStore = await readStoreWithPriceRepairs();
-    const remainingDue = countDueBooks(finalStore.books, Date.now(), settings);
+    const remainingDue = countDueBooks(store.books, Date.now(), settings);
     const result = {
       checked: results.length,
       remainingDue,
-      cursor: finalStore.checkCursor,
+      cursor: store.checkCursor,
       overlapped: Math.max(0, results.length - plan.dueSelected),
       stoppedByRuntimeLimit,
       forced: forceAll,
@@ -1732,24 +1752,37 @@ export async function runDueChecks(options = {}) {
       results
     };
 
-    if (source === 'cron') {
-      await recordCronRun({
-        lastCronFinishedAt: new Date().toISOString(),
-        lastCronChecked: result.checked,
-        lastCronRemainingDue: result.remainingDue,
-        lastCronStoppedByRuntimeLimit: result.stoppedByRuntimeLimit,
-        lastSeriesDiscoveryChecked: seriesDiscovery?.checked || 0,
-        lastSeriesDiscoveryAdded: seriesDiscovery?.added || 0,
-        lastSeriesDiscoveryCompleted: seriesDiscovery?.completed || 0,
-        lastSeriesDiscoveryErrors: seriesDiscovery?.errors?.length || 0,
-        lastCronError: ''
+    const cronFields = source === 'cron' && shouldPersistCronRun(result)
+      ? {
+          lastCronStartedAt: cronStartedAt,
+          lastCronFinishedAt: new Date().toISOString(),
+          lastCronChecked: result.checked,
+          lastCronRemainingDue: result.remainingDue,
+          lastCronStoppedByRuntimeLimit: result.stoppedByRuntimeLimit,
+          lastSeriesDiscoveryChecked: seriesDiscovery?.checked || 0,
+          lastSeriesDiscoveryAdded: seriesDiscovery?.added || 0,
+          lastSeriesDiscoveryCompleted: seriesDiscovery?.completed || 0,
+          lastSeriesDiscoveryErrors: seriesDiscovery?.errors?.length || 0,
+          lastCronError: ''
+        }
+      : null;
+
+    if (processedBookIds.size > 0 || cronFields || hasSeriesDiscoveryWork(seriesDiscovery)) {
+      await persistBulkCheckStore({
+        store,
+        cronFields
       });
+    }
+
+    if (source === 'cron') {
+      result.cronPersisted = Boolean(cronFields);
     }
 
     return result;
   } catch (error) {
     if (source === 'cron') {
       await recordCronRun({
+        lastCronStartedAt: cronStartedAt,
         lastCronFinishedAt: new Date().toISOString(),
         lastCronError: error.message || String(error)
       });
@@ -1758,9 +1791,8 @@ export async function runDueChecks(options = {}) {
   }
 }
 
-async function discoverSeriesUpdates(options = {}) {
+async function discoverSeriesUpdates(store, options = {}) {
   const now = new Date().toISOString();
-  const store = await readStoreWithPriceRepairs({ now });
   const plan = planSeriesDiscovery(store);
   const pacing = seriesDiscoveryPacing();
   const results = [];
@@ -1781,7 +1813,7 @@ async function discoverSeriesUpdates(options = {}) {
         break;
       }
 
-      const result = await addBooksFromInput(seriesDiscoveryInput(group.sourceUrl, group.seriesKey));
+      const result = await addSeriesBooksFromInputInStore(store, seriesDiscoveryInput(group.sourceUrl, group.seriesKey), { now });
       const newBooks = Number(result.imported || 0);
       const seriesCompleted = Boolean(result.seriesCompleted);
       added += newBooks;
@@ -1793,7 +1825,7 @@ async function discoverSeriesUpdates(options = {}) {
         added: newBooks,
         completed: seriesCompleted
       });
-      await recordSeriesDiscoveryCursor(group, now);
+      recordSeriesDiscoveryCursorInStore(store, group, now);
     } catch (error) {
       const message = error.message || String(error);
       errors.push({
@@ -1801,8 +1833,8 @@ async function discoverSeriesUpdates(options = {}) {
         seriesName: group.seriesName,
         error: message
       });
-      await markSeriesDiscoveryError(group, now, message);
-      await recordSeriesDiscoveryCursor(group, now);
+      markSeriesDiscoveryErrorInStore(store, group, now, message);
+      recordSeriesDiscoveryCursorInStore(store, group, now);
     }
   }
 
@@ -1811,16 +1843,25 @@ async function discoverSeriesUpdates(options = {}) {
     added,
     completed,
     stoppedByRuntimeLimit,
-    cursor: (await readStoreWithPriceRepairs()).seriesDiscoveryCursor,
+    cursor: store.seriesDiscoveryCursor,
     results,
     errors
   };
 }
 
-function shouldRunSeriesDiscovery(source, options = {}) {
+function shouldRunSeriesDiscovery(source, options = {}, store = {}, settings = {}, now = Date.now()) {
   if (options.discoverSeries === true) return true;
   if (options.discoverSeries === false) return false;
-  return source === 'cron' || source === 'scheduler';
+  if (source !== 'cron' && source !== 'scheduler') return false;
+
+  const intervalHours = floorNumber(process.env.SERIES_DISCOVERY_INTERVAL_HOURS, 1, 24);
+  const intervalDays = Math.max(1, Math.round(intervalHours / 24));
+  const lastCheckedAt = new Date(store.seriesDiscoveryCursor?.checkedAt || 0).getTime();
+  if (!Number.isFinite(lastCheckedAt) || lastCheckedAt <= 0) return true;
+
+  const boundary = latestJstExecutionBoundaryMs(now, settings.checkExecutionHourJst);
+  const lastBoundary = latestJstExecutionBoundaryMs(lastCheckedAt, settings.checkExecutionHourJst);
+  return boundary - lastBoundary >= intervalDays * 24 * 60 * 60 * 1000;
 }
 
 function planSeriesDiscovery(store) {
@@ -1886,24 +1927,18 @@ function shouldStopSeriesDiscoveryForRuntimeLimit(startedAt, maxRuntimeMs, compl
   return maxRuntimeMs > 0 && completedCount > 0 && Date.now() - startedAt >= maxRuntimeMs;
 }
 
-async function markSeriesDiscoveryError(group, now, error) {
-  await updateStore((store) => {
-    for (const book of store.books) {
-      if (book.seriesKey !== group.seriesKey) continue;
-      applySeriesDiscoveryMetadata(book, { now, error });
-    }
-    return store;
-  });
+function markSeriesDiscoveryErrorInStore(store, group, now, error) {
+  for (const book of store.books) {
+    if (book.seriesKey !== group.seriesKey) continue;
+    applySeriesDiscoveryMetadata(book, { now, error });
+  }
 }
 
-async function recordSeriesDiscoveryCursor(group, now) {
-  await updateStore((store) => {
-    store.seriesDiscoveryCursor = {
-      lastSeriesKey: group.seriesKey,
-      checkedAt: now
-    };
-    return store;
-  });
+function recordSeriesDiscoveryCursorInStore(store, group, now) {
+  store.seriesDiscoveryCursor = {
+    lastSeriesKey: group.seriesKey,
+    checkedAt: now
+  };
 }
 
 export async function getSettings() {
@@ -2038,118 +2073,150 @@ function isValidDiscordWebhookUrl(value) {
 async function checkOneBook(bookRef, options = {}) {
   const now = new Date().toISOString();
   const snapshotResult = await settleSnapshot(bookRef.asin, bookRef);
-
-  let checkedBook;
-  let events = [];
-  let settings;
+  let applied = { checkedBook: null, events: [] };
 
   await updateStore((store) => {
-    settings = mergedRuntimeSettings(store.settings);
-    const book = store.books.find((item) => item.id === bookRef.id);
-    if (!book) return store;
-
-    const previousEffectivePrice = book.effectivePrice;
-    const previousLowestEffectivePrice = book.lowestEffectivePrice;
-
-    if (!snapshotResult.ok) {
-      if (snapshotResult.snapshot) {
-        applyMetadataSnapshotToBook(book, snapshotResult.snapshot);
-      }
-      const repair = repairSuspiciousPriceState(book, store, {
-        clearCurrent: true,
-        restoreMissingCurrent: true
-      });
-      if (isPermanentSnapshotError(snapshotResult.error)) {
-        book.lastCheckedAt = now;
-      } else if (
-        isUnresolvedSingleBook(book) ||
-        (repair.currentCleared && !repair.currentRestored) ||
-        isSuspiciousSnapshotError(snapshotResult.error)
-      ) {
-        book.lastCheckedAt = null;
-      } else if (!repair.currentRestored) {
-        book.lastCheckedAt = now;
-      }
-      book.updatedAt = now;
-      book.lastError = shouldStoreSnapshotError(book, snapshotResult.error) ? snapshotResult.error : '';
-      if (options.updateCursor) updateCheckCursor(store, book, now);
-      checkedBook = { ...book };
-      return store;
-    }
-
-    const snapshot = snapshotResult.snapshot;
-    book.title = preferSnapshotText(snapshot.title, book.title);
-    book.author = snapshot.author || book.author;
-    book.publisher = snapshot.publisher || book.publisher;
-    book.imageUrl = snapshot.imageUrl || book.imageUrl;
-    book.amazonUrl = snapshot.amazonUrl || book.amazonUrl;
-    book.previousEffectivePrice = previousEffectivePrice;
-    book.currentPrice = snapshot.currentPrice;
-    book.currentPoints = snapshot.currentPoints;
-    book.effectivePrice = snapshot.effectivePrice;
-    book.listPrice = snapshot.listPrice ?? book.listPrice;
-    book.provider = snapshot.provider;
-    book.lastCheckedAt = now;
-    book.updatedAt = now;
-    book.lastError = '';
-    repairStoredBookTitle(book);
-    if (options.updateCursor) updateCheckCursor(store, book, now);
-
-    if (snapshot.currentPrice != null) {
-      book.lowestPrice = minNullable(book.lowestPrice, snapshot.currentPrice);
-    }
-    if (snapshot.effectivePrice != null) {
-      book.lowestEffectivePrice = minNullable(book.lowestEffectivePrice, snapshot.effectivePrice);
-      store.priceHistory.push(historyEntry(book, now));
-    }
-    repairSuspiciousPriceState(book, store);
-
-    events = detectEvents({
-      book,
-      previousEffectivePrice,
-      previousLowestEffectivePrice,
-      settings
-    }).filter((event) => !alreadyNotified(store, book.id, event));
-
-    for (const event of events) {
-      store.notifications.push({
-        id: crypto.randomUUID(),
-        bookId: book.id,
-        asin: book.asin,
-        type: event.type,
-        effectivePrice: book.effectivePrice,
-        previousEffectivePrice,
-        createdAt: now,
-        status: 'pending'
-      });
-    }
-
-    checkedBook = { ...book };
+    applied = applyCheckResultToStore(store, bookRef, snapshotResult, now, {
+      updateCursor: options.updateCursor
+    });
     return store;
   });
 
+  const sent = await sendCheckNotifications(applied.checkedBook, applied.events, options);
+
+  return checkResultPayload(applied.checkedBook, snapshotResult, applied.events, sent);
+}
+
+async function checkOneBookInStore(store, bookRef, options = {}) {
+  const now = new Date().toISOString();
+  const snapshotResult = await settleSnapshot(bookRef.asin, bookRef);
+  const applied = applyCheckResultToStore(store, bookRef, snapshotResult, now, {
+    updateCursor: options.updateCursor
+  });
+  const sent = await sendCheckNotifications(applied.checkedBook, applied.events, {
+    ...options,
+    notificationStore: store
+  });
+  return checkResultPayload(applied.checkedBook, snapshotResult, applied.events, sent);
+}
+
+function applyCheckResultToStore(store, bookRef, snapshotResult, now, options = {}) {
+  const settings = mergedRuntimeSettings(store.settings);
+  const book = store.books.find((item) => item.id === bookRef.id);
+  if (!book) return { checkedBook: null, events: [] };
+
+  const previousEffectivePrice = book.effectivePrice;
+  const previousLowestEffectivePrice = book.lowestEffectivePrice;
+
+  if (!snapshotResult.ok) {
+    if (snapshotResult.snapshot) {
+      applyMetadataSnapshotToBook(book, snapshotResult.snapshot);
+    }
+    const repair = repairSuspiciousPriceState(book, store, {
+      clearCurrent: true,
+      restoreMissingCurrent: true
+    });
+    if (isPermanentSnapshotError(snapshotResult.error)) {
+      book.lastCheckedAt = now;
+    } else if (
+      isUnresolvedSingleBook(book) ||
+      (repair.currentCleared && !repair.currentRestored) ||
+      isSuspiciousSnapshotError(snapshotResult.error)
+    ) {
+      book.lastCheckedAt = null;
+    } else if (!repair.currentRestored) {
+      book.lastCheckedAt = now;
+    }
+    book.updatedAt = now;
+    book.lastError = shouldStoreSnapshotError(book, snapshotResult.error) ? snapshotResult.error : '';
+    if (options.updateCursor) updateCheckCursor(store, book, now);
+    return { checkedBook: { ...book }, events: [] };
+  }
+
+  const snapshot = snapshotResult.snapshot;
+  book.title = preferSnapshotText(snapshot.title, book.title);
+  book.author = snapshot.author || book.author;
+  book.publisher = snapshot.publisher || book.publisher;
+  book.imageUrl = snapshot.imageUrl || book.imageUrl;
+  book.amazonUrl = snapshot.amazonUrl || book.amazonUrl;
+  book.previousEffectivePrice = previousEffectivePrice;
+  book.currentPrice = snapshot.currentPrice;
+  book.currentPoints = snapshot.currentPoints;
+  book.effectivePrice = snapshot.effectivePrice;
+  book.listPrice = snapshot.listPrice ?? book.listPrice;
+  book.provider = snapshot.provider;
+  book.lastCheckedAt = now;
+  book.updatedAt = now;
+  book.lastError = '';
+  repairStoredBookTitle(book);
+  if (options.updateCursor) updateCheckCursor(store, book, now);
+
+  if (snapshot.currentPrice != null) {
+    book.lowestPrice = minNullable(book.lowestPrice, snapshot.currentPrice);
+  }
+  if (snapshot.effectivePrice != null) {
+    book.lowestEffectivePrice = minNullable(book.lowestEffectivePrice, snapshot.effectivePrice);
+    store.priceHistory.push(historyEntry(book, now));
+  }
+  repairSuspiciousPriceState(book, store);
+
+  const events = detectEvents({
+    book,
+    previousEffectivePrice,
+    previousLowestEffectivePrice,
+    settings
+  }).filter((event) => !alreadyNotified(store, book.id, event));
+
+  for (const event of events) {
+    store.notifications.push({
+      id: crypto.randomUUID(),
+      bookId: book.id,
+      asin: book.asin,
+      type: event.type,
+      effectivePrice: book.effectivePrice,
+      previousEffectivePrice,
+      createdAt: now,
+      status: 'pending'
+    });
+  }
+
+  return { checkedBook: { ...book }, events };
+}
+
+async function sendCheckNotifications(checkedBook, events, options = {}) {
   const sent = [];
-  if (options.notify !== false && checkedBook && events.length > 0) {
-    const webhookUrls = await notificationWebhookUrls(options);
-    for (const event of events) {
-      const notification = buildPriceNotification(checkedBook, event);
-      try {
-        await sendDiscordNotification(notification, { webhookUrls });
-        sent.push({ type: event.type, ok: true });
+  if (options.notify === false || !checkedBook || events.length === 0) return sent;
+
+  const webhookUrls = await notificationWebhookUrls(options);
+  for (const event of events) {
+    const notification = buildPriceNotification(checkedBook, event);
+    try {
+      await sendDiscordNotification(notification, { webhookUrls });
+      sent.push({ type: event.type, ok: true });
+      if (options.notificationStore) {
+        markNotificationInStore(options.notificationStore, checkedBook.id, event, 'sent');
+      } else {
         await markNotification(checkedBook.id, event, 'sent');
-      } catch (error) {
-        sent.push({ type: event.type, ok: false, error: error.message });
+      }
+    } catch (error) {
+      sent.push({ type: event.type, ok: false, error: error.message });
+      if (options.notificationStore) {
+        markNotificationInStore(options.notificationStore, checkedBook.id, event, 'failed', error.message);
+      } else {
         await markNotification(checkedBook.id, event, 'failed', error.message);
       }
     }
   }
+  return sent;
+}
 
+function checkResultPayload(checkedBook, snapshotResult, events, notifications) {
   return {
     book: checkedBook ? publicBook(checkedBook) : null,
     ok: snapshotResult.ok,
     error: snapshotResult.ok ? null : snapshotResult.error,
     events,
-    notifications: sent
+    notifications
   };
 }
 
@@ -2477,24 +2544,27 @@ function alreadyNotified(store, bookId, event) {
 
 async function markNotification(bookId, event, status, error = '') {
   await updateStore((store) => {
-    const notification = [...store.notifications]
-      .reverse()
-      .find(
-        (item) =>
-          item.bookId === bookId &&
-          item.type === event.type &&
-          item.effectivePrice === event.effectivePrice &&
-          item.status === 'pending'
-      );
-
-    if (notification) {
-      notification.status = status;
-      notification.error = error;
-      notification.sentAt = new Date().toISOString();
-    }
-
+    markNotificationInStore(store, bookId, event, status, error);
     return store;
   });
+}
+
+function markNotificationInStore(store, bookId, event, status, error = '') {
+  const notification = [...store.notifications]
+    .reverse()
+    .find(
+      (item) =>
+        item.bookId === bookId &&
+        item.type === event.type &&
+        item.effectivePrice === event.effectivePrice &&
+        item.status === 'pending'
+    );
+
+  if (notification) {
+    notification.status = status;
+    notification.error = error;
+    notification.sentAt = new Date().toISOString();
+  }
 }
 
 function planDueChecks(store, settings, now, options = {}) {
@@ -2578,17 +2648,6 @@ function readEnvBoolean(name, fallback) {
   const value = process.env[name];
   if (value == null || value === '') return fallback;
   return ['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase());
-}
-
-async function recordCursorForCompletedBook(bookRef, result) {
-  const checkedBook = result?.book || bookRef;
-  if (!checkedBook?.id) return;
-
-  await updateStore((store) => {
-    const book = store.books.find((item) => item.id === checkedBook.id);
-    if (book) updateCheckCursor(store, book, checkedBook.lastCheckedAt || book.lastCheckedAt || new Date().toISOString());
-    return store;
-  });
 }
 
 function checkPacing() {
@@ -2680,6 +2739,45 @@ async function recordCronRun(fields) {
     };
     return store;
   });
+}
+
+async function persistBulkCheckStore({ store, cronFields = null }) {
+  const nextAutomation = {
+    ...(store.automation || {}),
+    ...(cronFields || {})
+  };
+  store.automation = nextAutomation;
+
+  await updateStore((currentStore) => {
+    return {
+      ...store,
+      settings: currentStore.settings,
+      automation: {
+        ...(currentStore.automation || {}),
+        ...nextAutomation
+      }
+    };
+  });
+}
+
+function shouldPersistCronRun(result = {}) {
+  return Boolean(
+    result.checked > 0 ||
+      result.remainingDue > 0 ||
+      result.stoppedByRuntimeLimit ||
+      hasSeriesDiscoveryWork(result.seriesDiscovery)
+  );
+}
+
+function hasSeriesDiscoveryWork(seriesDiscovery = null) {
+  if (!seriesDiscovery) return false;
+  return Boolean(
+    seriesDiscovery.checked > 0 ||
+      seriesDiscovery.added > 0 ||
+      seriesDiscovery.completed > 0 ||
+      seriesDiscovery.stoppedByRuntimeLimit ||
+      (Array.isArray(seriesDiscovery.errors) && seriesDiscovery.errors.length > 0)
+  );
 }
 
 function mergedRuntimeSettings(settings = {}) {
