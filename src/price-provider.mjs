@@ -1193,8 +1193,8 @@ async function fetchFromAmazonHtml(asin, inputUrl = '', options = {}) {
   if (shouldUseAmazonReaderFallback()) {
     try {
       const snapshot = await fetchFromAmazonReader(asin, inputUrl);
-      if (snapshot.currentPrice != null || !lastSnapshot) return snapshot;
-      lastSnapshot = mergeSnapshotLike(lastSnapshot, snapshot);
+      if (snapshot.currentPrice != null) return lastSnapshot ? mergeSnapshotLike(lastSnapshot, snapshot) : snapshot;
+      lastSnapshot = lastSnapshot ? mergeSnapshotLike(lastSnapshot, snapshot) : snapshot;
     } catch (error) {
       if (isPermanentKindleProductError(error)) throw error;
       errors.push(`reader: ${error.message}`);

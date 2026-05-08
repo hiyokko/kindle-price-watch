@@ -1228,7 +1228,9 @@ function repairSuspiciousPriceState(book, store, options = {}) {
 
   const beforeHistoryCount = store.priceHistory.length;
   store.priceHistory = store.priceHistory.filter(
-    (entry) => entry.bookId !== book.id || !isSuspiciousHistoryEntry(entry, book)
+    (entry) =>
+      entry.bookId !== book.id ||
+      (!isSuspiciousHistoryEntry(entry, book) && !isUnvalidatedSeriesUnitPriceHistoryEntry(entry))
   );
   const removedHistory = beforeHistoryCount - store.priceHistory.length;
   if (removedHistory > 0) changed = true;
@@ -1268,8 +1270,18 @@ function hasUnvalidatedSeriesUnitPrice(book) {
 
 function latestValidPriceHistoryEntry(book, store) {
   return store.priceHistory
-    .filter((entry) => entry.bookId === book.id && entry.price != null && !isSuspiciousHistoryEntry(entry, book))
+    .filter(
+      (entry) =>
+        entry.bookId === book.id &&
+        entry.price != null &&
+        !isSuspiciousHistoryEntry(entry, book) &&
+        !isUnvalidatedSeriesUnitPriceHistoryEntry(entry)
+    )
     .sort((a, b) => new Date(b.checkedAt || 0) - new Date(a.checkedAt || 0))[0] || null;
+}
+
+function isUnvalidatedSeriesUnitPriceHistoryEntry(entry) {
+  return entry?.provider === 'amazon_series_unit_price' && entry.price != null;
 }
 
 function suspiciousStoredCurrentPriceReason(book) {
@@ -1360,7 +1372,9 @@ function suspiciousPriceReason({ price, points = 0, effectivePrice = null, listP
 }
 
 function recomputeBookPriceFloors(book, store) {
-  const entries = store.priceHistory.filter((entry) => entry.bookId === book.id && entry.price != null);
+  const entries = store.priceHistory.filter(
+    (entry) => entry.bookId === book.id && entry.price != null && !isUnvalidatedSeriesUnitPriceHistoryEntry(entry)
+  );
   const prices = entries.map((entry) => entry.price);
   const effectivePrices = entries.map((entry) => entry.effectivePrice).filter((value) => value != null);
 
