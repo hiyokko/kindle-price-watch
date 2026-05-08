@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Kindle Price Watch</title>
-    <link rel="stylesheet" href="/styles.css?v=20260508-1">
+    <link rel="stylesheet" href="/styles.css?v=20260508-2">
   </head>
   <body>
     <header class="topbar">
@@ -72,6 +72,10 @@
               <option value="48">48時間</option>
               <option value="72">72時間</option>
             </select>
+          </label>
+          <label class="field compact">
+            <span>実行時刻(JST)</span>
+            <select id="executionHourInput" name="checkExecutionHourJst"></select>
           </label>
           <label class="field compact">
             <span>1回の件数</span>
@@ -172,6 +176,6 @@
       </article>
     </template>
 
-    <script src="/app.js?v=20260508-1" type="module"></script>
+    <script src="/app.js?v=20260508-2" type="module"></script>
   </body>
 </html>

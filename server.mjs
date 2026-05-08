@@ -98,7 +98,7 @@ async function handleApi(req, res, url) {
   }
 
   if (method === 'POST' && url.pathname === '/api/check') {
-    sendJson(res, 200, await runChecksPayload({ source: 'cron' }));
+    sendJson(res, 200, await runChecksPayload({ source: 'manual' }));
     return;
   }
 

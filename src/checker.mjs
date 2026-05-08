@@ -4,10 +4,13 @@ import {
   extractAsin,
   fetchAmazonHtmlSnapshot,
   fetchBookSnapshot,
+  fetchEfoxKindleSeriesItems,
   fetchExternalKindleSeriesItems,
   fetchKinpomeKindleSeriesItems,
+  fetchKintyakuKindleSeriesItems,
   fetchKindleSeriesItems,
   fetchSaleBonKindleSeriesItems,
+  isProbablyBookAsin,
   isKindleSeriesUrl
 } from './price-provider.mjs';
 import { readStore, updateStore, publicBook } from './store.mjs';
@@ -31,6 +34,11 @@ export async function addBook(input) {
     error.status = 400;
     throw error;
   }
+  if (!isProbablyBookAsin(asin)) {
+    const error = new Error('Kindle本のASIN（Bで始まる10桁）またはKindle商品URLを入力してください');
+    error.status = 400;
+    throw error;
+  }
 
   const existing = await findBookByAsin(asin);
   if (existing) {
@@ -45,6 +53,11 @@ export async function addBook(input) {
     inputUrl: input,
     sourceUrl: String(input || '').trim()
   });
+  if (isPermanentSnapshotError(book.lastError)) {
+    const error = new Error(book.lastError);
+    error.status = 400;
+    throw error;
+  }
   const now = book.createdAt;
 
   await updateStore((store) => {
@@ -255,7 +268,10 @@ async function refreshExistingSingleBookFromInput(id, input) {
         book.lastError = snapshotResult.error;
         updated = true;
       }
-      if (isUnresolvedSingleBook(book) && book.lastCheckedAt) {
+      if (isPermanentSnapshotError(snapshotResult?.error)) {
+        book.lastCheckedAt = now;
+        updated = true;
+      } else if (isUnresolvedSingleBook(book) && book.lastCheckedAt) {
         book.lastCheckedAt = null;
         updated = true;
       }
@@ -264,7 +280,9 @@ async function refreshExistingSingleBookFromInput(id, input) {
         restoreMissingCurrent: true
       });
       if (repair.changed) updated = true;
-      if ((repair.currentCleared && !repair.currentRestored) || isSuspiciousSnapshotError(snapshotResult?.error)) {
+      if (isPermanentSnapshotError(snapshotResult?.error)) {
+        book.lastCheckedAt = now;
+      } else if ((repair.currentCleared && !repair.currentRestored) || isSuspiciousSnapshotError(snapshotResult?.error)) {
         book.lastCheckedAt = null;
       }
       if (updated) book.updatedAt = now;
@@ -358,14 +376,34 @@ async function fetchSeriesCandidates(input, options = {}) {
       }
     }
 
-    if (candidates.length > 0) {
-      for (const { query, seriesName } of seriesQueriesForSupplementalSources(candidates)) {
-        try {
-          const series = await fetchKinpomeKindleSeriesItems(query, { sourceAsin: extractAsin(input), seriesName });
-          if (series?.items?.length > 1) candidates.push(series);
-        } catch {
-          // Kinpome is an optional price source; ignore failures and use the other candidates.
-        }
+    const sourceAsin = extractAsin(input);
+    const kintyakuQueries = supplementalSeriesQueries(candidates, saleBonNames);
+    for (const { query, seriesName } of kintyakuQueries) {
+      try {
+        const series = await fetchKintyakuKindleSeriesItems(query, { sourceAsin, seriesName });
+        if (series?.items?.length > 1) candidates.push(series);
+      } catch {
+        // Kintyaku is an optional metadata source; ignore failures and use the other candidates.
+      }
+    }
+
+    const efoxQueries = supplementalSeriesQueries(candidates, saleBonNames);
+    for (const { query, seriesName } of efoxQueries) {
+      try {
+        const series = await fetchEfoxKindleSeriesItems(query, { sourceAsin, seriesName });
+        if (series?.items?.length > 1) candidates.push(series);
+      } catch {
+        // efox is an optional article source; ignore failures and use the other candidates.
+      }
+    }
+
+    const kinpomeQueries = supplementalSeriesQueries(candidates, saleBonNames);
+    for (const { query, seriesName } of kinpomeQueries) {
+      try {
+        const series = await fetchKinpomeKindleSeriesItems(query, { sourceAsin, seriesName });
+        if (series?.items?.length > 1) candidates.push(series);
+      } catch {
+        // Kinpome is an optional price source; ignore failures and use the other candidates.
       }
     }
   }
@@ -406,6 +444,16 @@ function seriesQueriesForSupplementalSources(candidates) {
   }
 
   return [...queries.values()].slice(0, 8);
+}
+
+function supplementalSeriesQueries(candidates, fallbackSeriesNames = new Set()) {
+  const queries = seriesQueriesForSupplementalSources(candidates);
+  if (queries.length > 0) return queries;
+
+  return [...fallbackSeriesNames]
+    .map((seriesName) => ({ query: seriesName, seriesName }))
+    .filter((item) => item.query && item.seriesName)
+    .slice(0, 8);
 }
 
 async function sourceSeriesNamesForSaleBon(input) {
@@ -637,7 +685,7 @@ async function resolveSeriesCandidateDiffs(series, candidates) {
     if (!item || !seriesItemNeedsBackfill(item, weakSeriesImageUrls([...itemsByAsin.values()]))) continue;
 
     try {
-      const snapshot = await fetchAmazonHtmlSnapshotForSeriesBackfill(asin);
+      const snapshot = await fetchAmazonHtmlSnapshotForSeriesBackfill(asin, item);
       const next = mergeAmazonSnapshotIntoSeriesItem(item, snapshot);
       if (next.currentPrice == null) {
         next.lastError = 'シリーズ価格補完: Amazon HTMLで価格を取得できませんでした';
@@ -832,7 +880,7 @@ function weakSeriesImageUrls(items = []) {
   return new Set([...counts.entries()].filter(([, count]) => count > 1).map(([url]) => url));
 }
 
-async function fetchAmazonHtmlSnapshotForSeriesBackfill(asin) {
+async function fetchAmazonHtmlSnapshotForSeriesBackfill(asin, seed = {}) {
   const attempts = floorNumber(process.env.SERIES_PRICE_BACKFILL_ATTEMPTS, 1, 2);
   let lastSnapshot = null;
   let lastError = null;
@@ -840,7 +888,7 @@ async function fetchAmazonHtmlSnapshotForSeriesBackfill(asin) {
   for (const url of seriesBackfillUrls(asin)) {
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       try {
-        const snapshot = await fetchAmazonHtmlSnapshot(asin, url);
+        const snapshot = await fetchAmazonHtmlSnapshot(asin, url, seed);
         if (snapshot.currentPrice != null) return snapshot;
         lastSnapshot = snapshot;
       } catch (error) {
@@ -935,7 +983,16 @@ function shouldUseAmazonSnapshotPriceForSeriesItem(item, snapshot) {
 }
 
 function isExternalSeriesPriceProvider(provider) {
-  return ['sale_bon_series', 'kinpome', 'kinpome_series', 'external_series'].includes(String(provider || '').toLowerCase());
+  return [
+    'sale_bon_series',
+    'efox',
+    'efox_series',
+    'kintyaku',
+    'kintyaku_series',
+    'kinpome',
+    'kinpome_series',
+    'external_series'
+  ].includes(String(provider || '').toLowerCase());
 }
 
 function updateExistingSeriesBook(book, item, options) {
@@ -1132,6 +1189,21 @@ function isSuspiciousSnapshotError(error) {
   return String(error || '').startsWith('疑わしい価格を無視しました');
 }
 
+function isPermanentSnapshotError(error) {
+  return /^Kindle版(?:ASIN|商品)ではありません/.test(String(error || ''));
+}
+
+function shouldStoreSnapshotError(book, error) {
+  if (!error) return false;
+  if (isPermanentSnapshotError(error) || isSuspiciousSnapshotError(error)) return true;
+  if (book.currentPrice == null) return true;
+  return !isTransientSnapshotError(error);
+}
+
+function isTransientSnapshotError(error) {
+  return /(?:価格を取得できませんでした|Amazonにブロック|HTTP\s*(?:429|500|503)|fetch failed|タイムアウト|reader:|商品ページではなくエラーページ)/i.test(String(error || ''));
+}
+
 function repairSuspiciousPriceState(book, store, options = {}) {
   if (!book || !store) {
     return {
@@ -1301,10 +1373,15 @@ function seriesPriceProviderRank(provider) {
   const normalized = String(provider || '').toLowerCase();
   if (normalized === 'keepa' || normalized === 'amazon_html') return 100;
   if (normalized === 'amazon_reader') return 90;
+  if (normalized === 'listasin') return 85;
   if (normalized === 'amazon_series_bulk') return 95;
   if (normalized === 'amazon_series_unit_price') return 90;
   if (normalized === 'amazon_series_reader') return 70;
+  if (normalized === 'efox') return 82;
+  if (normalized === 'efox_series') return 79;
   if (normalized === 'sale_bon_series') return 80;
+  if (normalized === 'kintyaku') return 79;
+  if (normalized === 'kintyaku_series') return 76;
   if (normalized === 'kinpome') return 78;
   if (normalized === 'kinpome_series') return 75;
   if (normalized === 'amazon_series_source_price') return 60;
@@ -1319,10 +1396,15 @@ function isRefreshableSeriesPriceProvider(provider) {
   return [
     'amazon_html',
     'amazon_reader',
+    'listasin',
     'amazon_series_reader',
     'amazon_series_bulk',
     'amazon_series_unit_price',
     'sale_bon_series',
+    'efox',
+    'efox_series',
+    'kintyaku',
+    'kintyaku_series',
     'kinpome',
     'kinpome_series',
     'amazon_series_source_price',
@@ -1334,8 +1416,11 @@ function seriesImageProviderRank(provider) {
   const normalized = String(provider || '').toLowerCase();
   if (normalized === 'keepa' || normalized === 'amazon_html') return 100;
   if (normalized === 'amazon_reader') return 90;
+  if (normalized === 'listasin') return 90;
   if (normalized === 'amazon_series_reader') return 85;
+  if (normalized === 'efox' || normalized === 'efox_series') return 82;
   if (normalized === 'external_series') return 80;
+  if (normalized === 'kintyaku' || normalized === 'kintyaku_series') return 78;
   if (normalized === 'amazon_series_bulk') return 60;
   if (normalized === 'sale_bon_series') return 40;
   if (normalized === 'existing_series') return 30;
@@ -1497,22 +1582,46 @@ export async function checkBookById(id, options = {}) {
 export async function runDueChecks(options = {}) {
   const source = options.source || 'manual';
   const cronStartedAt = new Date().toISOString();
-  if (source === 'cron') {
-    await recordCronRun({
-      lastCronStartedAt: cronStartedAt,
-      lastCronError: ''
-    });
-  }
 
   try {
     const startedAt = Date.now();
     const maxRuntimeMs = floorNumber(process.env.CHECK_MAX_RUNTIME_MS, 0, 0);
+    let store = await readStore();
+    let settings = mergedRuntimeSettings(store.settings);
+    const forceAll = options.force === true || readEnvBoolean('FORCE_CHECK_ALL', false);
+
+    if (!forceAll && shouldWaitForScheduledExecutionWindow(source, options, startedAt, settings)) {
+      const remainingDue = countDueBooks(store.books, startedAt, settings);
+      const nextRunAtMs = nextJstExecutionBoundaryMs(startedAt, settings.checkExecutionHourJst);
+      const result = {
+        checked: 0,
+        remainingDue,
+        cursor: store.checkCursor,
+        overlapped: 0,
+        stoppedByRuntimeLimit: false,
+        forced: false,
+        skipped: true,
+        skipReason: 'scheduled_time',
+        nextRunAt: new Date(nextRunAtMs).toISOString(),
+        seriesDiscovery: null,
+        results: []
+      };
+
+      return result;
+    }
+
+    if (source === 'cron') {
+      await recordCronRun({
+        lastCronStartedAt: cronStartedAt,
+        lastCronError: ''
+      });
+    }
+
     const seriesDiscovery = shouldRunSeriesDiscovery(source, options)
       ? await discoverSeriesUpdates({ startedAt, maxRuntimeMs })
       : null;
-    const store = await readStore();
-    const settings = mergedRuntimeSettings(store.settings);
-    const forceAll = options.force === true || readEnvBoolean('FORCE_CHECK_ALL', false);
+    store = await readStore();
+    settings = mergedRuntimeSettings(store.settings);
     const plan = planDueChecks(store, settings, startedAt, { forceAll });
     const pacing = checkPacing();
     const getWebhookUrls = options.notify === false ? null : sharedWebhookUrlLoader();
@@ -1754,6 +1863,7 @@ export async function saveSettings(settings) {
   const cleaned = {
     notificationThreshold: clampNumber(settings.notificationThreshold, 0, 95, 10),
     checkIntervalHours: normalizeCheckIntervalHours(settings.checkIntervalHours, 24),
+    checkExecutionHourJst: normalizeCheckExecutionHourJst(settings.checkExecutionHourJst, 16),
     batchSize: floorNumber(settings.batchSize, 1, 50),
     notifyOnPriceDrop: Boolean(settings.notifyOnPriceDrop),
     notifyOnBestEver: Boolean(settings.notifyOnBestEver)
@@ -1882,7 +1992,9 @@ async function checkOneBook(bookRef, options = {}) {
         clearCurrent: true,
         restoreMissingCurrent: true
       });
-      if (
+      if (isPermanentSnapshotError(snapshotResult.error)) {
+        book.lastCheckedAt = now;
+      } else if (
         isUnresolvedSingleBook(book) ||
         (repair.currentCleared && !repair.currentRestored) ||
         isSuspiciousSnapshotError(snapshotResult.error)
@@ -1892,7 +2004,7 @@ async function checkOneBook(bookRef, options = {}) {
         book.lastCheckedAt = now;
       }
       book.updatedAt = now;
-      book.lastError = snapshotResult.error;
+      book.lastError = shouldStoreSnapshotError(book, snapshotResult.error) ? snapshotResult.error : '';
       if (options.updateCursor) updateCheckCursor(store, book, now);
       checkedBook = { ...book };
       return store;
@@ -1990,7 +2102,7 @@ function sharedWebhookUrlLoader() {
 
 async function settleSnapshot(asin, book = {}) {
   try {
-    const snapshot = await fetchBookSnapshot(asin, { url: book.sourceUrl || book.amazonUrl || '' });
+    const snapshot = await fetchBookSnapshot(asin, { ...book, url: book.sourceUrl || book.amazonUrl || '' });
     if (snapshot.currentPrice == null) return { ok: false, snapshot, error: '価格を取得できませんでした' };
     const suspiciousReason = suspiciousSnapshotReason(book, snapshot);
     if (suspiciousReason) {
@@ -2009,7 +2121,7 @@ async function settleSnapshot(asin, book = {}) {
 async function settleSnapshotWithUrl(asin, url, book = {}) {
   if (!asin) return { ok: false, error: 'Amazon URL または ASIN を入力してください' };
   try {
-    const snapshot = await fetchBookSnapshot(asin, { url });
+    const snapshot = await fetchBookSnapshot(asin, { ...book, url });
     if (snapshot.currentPrice == null) return { ok: false, snapshot, error: '価格を取得できませんでした' };
     const suspiciousReason = suspiciousSnapshotReason(book || {}, snapshot);
     if (suspiciousReason) {
@@ -2069,7 +2181,11 @@ async function buildBookFromAsin(asin, options = {}) {
 
   if (fetchDetails) {
     try {
-      snapshot = await fetchBookSnapshot(asin, { url: options.inputUrl || seed.amazonUrl || '' });
+      snapshot = await fetchBookSnapshot(asin, {
+        ...seed,
+        url: options.inputUrl || seed.amazonUrl || '',
+        sourceUrl: options.sourceUrl || seed.sourceUrl || ''
+      });
     } catch (error) {
       lastError = error.message;
     }
@@ -2311,7 +2427,7 @@ function planDueChecks(store, settings, now, options = {}) {
     return { books: selected, dueSelected: selected.length };
   }
 
-  const dueBefore = now - settings.checkIntervalHours * 60 * 60 * 1000;
+  const dueBefore = scheduledDueCutoffMs(now, settings);
   const dueBooks = rotatedBooks.filter((book) => isBookDue(book, dueBefore));
   const selected = dueBooks.slice(0, settings.batchSize);
   const dueSelected = selected.length;
@@ -2337,7 +2453,7 @@ function rotateAfterCursor(books, lastBookId = '') {
 }
 
 function countDueBooks(books, now, settings) {
-  const dueBefore = now - settings.checkIntervalHours * 60 * 60 * 1000;
+  const dueBefore = scheduledDueCutoffMs(now, settings);
   return books.filter((book) => isBookDue(book, dueBefore)).length;
 }
 
@@ -2345,6 +2461,36 @@ function isBookDue(book, dueBefore) {
   if (!book.lastCheckedAt) return true;
   const checkedAt = new Date(book.lastCheckedAt).getTime();
   return !Number.isFinite(checkedAt) || checkedAt <= dueBefore;
+}
+
+function scheduledDueCutoffMs(now, settings = {}) {
+  const intervalDays = Math.max(1, Math.round(normalizeCheckIntervalHours(settings.checkIntervalHours, 24) / 24));
+  const boundary = latestJstExecutionBoundaryMs(now, settings.checkExecutionHourJst);
+  return boundary - (intervalDays - 1) * 24 * 60 * 60 * 1000;
+}
+
+function shouldWaitForScheduledExecutionWindow(source, options = {}, now = Date.now(), settings = {}) {
+  if (options.ignoreExecutionWindow === true) return false;
+  if (source !== 'cron' && source !== 'scheduler') return false;
+  return now < todayJstExecutionBoundaryMs(now, settings.checkExecutionHourJst);
+}
+
+function latestJstExecutionBoundaryMs(now, hourJst) {
+  const todayBoundary = todayJstExecutionBoundaryMs(now, hourJst);
+  return now >= todayBoundary ? todayBoundary : todayBoundary - 24 * 60 * 60 * 1000;
+}
+
+function nextJstExecutionBoundaryMs(now, hourJst) {
+  const todayBoundary = todayJstExecutionBoundaryMs(now, hourJst);
+  return now < todayBoundary ? todayBoundary : todayBoundary + 24 * 60 * 60 * 1000;
+}
+
+function todayJstExecutionBoundaryMs(now, hourJst) {
+  const dayMs = 24 * 60 * 60 * 1000;
+  const jstOffsetMs = 9 * 60 * 60 * 1000;
+  const normalizedHour = normalizeCheckExecutionHourJst(hourJst, 16);
+  const jstDayStartUtc = Math.floor((Number(now) + jstOffsetMs) / dayMs) * dayMs - jstOffsetMs;
+  return jstDayStartUtc + normalizedHour * 60 * 60 * 1000;
 }
 
 function shouldStopForRuntimeLimit(startedAt, maxRuntimeMs, completedCount) {
@@ -2463,6 +2609,7 @@ function mergedRuntimeSettings(settings = {}) {
   return {
     notificationThreshold: clampNumber(settings.notificationThreshold, 0, 95, 10),
     checkIntervalHours: normalizeCheckIntervalHours(settings.checkIntervalHours, 24),
+    checkExecutionHourJst: normalizeCheckExecutionHourJst(settings.checkExecutionHourJst, 16),
     batchSize: floorNumber(settings.batchSize, 1, 50),
     notifyOnPriceDrop: settings.notifyOnPriceDrop !== false,
     notifyOnBestEver: settings.notifyOnBestEver !== false
@@ -2498,6 +2645,13 @@ function normalizeCheckIntervalHours(value, fallback = 24) {
   if (!Number.isFinite(number)) return fallback;
   const rounded = Math.round(number);
   return allowed.includes(rounded) ? rounded : fallback;
+}
+
+function normalizeCheckExecutionHourJst(value, fallback = 16) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  const rounded = Math.round(number);
+  return rounded >= 0 && rounded <= 23 ? rounded : fallback;
 }
 
 function sortBooks(a, b) {

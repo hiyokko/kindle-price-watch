@@ -78,24 +78,27 @@ create table if not exists app_state (
 
 ## 価格取得について
 
-`PRICE_PROVIDER=amazon_html` の場合、Amazon商品ページHTMLから価格を取得します。
+`PRICE_PROVIDER=amazon_html` の場合、Amazon商品ページHTMLから価格を取得します。Amazon側がブロック・503・価格欠落で返せない場合は、KintyakuでASIN一致の商品メタデータを補完し、listasIn(Kiseppe) の公開価格データで価格を補助します。
 
 `PRICE_PROVIDER=auto` の場合、次の順に使います。
 
 1. Keepa API (`KEEPA_API_KEY` がある場合)
 2. Amazon商品ページHTMLの簡易取得
+3. Kintyaku のASIN一致メタデータ補助
+4. listasIn(Kiseppe) の価格データ補助
 
 Amazon HTML取得はブロックされることがあるため、常用するならKeepa、またはAmazon公式Creators API相当の取得元に差し替えるのがおすすめです。
+紙本・中古本ページのASINやISBN-10はKindle価格として登録しません。Kindle商品ページのASINを登録してください。
 
 ## シリーズURL
 
-`https://www.amazon.co.jp/dp/XXXXXXXXXX?binding=kindle_edition...` のようなAmazonシリーズページURLを追加すると、ページ内のKindleシリーズASINを抽出して複数冊を登録します。`SERIES_IMPORT_LIMIT` を設定しない限り、アプリ側では冊数上限を設けません。
+`https://www.amazon.co.jp/dp/XXXXXXXXXX?binding=kindle_edition...` のようなAmazonシリーズページURLを追加すると、ページ内のKindleシリーズASINを抽出して複数冊を登録します。Amazon側で欠落する場合は、premium.gamepedia、Sale-bon、Kintyaku、efox、Kinpome の外部ソースも補助的に使います。`SERIES_IMPORT_LIMIT` を設定しない限り、アプリ側では冊数上限を設けません。
 
 Vercel Hobbyでは登録時に全巻の詳細取得まで行うとタイムアウトしやすいため、初期値ではまずASINだけを登録します。その後、手動の「価格チェック」またはCronでタイトル・価格・画像を順次取得します。登録時に詳細も取りたい場合は `SERIES_IMPORT_FETCH_DETAILS=true` を設定してください。
 
 ## 定期実行
 
-GitHub Actionsでは、アプリ画面に保存した再確認時間より古い本を、保存した件数ずつ自動チェックします。既定のWorkflowでは毎日16:00 JSTに、1冊ずつ間隔を空けて確認します。1000冊規模でもAmazonや補助サイトに連続アクセスしすぎないよう、`CHECK_REQUEST_DELAY_MS` / `CHECK_REQUEST_JITTER_MS` / `HTTP_REQUEST_MIN_INTERVAL_MS` で待機時間を調整します。429/503/CAPTCHA系の応答を検知した場合は、`CHECK_BLOCK_COOLDOWN_MS` / `HTTP_BLOCK_COOLDOWN_MS` のクールダウンを挟みます。
+GitHub Actionsでは毎時Workflowを起動し、アプリ画面に保存したJSTの実行時刻になった後だけ自動チェックします。再確認間隔は24時間差分ではなく、24時間なら毎日定時、48時間なら2日ごとの定時、72時間なら3日ごとの定時として判定します。1000冊規模でもAmazonや補助サイトに連続アクセスしすぎないよう、`CHECK_REQUEST_DELAY_MS` / `CHECK_REQUEST_JITTER_MS` / `HTTP_REQUEST_MIN_INTERVAL_MS` で待機時間を調整します。429/503/CAPTCHA系の応答を検知した場合は、`CHECK_BLOCK_COOLDOWN_MS` / `HTTP_BLOCK_COOLDOWN_MS` のクールダウンを挟みます。
 
 価格チェックは最後に確認できた本を `checkCursor` として保存します。途中で停止した場合でも、次回はその続きから確認します。期限切れの本を最後まで確認して枠が余った場合のみ、先頭に戻って前回分を重複チェックします。
 

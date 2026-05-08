@@ -20,6 +20,7 @@ const els = {
   settingsForm: document.getElementById('settingsForm'),
   thresholdInput: document.getElementById('thresholdInput'),
   intervalInput: document.getElementById('intervalInput'),
+  executionHourInput: document.getElementById('executionHourInput'),
   batchInput: document.getElementById('batchInput'),
   testNotifyButton: document.getElementById('testNotifyButton'),
   sortInput: document.getElementById('sortInput'),
@@ -44,6 +45,8 @@ const els = {
   saveWebhookButton: document.getElementById('saveWebhookButton'),
   closeWebhookButton: document.getElementById('closeWebhookButton')
 };
+
+populateExecutionHourOptions();
 
 els.addForm.addEventListener('submit', async (event) => {
   event.preventDefault();
@@ -73,6 +76,7 @@ els.settingsForm.addEventListener('submit', async (event) => {
   const payload = {
     notificationThreshold: Number(els.thresholdInput.value),
     checkIntervalHours: Number(els.intervalInput.value),
+    checkExecutionHourJst: Number(els.executionHourInput.value),
     batchSize: Number(els.batchInput.value),
     notifyOnPriceDrop: true,
     notifyOnBestEver: true
@@ -183,8 +187,20 @@ async function loadSettings() {
   state.discordWebhookCount = data.discordWebhookCount || 0;
   els.thresholdInput.value = String(data.settings.notificationThreshold);
   els.intervalInput.value = String(data.settings.checkIntervalHours);
+  els.executionHourInput.value = String(data.settings.checkExecutionHourJst ?? 16);
   els.batchInput.value = String(data.settings.batchSize);
   renderSummary();
+}
+
+function populateExecutionHourOptions() {
+  if (!els.executionHourInput) return;
+  els.executionHourInput.innerHTML = '';
+  for (let hour = 0; hour < 24; hour += 1) {
+    const option = document.createElement('option');
+    option.value = String(hour);
+    option.textContent = `${String(hour).padStart(2, '0')}:00`;
+    els.executionHourInput.append(option);
+  }
 }
 
 async function loadBooks() {
@@ -428,8 +444,9 @@ function createBookNode(book) {
   badge.classList.toggle('sale', badgeInfo.tone === 'sale');
   badge.classList.toggle('best', badgeInfo.tone === 'best');
 
-  if (book.lastError) {
-    error.textContent = book.lastError;
+  const visibleError = visibleBookError(book);
+  if (visibleError) {
+    error.textContent = visibleError;
     error.classList.add('active');
   }
 
@@ -583,7 +600,7 @@ function addResultMessage(data) {
         ? `${displayBookTitle(data.book)} は登録済みです。既存データを更新しました`
         : `${displayBookTitle(data.book)} は登録済みです`;
     }
-    if (data.book.currentPrice == null || data.book.lastError) {
+    if (data.book.currentPrice == null || visibleBookError(data.book)) {
       return `${displayBookTitle(data.book)} を追加しました。詳細は次回チェックで再取得します`;
     }
     return `${data.book.title} を追加しました`;
@@ -708,13 +725,25 @@ function seriesTitle(book) {
 }
 
 function displayBookTitle(book) {
+  if (!isKindleBookAsin(book.asin)) {
+    return `${book.asin}（Kindle版ではありません）`;
+  }
+  if (/Kindle版(?:ASIN|商品)ではありません/.test(book.lastError || '')) {
+    return `${book.asin}（Kindle版ではありません）`;
+  }
   if (book.volume && /^ASIN\s+[A-Z0-9]{10}$/i.test(book.title)) {
     return `${book.seriesName || 'Kindle'} ${book.volume}`;
   }
   if (/^ASIN\s+[A-Z0-9]{10}$/i.test(book.title)) {
+    if (visibleBookError(book)) return `${book.asin}（要確認）`;
+    if (book.currentPrice != null) return book.asin;
     return `${book.asin}（取得待ち）`;
   }
   return book.title;
+}
+
+function isKindleBookAsin(asin) {
+  return /^B[A-Z0-9]{9}$/i.test(String(asin || ''));
 }
 
 function escapeHtml(value) {
@@ -837,10 +866,21 @@ function isGroupAtBestEver(group) {
 
 function badgeFor(book) {
   if (book.effectivePrice == null) return { label: '未取得', tone: '' };
-  if (book.lastError) return { label: '要確認', tone: '' };
+  if (visibleBookError(book)) return { label: '要確認', tone: '' };
   if (isAtBestEver(book)) return { label: '過去最安', tone: 'best' };
   if (isBelowList(book)) return { label: '値下げ', tone: 'sale' };
   return { label: '通常', tone: '' };
+}
+
+function visibleBookError(book) {
+  const error = String(book?.lastError || '').trim();
+  if (!error) return '';
+  if (book.currentPrice != null && isTransientBookError(error)) return '';
+  return error;
+}
+
+function isTransientBookError(error) {
+  return /(?:価格を取得できませんでした|Amazonにブロック|HTTP\s*(?:429|500|503)|fetch failed|タイムアウト|reader:|商品ページではなくエラーページ)/i.test(String(error || ''));
 }
 
 function readSavedSortMode() {

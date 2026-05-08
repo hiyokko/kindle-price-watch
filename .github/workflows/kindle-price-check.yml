@@ -9,8 +9,8 @@ on:
         type: boolean
         default: true
   schedule:
-    # Daily 16:00 JST. GitHub cron uses UTC.
-    - cron: "0 7 * * *"
+    # Hourly. The app setting decides which JST hour opens the daily check window.
+    - cron: "0 * * * *"
 
 concurrency:
   group: kindle-price-check
