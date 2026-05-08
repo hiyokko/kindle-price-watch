@@ -1,5 +1,6 @@
 import {
   addBooksFromInput,
+  addBooksFromInputs,
   checkBookById,
   deleteAllBooks,
   deleteBook,
@@ -20,6 +21,14 @@ export async function listBooksPayload() {
 }
 
 export async function addBooksPayload(body = {}) {
+  const inputs = Array.isArray(body.urls) ? body.urls : Array.isArray(body.inputs) ? body.inputs : null;
+  if (inputs) {
+    return addBooksFromInputs(inputs, {
+      skipExternalFallback: body.skipExternalFallback === true,
+      skipBackfill: body.skipBackfill === true
+    });
+  }
+
   return addBooksFromInput(body.url || body.asin || '');
 }
 

@@ -150,13 +150,67 @@ export async function addBooksFromInput(input) {
   return result;
 }
 
+export async function addBooksFromInputs(inputs, options = {}) {
+  const queue = Array.isArray(inputs)
+    ? inputs.map((input) => String(input || '').trim()).filter(Boolean)
+    : parseBookImportInputs(inputs);
+  const deduped = [...new Map(queue.map((input) => [bookImportQueueKey(input), input])).values()];
+  const summary = {
+    mode: 'batch',
+    total: deduped.length,
+    processed: 0,
+    imported: 0,
+    skippedDuplicates: 0,
+    updatedDuplicates: 0,
+    results: [],
+    errors: []
+  };
+  if (deduped.length === 0) return summary;
+
+  const now = options.now || new Date().toISOString();
+  await updateStore(async (store) => {
+    for (const input of deduped) {
+      try {
+        const result = await addBooksFromInputInStore(store, input, { ...options, now });
+        const entry = {
+          input,
+          mode: result.mode || '',
+          imported: Number(result.imported || 0),
+          skippedDuplicates: Number(result.skippedDuplicates || 0),
+          updatedDuplicates: Number(result.updatedDuplicates || 0),
+          seriesCompleted: Boolean(result.seriesCompleted),
+          errors: result.errors || []
+        };
+        summary.processed += 1;
+        summary.imported += entry.imported;
+        summary.skippedDuplicates += entry.skippedDuplicates;
+        summary.updatedDuplicates += entry.updatedDuplicates;
+        summary.results.push(entry);
+      } catch (error) {
+        summary.processed += 1;
+        summary.errors.push({
+          input,
+          error: error.message || String(error)
+        });
+      }
+    }
+    return store;
+  });
+
+  return summary;
+}
+
 async function addBooksFromInputInStore(store, input, options = {}) {
   const explicitSeriesUrl = isKindleSeriesUrl(input);
   let asins = [];
   let series;
 
   if (explicitSeriesUrl) {
-    series = await fetchSeriesCandidates(input, { allowIncomplete: true });
+    series = await fetchSeriesCandidates(input, {
+      allowIncomplete: true,
+      skipExternalFallback: options.skipExternalFallback === true,
+      skipBackfill: options.skipBackfill === true
+    });
     if (!series) {
       const error = new Error('シリーズ内のKindle ASINを取得できませんでした');
       error.status = 422;
@@ -545,7 +599,9 @@ async function fetchSeriesCandidates(input, options = {}) {
 
   if (candidates.length === 0) return null;
   const merged = candidates.reduce((result, series) => mergeSeriesCandidate(result, series));
-  const resolved = await resolveSeriesCandidateDiffs(merged, candidates);
+  const resolved = options.skipBackfill
+    ? withSeriesReconciliation(merged)
+    : await resolveSeriesCandidateDiffs(merged, candidates);
   if (!isIncompleteSeriesCandidate(resolved)) return resolved;
   return options.allowIncomplete && resolved.items.length > 1 ? resolved : null;
 }
