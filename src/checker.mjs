@@ -383,6 +383,7 @@ async function importSeriesIntoStore(store, input, series, options = {}) {
   let importedBooks = [];
   let skippedDuplicates = 0;
   let updatedDuplicates = 0;
+  const seriesErrors = [...(series.reconciliation?.errors || [])];
   const seriesKey = seriesKeyForSeries(input, series);
   const seriesName = series.seriesName || 'Kindle シリーズ';
   const sourceUrl = seriesSourceUrlFor(input, series);
@@ -411,12 +412,20 @@ async function importSeriesIntoStore(store, input, series, options = {}) {
     seriesKey,
     seriesName
   };
-  const seriesItems = mergeWithKnownSeriesItems(series.items, store.books, seriesIdentity);
+  const mergedSeriesItems = mergeWithKnownSeriesItems(series.items, store.books, seriesIdentity);
+  const seriesItems = [];
+  for (const item of mergedSeriesItems) {
+    if (isClearlyDifferentSeriesTitle(item.title, seriesName)) {
+      seriesErrors.push(`${item.asin}: skipped title outside series (${item.title})`);
+      continue;
+    }
+    seriesItems.push(item);
+  }
   const currentSeriesAsins = new Set(seriesItems.map((item) => item.asin).filter(Boolean));
   const obsoleteEpisodeIds = new Set(
     store.books
       .filter((book) => isKnownBookForSeries(book, seriesIdentity))
-      .filter((book) => isLikelyObsoleteSingleEpisodeSeriesBook(book, currentSeriesAsins))
+      .filter((book) => isLikelyObsoleteSingleEpisodeSeriesBook(book, currentSeriesAsins, seriesName))
       .map((book) => book.id)
   );
   if (obsoleteEpisodeIds.size > 0) {
@@ -462,6 +471,10 @@ async function importSeriesIntoStore(store, input, series, options = {}) {
       seriesExpectedCount,
       volume: seriesItemVolume(item) || index + 1
     });
+    if (isClearlyDifferentSeriesTitle(book.title, seriesName)) {
+      seriesErrors.push(`${asin}: skipped title outside series (${book.title})`);
+      continue;
+    }
     additions.push(book);
     importedBooks.push(publicBook(book));
     existingByAsin.set(asin, book);
@@ -489,7 +502,7 @@ async function importSeriesIntoStore(store, input, series, options = {}) {
     updatedDuplicates,
     seriesCompleted,
     books: importedBooks,
-    errors: series.reconciliation?.errors || []
+    errors: seriesErrors
   };
 }
 
@@ -1426,7 +1439,9 @@ function shouldRefreshSeriesImage(book, item, options = {}) {
 
 function shouldRefreshSeriesTitle(book, item) {
   if (!item.title) return false;
+  if (isClearlyDifferentSeriesTitle(item.title, book.seriesName || item.seriesName)) return false;
   if (/^ASIN\s+[A-Z0-9]{10}$/i.test(book.title || '')) return true;
+  if (isAmazonErrorPageBookTitle(book.title)) return true;
 
   const bookVolume = volumeFromSeriesTitle(book.title);
   const itemVolume = seriesItemVolume(item);
@@ -1895,7 +1910,7 @@ function mergeWithKnownSeriesItems(items, books, options) {
 
   for (const book of books) {
     if (!isKnownBookForSeries(book, options) || merged.has(book.asin)) continue;
-    if (isLikelyObsoleteSingleEpisodeSeriesBook(book, currentSeriesAsins)) continue;
+    if (isLikelyObsoleteSingleEpisodeSeriesBook(book, currentSeriesAsins, options.seriesName)) continue;
     merged.set(book.asin, seedFromExistingBook(book));
   }
 
@@ -1910,8 +1925,9 @@ function removeStoreBooksById(store, ids) {
   resetCursorIfDeleted(store, ids);
 }
 
-function isLikelyObsoleteSingleEpisodeSeriesBook(book, currentSeriesAsins) {
+function isLikelyObsoleteSingleEpisodeSeriesBook(book, currentSeriesAsins, seriesName = '') {
   if (!book?.asin || currentSeriesAsins.has(book.asin)) return false;
+  if (isClearlyDifferentSeriesTitle(book.title, seriesName || book.seriesName)) return true;
   if (isSingleEpisodeLikeTitle(book.title)) return true;
   return isCheapAmazonBulkSeriesBook(book);
 }
@@ -1930,6 +1946,68 @@ function isCheapAmazonBulkSeriesBook(book) {
     price > 0 &&
     price <= SINGLE_EPISODE_SERIES_PRICE_MAX
   );
+}
+
+function isClearlyDifferentSeriesTitle(title, seriesName) {
+  const rawTitle = String(title || '').trim();
+  const rawSeriesName = String(seriesName || '').trim();
+  if (!rawTitle || isGenericSeriesName(rawSeriesName)) return false;
+  if (/^ASIN\s+[A-Z0-9]{10}$/i.test(rawTitle) || isAmazonErrorPageBookTitle(rawTitle)) return false;
+
+  const titleStem = seriesTitleComparisonStem(rawTitle);
+  const seriesStem = seriesTitleComparisonStem(rawSeriesName);
+  if (!titleStem || !seriesStem || seriesStem.length < 3) return false;
+  if (titleStem.includes(seriesStem) || seriesStem.includes(titleStem)) return false;
+
+  const titleCore = seriesTitleComparisonCore(rawTitle);
+  const seriesCore = seriesTitleComparisonCore(rawSeriesName);
+  if (!titleCore || !seriesCore || titleCore.length < 3 || seriesCore.length < 3) return false;
+  if (titleCore.includes(seriesCore) || seriesCore.includes(titleCore)) return false;
+  if (commonPrefixLength(titleCore, seriesCore) >= Math.min(6, titleCore.length, seriesCore.length)) return false;
+
+  return true;
+}
+
+function isGenericSeriesName(seriesName) {
+  const normalized = normalizeSeriesNameForComparison(seriesName);
+  return (
+    !normalized ||
+    normalized === 'kindleシリーズ' ||
+    normalized === 'kindleseries' ||
+    normalized === 'シリーズ'
+  );
+}
+
+function seriesTitleComparisonCore(value) {
+  return seriesTitleComparisonStem(stripSupplementalTitleSegments(value));
+}
+
+function seriesTitleComparisonStem(value) {
+  return stripSeriesVolumeMarkers(value)
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[\s\p{P}\p{S}]+/gu, '');
+}
+
+function stripSupplementalTitleSegments(value) {
+  return String(value || '')
+    .replace(/[（(［\[][^）)\]］]*(?:comic|comics|コミック|コミックス|kindle|digital|電子|harta|itan|feel|onblue)[^）)\]］]*[）)\]］]/giu, ' ')
+    .replace(/[【][^】]*(?:comic|comics|コミック|コミックス|kindle|digital|電子)[^】]*[】]/giu, ' ');
+}
+
+function stripSeriesVolumeMarkers(value) {
+  return String(value || '')
+    .normalize('NFKC')
+    .replace(/(?:第)?[0-9]{1,4}\s*巻/giu, ' ')
+    .replace(/[ (（]*[0-9]{1,4}[ )）]*$/u, ' ')
+    .replace(/[ 　]*(?:上|中|下|前編|後編|完結編)\s*$/u, ' ');
+}
+
+function commonPrefixLength(left, right) {
+  const max = Math.min(left.length, right.length);
+  let index = 0;
+  while (index < max && left[index] === right[index]) index += 1;
+  return index;
 }
 
 function isKnownBookForSeries(book, options) {
@@ -1951,6 +2029,7 @@ function seedFromExistingBook(book) {
     imageUrl: book.imageUrl || '',
     imageSource: book.imageSource || '',
     amazonUrl: book.amazonUrl || amazonUrlForAsin(book.asin),
+    seriesName: book.seriesName || '',
     volume: book.volume || '',
     seriesExpectedCount: book.seriesExpectedCount || '',
     currentPrice: book.currentPrice ?? null,
