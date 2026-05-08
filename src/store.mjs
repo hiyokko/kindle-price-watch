@@ -26,6 +26,9 @@ const defaultStore = {
     lastCronRemainingDue: 0,
     lastCronStoppedByRuntimeLimit: false,
     lastCronError: '',
+    lastImportQueueProcessed: 0,
+    lastImportQueueImported: 0,
+    lastImportQueueErrors: 0,
     lastSeriesDiscoveryChecked: 0,
     lastSeriesDiscoveryAdded: 0,
     lastSeriesDiscoveryCompleted: 0,
@@ -40,6 +43,10 @@ const defaultStore = {
   seriesDiscoveryCursor: {
     lastSeriesKey: '',
     checkedAt: ''
+  },
+  importQueue: {
+    completed: [],
+    errors: []
   }
 };
 
@@ -73,7 +80,8 @@ function mergeStore(store) {
     notifications: Array.isArray(store.notifications) ? store.notifications : [],
     automation: normalizeAutomation(store.automation),
     checkCursor: normalizeCheckCursor(store.checkCursor),
-    seriesDiscoveryCursor: normalizeSeriesDiscoveryCursor(store.seriesDiscoveryCursor)
+    seriesDiscoveryCursor: normalizeSeriesDiscoveryCursor(store.seriesDiscoveryCursor),
+    importQueue: normalizeImportQueue(store.importQueue)
   };
 }
 
@@ -168,6 +176,32 @@ function normalizeSeriesDiscoveryCursor(cursor) {
   return {
     ...defaultStore.seriesDiscoveryCursor,
     ...(cursor || {})
+  };
+}
+
+function normalizeImportQueue(queue) {
+  const completed = Array.isArray(queue?.completed) ? queue.completed : [];
+  const errors = Array.isArray(queue?.errors) ? queue.errors : [];
+  return {
+    completed: completed
+      .filter((entry) => entry && entry.key && entry.input)
+      .map((entry) => ({
+        key: String(entry.key),
+        input: String(entry.input),
+        importedAt: entry.importedAt || '',
+        mode: entry.mode || '',
+        imported: Number(entry.imported || 0),
+        skippedDuplicates: Number(entry.skippedDuplicates || 0),
+        updatedDuplicates: Number(entry.updatedDuplicates || 0)
+      })),
+    errors: errors
+      .filter((entry) => entry && entry.key && entry.input)
+      .map((entry) => ({
+        key: String(entry.key),
+        input: String(entry.input),
+        checkedAt: entry.checkedAt || '',
+        error: String(entry.error || '')
+      }))
   };
 }
 

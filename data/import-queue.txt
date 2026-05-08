@@ -1,0 +1,3 @@
+# Add one Amazon Kindle URL or ASIN per line.
+# Cron imports unfinished entries during the JST 16:00 GitHub Actions run.
+https://www.amazon.co.jp/dp/B075V1J9NB?binding=kindle_edition&ref_=dbs_s_ks_series_rwt_tkin&qid=1684976968&sr=1-1

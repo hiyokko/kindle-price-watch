@@ -1,4 +1,6 @@
 import crypto from 'node:crypto';
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
 import {
   amazonUrlForAsin,
   extractAsin,
@@ -148,6 +150,40 @@ export async function addBooksFromInput(input) {
   return result;
 }
 
+async function addBooksFromInputInStore(store, input, options = {}) {
+  const explicitSeriesUrl = isKindleSeriesUrl(input);
+  let asins = [];
+  let series;
+
+  if (explicitSeriesUrl) {
+    series = await fetchSeriesCandidates(input, { allowIncomplete: true });
+    if (!series) {
+      const error = new Error('シリーズ内のKindle ASINを取得できませんでした');
+      error.status = 422;
+      throw error;
+    }
+    asins = series.items.map((item) => item.asin);
+  } else {
+    series = await detectCollectionSeries(input);
+    asins = series?.items?.map((item) => item.asin) || [];
+  }
+
+  if (explicitSeriesUrl && (!series || asins.length === 0)) {
+    const error = new Error('シリーズ内のKindle ASINを取得できませんでした');
+    error.status = 422;
+    throw error;
+  }
+
+  if (!series || asins.length === 0) {
+    return addSingleBookFromInputInStore(store, input, options);
+  }
+
+  return importSeriesIntoStore(store, input, series, {
+    fetchDetails: String(process.env.SERIES_IMPORT_FETCH_DETAILS || '').toLowerCase() === 'true',
+    now: options.now || new Date().toISOString()
+  });
+}
+
 async function addSeriesBooksFromInputInStore(store, input, options = {}) {
   const explicitSeriesUrl = isKindleSeriesUrl(input);
   const series = explicitSeriesUrl
@@ -165,6 +201,66 @@ async function addSeriesBooksFromInputInStore(store, input, options = {}) {
     fetchDetails: String(process.env.SERIES_IMPORT_FETCH_DETAILS || '').toLowerCase() === 'true',
     now: options.now || new Date().toISOString()
   });
+}
+
+async function addSingleBookFromInputInStore(store, input, options = {}) {
+  const asin = extractAsin(input);
+  if (!asin) {
+    const error = new Error('Amazon URL または ASIN を入力してください');
+    error.status = 400;
+    throw error;
+  }
+  if (!isProbablyBookAsin(asin)) {
+    const error = new Error('Kindle本のASIN（Bで始まる10桁）またはKindle商品URLを入力してください');
+    error.status = 400;
+    throw error;
+  }
+
+  const now = options.now || new Date().toISOString();
+  const sourceUrl = String(input || '').trim();
+  const existing = store.books.find((book) => book.asin === asin);
+  if (existing) {
+    let updated = false;
+    if (sourceUrl && existing.sourceUrl !== sourceUrl) {
+      existing.sourceUrl = sourceUrl;
+      existing.updatedAt = now;
+      updated = true;
+    }
+    return {
+      mode: 'single',
+      imported: 0,
+      skippedDuplicates: 1,
+      updatedDuplicates: updated ? 1 : 0,
+      books: [publicBook(existing)],
+      book: publicBook(existing),
+      errors: existing.lastError ? [existing.lastError] : []
+    };
+  }
+
+  const book = await buildBookFromAsin(asin, {
+    fetchDetails: options.fetchDetails !== false,
+    inputUrl: input,
+    sourceUrl,
+    createdAt: now
+  });
+  if (isPermanentSnapshotError(book.lastError)) {
+    const error = new Error(book.lastError);
+    error.status = 400;
+    throw error;
+  }
+
+  store.books.push(book);
+  appendPriceHistoryEntry(store, book, now);
+
+  return {
+    mode: 'single',
+    imported: 1,
+    skippedDuplicates: 0,
+    updatedDuplicates: 0,
+    books: [publicBook(book)],
+    book: publicBook(book),
+    errors: book.lastError ? [book.lastError] : []
+  };
 }
 
 async function importSeriesIntoStore(store, input, series, options = {}) {
@@ -1705,6 +1801,9 @@ export async function runDueChecks(options = {}) {
       return result;
     }
 
+    const importQueue = shouldRunBookImportQueue(source, options)
+      ? await processBookImportQueueInStore(store, { startedAt, maxRuntimeMs, now: cronStartedAt })
+      : null;
     const seriesDiscovery = shouldRunSeriesDiscovery(source, options, store, settings, startedAt)
       ? await discoverSeriesUpdates(store, { startedAt, maxRuntimeMs })
       : null;
@@ -1748,6 +1847,7 @@ export async function runDueChecks(options = {}) {
       overlapped: Math.max(0, results.length - plan.dueSelected),
       stoppedByRuntimeLimit,
       forced: forceAll,
+      importQueue,
       seriesDiscovery,
       results
     };
@@ -1759,6 +1859,9 @@ export async function runDueChecks(options = {}) {
           lastCronChecked: result.checked,
           lastCronRemainingDue: result.remainingDue,
           lastCronStoppedByRuntimeLimit: result.stoppedByRuntimeLimit,
+          lastImportQueueProcessed: importQueue?.processed || 0,
+          lastImportQueueImported: importQueue?.imported || 0,
+          lastImportQueueErrors: importQueue?.errors?.length || 0,
           lastSeriesDiscoveryChecked: seriesDiscovery?.checked || 0,
           lastSeriesDiscoveryAdded: seriesDiscovery?.added || 0,
           lastSeriesDiscoveryCompleted: seriesDiscovery?.completed || 0,
@@ -1767,7 +1870,7 @@ export async function runDueChecks(options = {}) {
         }
       : null;
 
-    if (processedBookIds.size > 0 || cronFields || hasSeriesDiscoveryWork(seriesDiscovery)) {
+    if (processedBookIds.size > 0 || cronFields || hasSeriesDiscoveryWork(seriesDiscovery) || hasImportQueueWork(importQueue)) {
       await persistBulkCheckStore({
         store,
         cronFields
@@ -1862,6 +1965,136 @@ function shouldRunSeriesDiscovery(source, options = {}, store = {}, settings = {
   const boundary = latestJstExecutionBoundaryMs(now, settings.checkExecutionHourJst);
   const lastBoundary = latestJstExecutionBoundaryMs(lastCheckedAt, settings.checkExecutionHourJst);
   return boundary - lastBoundary >= intervalDays * 24 * 60 * 60 * 1000;
+}
+
+function shouldRunBookImportQueue(source, options = {}) {
+  if (options.importQueue === true) return true;
+  if (options.importQueue === false) return false;
+  return source === 'cron' || source === 'scheduler';
+}
+
+async function processBookImportQueueInStore(store, options = {}) {
+  const now = options.now || new Date().toISOString();
+  const inputs = await loadBookImportQueueInputs();
+  const completed = new Map((store.importQueue?.completed || []).map((entry) => [entry.key, entry]));
+  const existingErrors = new Map((store.importQueue?.errors || []).map((entry) => [entry.key, entry]));
+  const results = [];
+  const errors = [];
+  let imported = 0;
+  let skippedDuplicates = 0;
+  let updatedDuplicates = 0;
+  let skippedCompleted = 0;
+  let stoppedByRuntimeLimit = false;
+
+  store.importQueue = store.importQueue || { completed: [], errors: [] };
+
+  for (const input of inputs) {
+    if (shouldStopForRuntimeLimit(options.startedAt, options.maxRuntimeMs, results.length + errors.length)) {
+      stoppedByRuntimeLimit = true;
+      break;
+    }
+
+    const key = bookImportQueueKey(input);
+    if (completed.has(key)) {
+      skippedCompleted += 1;
+      continue;
+    }
+
+    try {
+      const result = await addBooksFromInputInStore(store, input, { now });
+      const entry = {
+        key,
+        input,
+        importedAt: now,
+        mode: result.mode || '',
+        imported: Number(result.imported || 0),
+        skippedDuplicates: Number(result.skippedDuplicates || 0),
+        updatedDuplicates: Number(result.updatedDuplicates || 0)
+      };
+      completed.set(key, entry);
+      existingErrors.delete(key);
+      imported += entry.imported;
+      skippedDuplicates += entry.skippedDuplicates;
+      updatedDuplicates += entry.updatedDuplicates;
+      results.push(entry);
+    } catch (error) {
+      const entry = {
+        key,
+        input,
+        checkedAt: now,
+        error: error.message || String(error)
+      };
+      existingErrors.set(key, entry);
+      errors.push(entry);
+    }
+  }
+
+  store.importQueue.completed = [...completed.values()].slice(-200);
+  store.importQueue.errors = [...existingErrors.values()].slice(-100);
+
+  return {
+    total: inputs.length,
+    processed: results.length + errors.length,
+    imported,
+    skippedDuplicates,
+    updatedDuplicates,
+    skippedCompleted,
+    stoppedByRuntimeLimit,
+    results,
+    errors
+  };
+}
+
+async function loadBookImportQueueInputs() {
+  const inputs = new Map();
+  for (const input of parseBookImportInputs(process.env.BOOK_IMPORT_INPUTS || '')) {
+    inputs.set(bookImportQueueKey(input), input);
+  }
+
+  const queuePath = String(process.env.BOOK_IMPORT_QUEUE_PATH || 'data/import-queue.txt').trim();
+  if (queuePath && queuePath.toLowerCase() !== 'false') {
+    try {
+      const raw = await fs.readFile(path.resolve(process.cwd(), queuePath), 'utf8');
+      for (const input of parseBookImportInputs(raw)) {
+        inputs.set(bookImportQueueKey(input), input);
+      }
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+  }
+
+  return [...inputs.values()];
+}
+
+function parseBookImportInputs(raw) {
+  const text = String(raw || '').trim();
+  if (!text) return [];
+
+  if (text.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(text);
+      if (Array.isArray(parsed)) return parsed.map(normalizeBookImportInput).filter(Boolean);
+    } catch {
+      // Fall through to line-based parsing.
+    }
+  }
+
+  return text
+    .split(/\r?\n/)
+    .map(normalizeBookImportInput)
+    .filter((line) => line && !line.startsWith('#'));
+}
+
+function normalizeBookImportInput(value) {
+  return String(value || '')
+    .trim()
+    .replace(/^["']|["']$/g, '');
+}
+
+function bookImportQueueKey(input) {
+  const asin = extractAsin(input);
+  if (asin) return `asin:${asin.toUpperCase()}`;
+  return `input:${String(input || '').trim()}`;
 }
 
 function planSeriesDiscovery(store) {
@@ -2824,7 +3057,19 @@ function shouldPersistCronRun(result = {}) {
     result.checked > 0 ||
       result.remainingDue > 0 ||
       result.stoppedByRuntimeLimit ||
+      hasImportQueueWork(result.importQueue) ||
       hasSeriesDiscoveryWork(result.seriesDiscovery)
+  );
+}
+
+function hasImportQueueWork(importQueue = null) {
+  if (!importQueue) return false;
+  return Boolean(
+    importQueue.processed > 0 ||
+      importQueue.imported > 0 ||
+      importQueue.updatedDuplicates > 0 ||
+      importQueue.stoppedByRuntimeLimit ||
+      (Array.isArray(importQueue.errors) && importQueue.errors.length > 0)
   );
 }
 
