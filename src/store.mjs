@@ -5,6 +5,7 @@ import { amazonUrlForAsin } from './price-provider.mjs';
 const dataDir = path.join(process.cwd(), 'data');
 const storePath = path.join(dataDir, 'store.json');
 const blobStorePath = process.env.BLOB_STORE_PATH || 'kindle-price-watch/store.json';
+const amazonImagePrefix = 'https://m.media-amazon.com/images/I/';
 
 const defaultStore = {
   version: 1,
@@ -134,7 +135,7 @@ export function publicBook(book) {
     seriesExpectedCount: book.seriesExpectedCount || '',
     sourceUrl: book.sourceUrl || '',
     importMode: book.importMode || 'single',
-    imageUrl: book.imageUrl,
+    imageUrl: book.imageUrl || amazonImageUrlForKey(book.imageKey),
     amazonUrl: book.amazonUrl || amazonUrlForAsin(book.asin),
     currentPrice: book.currentPrice,
     currentPoints: book.currentPoints,
@@ -157,9 +158,11 @@ export function publicBook(book) {
 
 function normalizeBook(book) {
   const asin = String(book?.asin || '').trim().toUpperCase();
+  const imageUrl = book?.imageUrl || amazonImageUrlForKey(book?.imageKey);
   return {
     ...book,
     asin: asin || book?.asin,
+    imageUrl,
     imageSource: book?.imageSource || '',
     amazonUrl: book?.amazonUrl || (asin ? amazonUrlForAsin(asin) : ''),
     currentPoints: Number(book?.currentPoints || 0),
@@ -310,10 +313,12 @@ function compactStoreForWrite(store) {
 }
 
 function compactBookForWrite(book) {
+  const imageKey = amazonImageKeyFromUrl(book.imageUrl) || emptyToUndefined(book.imageKey);
   return compactObject({
     ...book,
     amazonUrl: undefined,
     imageSource: undefined,
+    imageKey,
     sourceUrl: emptyToUndefined(book.sourceUrl),
     importMode: book.importMode === 'single' ? undefined : book.importMode,
     currentPoints: Number(book.currentPoints || 0) === 0 ? undefined : book.currentPoints,
@@ -325,13 +330,35 @@ function compactBookForWrite(book) {
     seriesName: emptyToUndefined(book.seriesName),
     volume: emptyToUndefined(book.volume),
     seriesExpectedCount: emptyToUndefined(book.seriesExpectedCount),
-    imageUrl: emptyToUndefined(book.imageUrl),
+    imageUrl: imageKey ? undefined : emptyToUndefined(book.imageUrl),
     seriesCompleted: book.seriesCompleted ? true : undefined,
     seriesCompletedAt: emptyToUndefined(book.seriesCompletedAt),
     seriesLastDiscoveredAt: emptyToUndefined(book.seriesLastDiscoveredAt),
     seriesDiscoveryError: emptyToUndefined(book.seriesDiscoveryError),
     lastError: emptyToUndefined(book.lastError)
   });
+}
+
+function amazonImageKeyFromUrl(value) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  try {
+    const url = new URL(text);
+    if (url.hostname !== 'm.media-amazon.com') return '';
+    const prefix = '/images/I/';
+    if (!url.pathname.startsWith(prefix)) return '';
+    return decodeURIComponent(url.pathname.slice(prefix.length));
+  } catch {
+    if (text.startsWith(amazonImagePrefix)) return text.slice(amazonImagePrefix.length).split('?')[0];
+  }
+  return '';
+}
+
+function amazonImageUrlForKey(value) {
+  const key = String(value || '').trim();
+  if (!key) return '';
+  if (/^https?:\/\//i.test(key)) return key;
+  return `${amazonImagePrefix}${encodeURI(key)}`;
 }
 
 function compactHistoryEntryForWrite(entry) {
