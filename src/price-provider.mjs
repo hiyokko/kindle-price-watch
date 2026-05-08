@@ -305,11 +305,11 @@ export async function fetchKintyakuKindleSeriesItems(seriesName, options = {}) {
   };
 }
 
-async function fetchFromKintyaku(asin, seed = {}) {
+async function fetchFromKintyaku(asin, seed = {}, options = {}) {
   const normalizedAsin = String(asin || '').toUpperCase();
   if (!isProbablyBookAsin(normalizedAsin)) throw new Error('Kindle版ASINではありません');
 
-  const record = await fetchKintyakuAmazonSalesItem(normalizedAsin, seed);
+  const record = await fetchKintyakuAmazonSalesItem(normalizedAsin, seed, options);
   const item = kintyakuBookItemFromRecord(record);
   if (!item) throw new Error('商品データがありません');
 
@@ -1178,7 +1178,7 @@ async function fetchFromAmazonHtml(asin, inputUrl = '', options = {}) {
 
   for (const url of amazonProductCandidateUrls(asin, inputUrl)) {
     try {
-      const html = await fetchAmazonHtml(url);
+      const html = await fetchAmazonHtml(url, options);
       const snapshot = isAmazonSearchUrl(url)
         ? extractAmazonSearchSnapshotFromHtml(html, asin, url, 'amazon_html')
         : extractAmazonHtmlSnapshotFromHtml(html, asin, url, 'amazon_html');
@@ -1192,7 +1192,7 @@ async function fetchFromAmazonHtml(asin, inputUrl = '', options = {}) {
 
   if (shouldUseAmazonReaderFallback()) {
     try {
-      const snapshot = await fetchFromAmazonReader(asin, inputUrl);
+      const snapshot = await fetchFromAmazonReader(asin, inputUrl, options);
       if (snapshot.currentPrice != null) return lastSnapshot ? mergeSnapshotLike(lastSnapshot, snapshot) : snapshot;
       lastSnapshot = lastSnapshot ? mergeSnapshotLike(lastSnapshot, snapshot) : snapshot;
     } catch (error) {
@@ -1202,7 +1202,7 @@ async function fetchFromAmazonHtml(asin, inputUrl = '', options = {}) {
   }
 
   try {
-    const snapshot = await fetchFromKintyaku(asin, snapshotSeedFromOptions(asin, options, lastSnapshot));
+    const snapshot = await fetchFromKintyaku(asin, snapshotSeedFromOptions(asin, options, lastSnapshot), options);
     if (snapshot.currentPrice != null) return lastSnapshot ? mergeSnapshotLike(lastSnapshot, snapshot) : snapshot;
     lastSnapshot = lastSnapshot ? mergeSnapshotLike(lastSnapshot, snapshot) : snapshot;
   } catch (error) {
@@ -1210,7 +1210,7 @@ async function fetchFromAmazonHtml(asin, inputUrl = '', options = {}) {
   }
 
   try {
-    const snapshot = await fetchFromListasin(asin, snapshotSeedFromOptions(asin, options, lastSnapshot));
+    const snapshot = await fetchFromListasin(asin, snapshotSeedFromOptions(asin, options, lastSnapshot), options);
     return lastSnapshot ? mergeSnapshotLike(lastSnapshot, snapshot) : snapshot;
   } catch (error) {
     errors.push(`listasIn: ${error.message}`);
@@ -1222,13 +1222,18 @@ async function fetchFromAmazonHtml(asin, inputUrl = '', options = {}) {
   throw new Error(compactFetchErrors(errors) || 'Amazon HTMLで商品情報を取得できませんでした');
 }
 
-async function fetchFromListasin(asin, seed = {}) {
+async function fetchFromListasin(asin, seed = {}, options = {}) {
   const normalizedAsin = String(asin || '').toUpperCase();
   if (!isProbablyBookAsin(normalizedAsin)) throw new Error('Kindle版ASINではありません');
 
   const url = new URL('https://www.listasin.net/api/0200_jd.cgi');
   url.searchParams.set('asins', normalizedAsin);
-  const data = await fetchJson(url.toString(), { timeoutMs: 5000, retries: 2, retryDelayMs: 300 });
+  const data = await fetchJson(url.toString(), {
+    signal: options.signal,
+    timeoutMs: options.timeoutMs ?? 5000,
+    retries: 2,
+    retryDelayMs: 300
+  });
   const record = data?.result?.books?.[normalizedAsin];
   if (!record) throw new Error('価格データがありません');
 
@@ -1370,10 +1375,10 @@ function shouldUseAmazonReaderFallback() {
   return String(process.env.AMAZON_READER_FALLBACK || 'true').toLowerCase() !== 'false';
 }
 
-async function fetchFromAmazonReader(asin, inputUrl = '') {
+async function fetchFromAmazonReader(asin, inputUrl = '', options = {}) {
   const sourceUrl = amazonProductCandidateUrls(asin, inputUrl)[0] || amazonUrlForAsin(asin);
   const readerUrl = amazonReaderUrl(sourceUrl);
-  const text = await fetchHtml(readerUrl);
+  const text = await fetchHtml(readerUrl, options);
   return extractAmazonReaderSnapshotFromText(text, asin, sourceUrl, 'amazon_reader');
 }
 

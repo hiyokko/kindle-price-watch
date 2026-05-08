@@ -1697,7 +1697,7 @@ function shouldIgnoreListPriceForProvider(currentPrice, listPrice, provider) {
   if (!isSeriesDerivedPriceProvider(provider)) return false;
   const current = Number(currentPrice);
   const list = Number(listPrice);
-  return Number.isFinite(current) && current > 0 && Number.isFinite(list) && list > 0 && current > list * 1.15;
+  return Number.isFinite(current) && current > 0 && Number.isFinite(list) && list > 0 && current > list;
 }
 
 function isSeriesDerivedPriceProvider(provider) {
@@ -1978,7 +1978,7 @@ export async function repairBookPricesByAsins(asins, options = {}) {
   const now = options.now || new Date().toISOString();
   const currentStore = await readStore();
   const booksByAsin = new Map((currentStore.books || []).map((book) => [book.asin, book]));
-  const snapshotResults = [];
+  const snapshotTargets = [];
   const missing = [];
 
   for (const asin of requestedAsins) {
@@ -1987,12 +1987,26 @@ export async function repairBookPricesByAsins(asins, options = {}) {
       missing.push(asin);
       continue;
     }
-    snapshotResults.push({
+    snapshotTargets.push({
       asin,
       bookId: book.id,
-      snapshotResult: await settleSnapshot(asin, book)
+      book
     });
   }
+
+  const snapshotResults = await mapWithConcurrency(
+    snapshotTargets,
+    repairPriceFetchConcurrency(options),
+    async (target) => ({
+      asin: target.asin,
+      bookId: target.bookId,
+      snapshotResult: await settleSnapshotWithDeadline(
+        target.asin,
+        target.book,
+        repairPriceSnapshotTimeoutMs(options)
+      )
+    })
+  );
 
   const summary = {
     mode: 'price_repair',
@@ -2040,6 +2054,44 @@ export async function repairBookPricesByAsins(asins, options = {}) {
   });
 
   return summary;
+}
+
+async function settleSnapshotWithDeadline(asin, book, timeoutMs) {
+  if (!timeoutMs) return settleSnapshot(asin, book);
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await settleSnapshot(asin, book, {
+      signal: controller.signal,
+      timeoutMs
+    });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+function repairPriceSnapshotTimeoutMs(options = {}) {
+  return floorNumber(options.timeoutMs ?? process.env.REPAIR_PRICE_SNAPSHOT_TIMEOUT_MS, 1000, 25000);
+}
+
+function repairPriceFetchConcurrency(options = {}) {
+  return clampNumber(options.concurrency ?? process.env.REPAIR_PRICE_CONCURRENCY, 1, 5, 3);
+}
+
+async function mapWithConcurrency(items, concurrency, task) {
+  const results = new Array(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.min(items.length, Math.max(1, concurrency));
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await task(items[index], index);
+    }
+  });
+  await Promise.all(workers);
+  return results;
 }
 
 export async function runDueChecks(options = {}) {
@@ -2744,9 +2796,14 @@ function sharedWebhookUrlLoader() {
   };
 }
 
-async function settleSnapshot(asin, book = {}) {
+async function settleSnapshot(asin, book = {}, options = {}) {
   try {
-    const snapshot = await fetchBookSnapshot(asin, { ...book, url: book.sourceUrl || book.amazonUrl || '' });
+    const snapshot = await fetchBookSnapshot(asin, {
+      ...book,
+      signal: options.signal,
+      timeoutMs: options.timeoutMs,
+      url: options.url || book.sourceUrl || book.amazonUrl || ''
+    });
     if (snapshot.currentPrice == null) return { ok: false, snapshot, error: '価格を取得できませんでした' };
     const suspiciousReason = suspiciousSnapshotReason(book, snapshot);
     if (suspiciousReason) {
