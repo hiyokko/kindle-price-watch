@@ -1542,12 +1542,17 @@ function isPermanentSnapshotError(error) {
 function shouldStoreSnapshotError(book, error) {
   if (!error) return false;
   if (isPermanentSnapshotError(error) || isSuspiciousSnapshotError(error)) return true;
+  if (isBlockingSnapshotError(error)) return true;
   if (book.currentPrice == null) return true;
   return !isTransientSnapshotError(error);
 }
 
 function isTransientSnapshotError(error) {
   return /(?:価格を取得できませんでした|Amazonにブロック|HTTP\s*(?:429|500|503)|fetch failed|タイムアウト|reader:|商品ページではなくエラーページ)/i.test(String(error || ''));
+}
+
+function isBlockingSnapshotError(error) {
+  return /(?:HTTP\s*(?:429|503)|Too Many Requests|ServiceUnavailable|サービスが利用できません|Amazonにブロック|captcha|robot check|自動化されたアクセス|ショッピングを続けてください)/i.test(String(error || ''));
 }
 
 function repairSuspiciousPriceState(book, store, options = {}) {
@@ -1572,6 +1577,7 @@ function repairSuspiciousPriceState(book, store, options = {}) {
     Number(book.currentPrice) > 0 &&
     book.lastError &&
     isTransientSnapshotError(book.lastError) &&
+    !isBlockingSnapshotError(book.lastError) &&
     !suspiciousStoredCurrentPriceReason(book)
   ) {
     book.lastError = '';
@@ -3536,7 +3542,7 @@ function randomizedDelay(baseMs, jitterMs) {
 
 function isBlockingCheckResult(result) {
   const value = String(result?.error || result?.book?.lastError || '');
-  return /(?:HTTP\s*(?:429|503)|Too Many Requests|ServiceUnavailable|サービスが利用できません|Amazonにブロック|captcha|robot check|自動化されたアクセス|ショッピングを続けてください)/i.test(value);
+  return isBlockingSnapshotError(value);
 }
 
 function sleep(ms) {

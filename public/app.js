@@ -883,12 +883,16 @@ function badgeFor(book) {
 function visibleBookError(book) {
   const error = String(book?.lastError || '').trim();
   if (!error) return '';
-  if (book.currentPrice != null && isTransientBookError(error)) return '';
+  if (book.currentPrice != null && isTransientBookError(error) && !isBlockingBookError(error)) return '';
   return error;
 }
 
 function isTransientBookError(error) {
   return /(?:価格を取得できませんでした|Amazonにブロック|HTTP\s*(?:429|500|503)|fetch failed|タイムアウト|reader:|商品ページではなくエラーページ)/i.test(String(error || ''));
+}
+
+function isBlockingBookError(error) {
+  return /(?:HTTP\s*(?:429|503)|Too Many Requests|ServiceUnavailable|サービスが利用できません|Amazonにブロック|captcha|robot check|自動化されたアクセス|ショッピングを続けてください)/i.test(String(error || ''));
 }
 
 function readSavedSortMode() {
