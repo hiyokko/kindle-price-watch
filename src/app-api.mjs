@@ -24,7 +24,8 @@ export async function listBooksPayload() {
 export async function addBooksPayload(body = {}) {
   if (Array.isArray(body.seriesImports)) {
     return addSeriesImports(body.seriesImports, {
-      fetchDetails: body.fetchDetails === true
+      fetchDetails: body.fetchDetails === true,
+      recordInitialHistory: body.recordInitialHistory !== false
     });
   }
 

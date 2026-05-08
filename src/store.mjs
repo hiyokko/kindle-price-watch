@@ -1,5 +1,6 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { amazonUrlForAsin } from './price-provider.mjs';
 
 const dataDir = path.join(process.cwd(), 'data');
 const storePath = path.join(dataDir, 'store.json');
@@ -75,7 +76,7 @@ function mergeStore(store) {
       ...defaultStore.settings,
       ...(store.settings || {})
     },
-    books: Array.isArray(store.books) ? store.books : [],
+    books: Array.isArray(store.books) ? store.books.map(normalizeBook) : [],
     priceHistory: Array.isArray(store.priceHistory) ? store.priceHistory : [],
     notifications: Array.isArray(store.notifications) ? store.notifications : [],
     automation: normalizeAutomation(store.automation),
@@ -134,7 +135,7 @@ export function publicBook(book) {
     sourceUrl: book.sourceUrl || '',
     importMode: book.importMode || 'single',
     imageUrl: book.imageUrl,
-    amazonUrl: book.amazonUrl,
+    amazonUrl: book.amazonUrl || amazonUrlForAsin(book.asin),
     currentPrice: book.currentPrice,
     currentPoints: book.currentPoints,
     effectivePrice: book.effectivePrice,
@@ -151,6 +152,18 @@ export function publicBook(book) {
     updatedAt: book.updatedAt,
     lastError: book.lastError,
     provider: book.provider
+  };
+}
+
+function normalizeBook(book) {
+  const asin = String(book?.asin || '').trim().toUpperCase();
+  return {
+    ...book,
+    asin: asin || book?.asin,
+    imageSource: book?.imageSource || '',
+    amazonUrl: book?.amazonUrl || (asin ? amazonUrlForAsin(asin) : ''),
+    currentPoints: Number(book?.currentPoints || 0),
+    importMode: book?.importMode || 'single'
   };
 }
 
@@ -273,13 +286,117 @@ async function fetchBlobStoreWithMetadata() {
 
 async function writeBlobStore(store) {
   const { put } = await getBlobSdk();
-  await put(blobStorePath, JSON.stringify(store), {
+  await put(blobStorePath, JSON.stringify(compactStoreForWrite(store)), {
     access: 'private',
     allowOverwrite: true,
     contentType: 'application/json',
     cacheControlMaxAge: 0
   });
   setBlobStoreCache({ store, etag: '' });
+}
+
+function compactStoreForWrite(store) {
+  return compactObject({
+    ...store,
+    settings: compactAgainstDefaults(store.settings, defaultStore.settings),
+    automation: compactAgainstDefaults(store.automation, defaultStore.automation),
+    checkCursor: compactAgainstDefaults(store.checkCursor, defaultStore.checkCursor),
+    seriesDiscoveryCursor: compactAgainstDefaults(store.seriesDiscoveryCursor, defaultStore.seriesDiscoveryCursor),
+    books: (store.books || []).map(compactBookForWrite),
+    priceHistory: (store.priceHistory || []).map(compactHistoryEntryForWrite),
+    notifications: (store.notifications || []).map(compactObject),
+    importQueue: compactImportQueueForWrite(store.importQueue)
+  });
+}
+
+function compactBookForWrite(book) {
+  return compactObject({
+    ...book,
+    amazonUrl: undefined,
+    imageSource: undefined,
+    sourceUrl: emptyToUndefined(book.sourceUrl),
+    importMode: book.importMode === 'single' ? undefined : book.importMode,
+    currentPoints: Number(book.currentPoints || 0) === 0 ? undefined : book.currentPoints,
+    previousEffectivePrice: book.previousEffectivePrice == null ? undefined : book.previousEffectivePrice,
+    listPrice: book.listPrice == null ? undefined : book.listPrice,
+    lowestPrice: book.lowestPrice == null ? undefined : book.lowestPrice,
+    lowestEffectivePrice: book.lowestEffectivePrice == null ? undefined : book.lowestEffectivePrice,
+    seriesKey: emptyToUndefined(book.seriesKey),
+    seriesName: emptyToUndefined(book.seriesName),
+    volume: emptyToUndefined(book.volume),
+    seriesExpectedCount: emptyToUndefined(book.seriesExpectedCount),
+    imageUrl: emptyToUndefined(book.imageUrl),
+    seriesCompleted: book.seriesCompleted ? true : undefined,
+    seriesCompletedAt: emptyToUndefined(book.seriesCompletedAt),
+    seriesLastDiscoveredAt: emptyToUndefined(book.seriesLastDiscoveredAt),
+    seriesDiscoveryError: emptyToUndefined(book.seriesDiscoveryError),
+    lastError: emptyToUndefined(book.lastError)
+  });
+}
+
+function compactHistoryEntryForWrite(entry) {
+  return compactObject({
+    ...entry,
+    points: Number(entry.points || 0) === 0 ? undefined : entry.points,
+    listPrice: entry.listPrice == null ? undefined : entry.listPrice,
+    provider: emptyToUndefined(entry.provider)
+  });
+}
+
+function compactImportQueueForWrite(queue = {}) {
+  return compactObject({
+    completed: (queue.completed || []).map((entry) =>
+      compactObject({
+        key: entry.key,
+        input: entry.input,
+        importedAt: emptyToUndefined(entry.importedAt),
+        mode: emptyToUndefined(entry.mode),
+        imported: Number(entry.imported || 0) || undefined,
+        skippedDuplicates: Number(entry.skippedDuplicates || 0) || undefined,
+        updatedDuplicates: Number(entry.updatedDuplicates || 0) || undefined
+      })
+    ),
+    errors: (queue.errors || []).map((entry) =>
+      compactObject({
+        key: entry.key,
+        input: entry.input,
+        checkedAt: emptyToUndefined(entry.checkedAt),
+        error: emptyToUndefined(entry.error)
+      })
+    )
+  });
+}
+
+function compactAgainstDefaults(value = {}, defaults = {}) {
+  const compacted = {};
+  for (const [key, currentValue] of Object.entries(value || {})) {
+    if (JSON.stringify(currentValue) === JSON.stringify(defaults[key])) continue;
+    compacted[key] = currentValue;
+  }
+  return compactObject(compacted);
+}
+
+function compactObject(object) {
+  const compacted = {};
+  for (const [key, value] of Object.entries(object || {})) {
+    if (value === undefined || value === null || value === '') continue;
+    if (Array.isArray(value) && value.length === 0) continue;
+    if (isPlainObject(value)) {
+      const nested = compactObject(value);
+      if (Object.keys(nested).length > 0) compacted[key] = nested;
+      continue;
+    }
+    compacted[key] = value;
+  }
+  return compacted;
+}
+
+function emptyToUndefined(value) {
+  return value == null || value === '' ? undefined : value;
+}
+
+function isPlainObject(value) {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
 
 async function getBlobSdk() {

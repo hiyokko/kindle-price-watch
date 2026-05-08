@@ -227,7 +227,8 @@ export async function addSeriesImports(imports, options = {}) {
         }
         const result = await importSeriesIntoStore(store, input, series, {
           fetchDetails: options.fetchDetails === true,
-          now
+          now,
+          recordInitialHistory: options.recordInitialHistory !== false
         });
         const resultEntry = {
           input,
@@ -457,8 +458,10 @@ async function importSeriesIntoStore(store, input, series, options = {}) {
   }
 
   store.books.push(...additions);
-  for (const book of additions) {
-    appendPriceHistoryEntry(store, book, now);
+  if (options.recordInitialHistory !== false) {
+    for (const book of additions) {
+      appendPriceHistoryEntry(store, book, now);
+    }
   }
 
   for (const book of store.books.filter((item) => isKnownBookForSeries(item, seriesIdentity))) {
