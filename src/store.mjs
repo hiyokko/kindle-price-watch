@@ -273,7 +273,7 @@ async function fetchBlobStoreWithMetadata() {
 
 async function writeBlobStore(store) {
   const { put } = await getBlobSdk();
-  await put(blobStorePath, JSON.stringify(store, null, 2), {
+  await put(blobStorePath, JSON.stringify(store), {
     access: 'private',
     allowOverwrite: true,
     contentType: 'application/json',
