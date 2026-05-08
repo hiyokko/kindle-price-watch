@@ -319,6 +319,7 @@ function createSeriesNode(group) {
   const seriesTotal = seriesTotalLabel(group);
   const registeredCount = group.expectedCount > group.books.length ? `${group.books.length}/${group.expectedCount}冊` : `${group.books.length}冊`;
   const seriesStatus = seriesStatusLabel(group);
+  const seriesBadge = isGroupAtBestEver(group) ? '<span class="badge best series-badge">過去最安</span>' : '';
   const section = document.createElement('section');
   section.className = 'series-card';
   section.classList.toggle('expanded', expanded);
@@ -336,7 +337,10 @@ function createSeriesNode(group) {
     </span>
     <span class="series-copy">
       <span class="eyebrow">シリーズ</span>
-      <strong>${escapeHtml(group.title)}</strong>
+      <span class="series-title-row">
+        <strong>${escapeHtml(group.title)}</strong>
+        ${seriesBadge}
+      </span>
       <span class="series-total">${escapeHtml(seriesTotal)}</span>
       <span class="book-meta">${escapeHtml(registeredCount)} / ${group.checkedCount}冊確認済み / 最終確認 ${relativeTime(group.lastCheckedAt)} / ${escapeHtml(seriesStatus)} / ${selectedCount}冊選択中</span>
     </span>
