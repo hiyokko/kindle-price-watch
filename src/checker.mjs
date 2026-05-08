@@ -200,6 +200,63 @@ export async function addBooksFromInputs(inputs, options = {}) {
   return summary;
 }
 
+export async function addSeriesImports(imports, options = {}) {
+  const queue = Array.isArray(imports) ? imports : [];
+  const summary = {
+    mode: 'series_import_batch',
+    total: queue.length,
+    processed: 0,
+    imported: 0,
+    skippedDuplicates: 0,
+    updatedDuplicates: 0,
+    results: [],
+    errors: []
+  };
+  if (queue.length === 0) return summary;
+
+  const now = options.now || new Date().toISOString();
+  await updateStore(async (store) => {
+    for (const entry of queue) {
+      const input = String(entry?.input || '').trim();
+      const series = entry?.series;
+      try {
+        if (!input || !series || !Array.isArray(series.items) || series.items.length === 0) {
+          const error = new Error('シリーズ取り込みデータが不正です');
+          error.status = 400;
+          throw error;
+        }
+        const result = await importSeriesIntoStore(store, input, series, {
+          fetchDetails: options.fetchDetails === true,
+          now
+        });
+        const resultEntry = {
+          input,
+          mode: result.mode || '',
+          imported: Number(result.imported || 0),
+          skippedDuplicates: Number(result.skippedDuplicates || 0),
+          updatedDuplicates: Number(result.updatedDuplicates || 0),
+          seriesCompleted: Boolean(result.seriesCompleted),
+          errors: result.errors || []
+        };
+        summary.processed += 1;
+        summary.imported += resultEntry.imported;
+        summary.skippedDuplicates += resultEntry.skippedDuplicates;
+        summary.updatedDuplicates += resultEntry.updatedDuplicates;
+        summary.results.push(resultEntry);
+      } catch (error) {
+        summary.processed += 1;
+        summary.errors.push({
+          input,
+          error: error.message || String(error)
+        });
+      }
+    }
+    return store;
+  });
+
+  return summary;
+}
+
 async function addBooksFromInputInStore(store, input, options = {}) {
   const explicitSeriesUrl = isKindleSeriesUrl(input);
   let asins = [];

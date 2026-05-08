@@ -1,6 +1,7 @@
 import {
   addBooksFromInput,
   addBooksFromInputs,
+  addSeriesImports,
   checkBookById,
   deleteAllBooks,
   deleteBook,
@@ -21,6 +22,12 @@ export async function listBooksPayload() {
 }
 
 export async function addBooksPayload(body = {}) {
+  if (Array.isArray(body.seriesImports)) {
+    return addSeriesImports(body.seriesImports, {
+      fetchDetails: body.fetchDetails === true
+    });
+  }
+
   const inputs = Array.isArray(body.urls) ? body.urls : Array.isArray(body.inputs) ? body.inputs : null;
   if (inputs) {
     return addBooksFromInputs(inputs, {
