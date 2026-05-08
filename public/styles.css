@@ -81,6 +81,10 @@ a {
   flex-wrap: wrap;
 }
 
+.settings-form {
+  align-items: flex-end;
+}
+
 .logout-form {
   margin: 0;
 }
