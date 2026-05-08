@@ -22,9 +22,26 @@ import {
   sendDiscordNotification
 } from './notifier.mjs';
 
+const UNVALIDATED_SERIES_PRICE_PROVIDERS = new Set([
+  'amazon_series_source_price',
+  'amazon_series_unit_price'
+]);
+
 export async function listBooks() {
-  const store = await readStore();
+  const store = await readStoreWithPriceRepairs();
   return store.books.map(publicBook).sort(sortBooks);
+}
+
+async function readStoreWithPriceRepairs(options = {}) {
+  const now = options.now || new Date().toISOString();
+  const store = await readStore();
+  const repair = repairStorePriceState(store, { ...options, now });
+  if (!repair.changed) return store;
+
+  return updateStore((currentStore) => {
+    repairStorePriceState(currentStore, { ...options, now });
+    return currentStore;
+  });
 }
 
 export async function addBook(input) {
@@ -623,7 +640,9 @@ function mergeSeriesItemSeed(base, overlay) {
 }
 
 function chooseSeriesPriceSeed(base, overlay) {
-  const candidates = [base, overlay].filter((item) => item?.currentPrice != null);
+  const candidates = [base, overlay].filter(
+    (item) => item?.currentPrice != null && !isUnvalidatedSeriesPriceProvider(item.provider)
+  );
   if (candidates.length === 0) return null;
   return candidates.sort((left, right) => seriesPriceProviderRank(right.provider) - seriesPriceProviderRank(left.provider))[0];
 }
@@ -649,7 +668,6 @@ async function resolveSeriesCandidateDiffs(series, candidates) {
   const useSourcePriceFallback = shouldUseSourcePriceFallback(series, itemsByAsin);
   const errors = [];
   let enriched = 0;
-  let sourceFallbackApplied = false;
 
   for (const asin of diffAsins) {
     const seeds = candidateItemsByAsin.get(asin) || [];
@@ -658,15 +676,6 @@ async function resolveSeriesCandidateDiffs(series, candidates) {
       merged = mergeSeriesItemSeed(merged, seed);
     }
     if (merged) itemsByAsin.set(asin, merged);
-  }
-
-  if (useSourcePriceFallback && isSeriesUnitPriceSeed(series.sourcePriceSeed)) {
-    const fallbackSeed = sourcePriceFallbackSeed(itemsByAsin, series.sourcePriceSeed);
-    const sourceFilled = fallbackSeed ? applySourcePriceFallback(itemsByAsin, fallbackSeed) : 0;
-    if (sourceFilled > 0) {
-      enriched += sourceFilled;
-      sourceFallbackApplied = true;
-    }
   }
 
   const backfillTargets = seriesBackfillTargets(itemsByAsin, diffAsins);
@@ -703,7 +712,7 @@ async function resolveSeriesCandidateDiffs(series, candidates) {
     }
   }
 
-  if (useSourcePriceFallback && !sourceFallbackApplied) {
+  if (useSourcePriceFallback) {
     const fallbackSeed = sourcePriceFallbackSeed(itemsByAsin, series.sourcePriceSeed);
     const sourceFilled = fallbackSeed ? applySourcePriceFallback(itemsByAsin, fallbackSeed) : 0;
     if (sourceFilled > 0) {
@@ -786,13 +795,12 @@ function shouldUseSourcePriceFallback(series, itemsByAsin) {
   const sourcePrice = series?.sourcePriceSeed?.currentPrice;
   if (sourcePrice == null) return false;
   if (!Number.isFinite(Number(sourcePrice)) || Number(sourcePrice) <= 0) return false;
-  if (isSeriesUnitPriceSeed(series.sourcePriceSeed)) return false;
+  if (isUnvalidatedSeriesPriceProvider(series.sourcePriceSeed?.provider)) return false;
 
   const items = [...itemsByAsin.values()];
   if (items.length === 0) return false;
   if (items.some((item) => item.currentPrice != null)) return false;
 
-  const sourceProvider = String(series?.sourcePriceSeed?.provider || '').toLowerCase();
   const maxCount = floorNumber(process.env.SERIES_SOURCE_PRICE_FALLBACK_MAX_COUNT, 1, 12);
   const expectedCount = Math.max(Number(series?.expectedVolumeCount) || 0, maxSeriesItemVolume(items), items.length);
   if (expectedCount > maxCount || items.length > maxCount) return false;
@@ -822,7 +830,7 @@ function sourcePriceFallbackSeed(itemsByAsin, sourcePriceSeed) {
   const pricedItems = [...itemsByAsin.values()].filter((item) => item.currentPrice != null);
   const mismatchedPrice = pricedItems.some((item) => Number(item.currentPrice) !== Number(sourcePrice));
   if (mismatchedPrice) return null;
-  if (isSeriesUnitPriceSeed(sourcePriceSeed)) return sourcePriceSeed;
+  if (isUnvalidatedSeriesPriceProvider(sourcePriceSeed?.provider)) return null;
 
   const representative = pricedItems.find((item) => item.currentPoints != null || item.effectivePrice != null);
   if (!representative) return null;
@@ -832,10 +840,6 @@ function sourcePriceFallbackSeed(itemsByAsin, sourcePriceSeed) {
     currentPoints: representative.currentPoints ?? sourcePriceSeed.currentPoints ?? 0,
     effectivePrice: representative.effectivePrice ?? effectivePriceFromSeed(representative)
   };
-}
-
-function isSeriesUnitPriceSeed(sourcePriceSeed) {
-  return String(sourcePriceSeed?.provider || '').toLowerCase() === 'amazon_series_unit_price';
 }
 
 function hasSeriesItemsNeedingBackfill(items = []) {
@@ -858,7 +862,7 @@ function seriesBackfillTargets(itemsByAsin, diffAsins) {
 }
 
 function seriesItemNeedsBackfill(item, weakImageUrls) {
-  return item.currentPrice == null || isWeakSeriesImage(item, weakImageUrls);
+  return item.currentPrice == null || isUnvalidatedSeriesPriceProvider(item.provider) || isWeakSeriesImage(item, weakImageUrls);
 }
 
 function isWeakSeriesImage(item, weakImageUrls) {
@@ -1160,7 +1164,7 @@ function isImplausibleSeriesHistoryEntry(entry, book) {
 
 function shouldClearUnvalidatedSourcePrice(book, item) {
   return (
-    (book.provider === 'amazon_series_source_price' || book.provider === 'amazon_series_unit_price') &&
+    isUnvalidatedSeriesPriceProvider(book.provider) &&
     book.currentPrice != null &&
     item.currentPrice == null &&
     item.lastError
@@ -1217,11 +1221,11 @@ function repairSuspiciousPriceState(book, store, options = {}) {
   let currentCleared = false;
   let currentRestored = false;
 
-  if (options.clearCurrent && (suspiciousStoredCurrentPriceReason(book) || hasUnvalidatedSeriesUnitPrice(book))) {
+  if (options.clearCurrent && (suspiciousStoredCurrentPriceReason(book) || hasUnvalidatedSeriesPrice(book))) {
     book.currentPrice = null;
     book.currentPoints = 0;
     book.effectivePrice = null;
-    book.provider = book.provider === 'amazon_html' || book.provider === 'amazon_series_unit_price' ? 'pending' : book.provider;
+    book.provider = book.provider === 'amazon_html' || isUnvalidatedSeriesPriceProvider(book.provider) ? 'pending' : book.provider;
     currentCleared = true;
     changed = true;
   }
@@ -1230,7 +1234,7 @@ function repairSuspiciousPriceState(book, store, options = {}) {
   store.priceHistory = store.priceHistory.filter(
     (entry) =>
       entry.bookId !== book.id ||
-      (!isSuspiciousHistoryEntry(entry, book) && !isUnvalidatedSeriesUnitPriceHistoryEntry(entry))
+      (!isSuspiciousHistoryEntry(entry, book) && !isUnvalidatedSeriesPriceHistoryEntry(entry))
   );
   const removedHistory = beforeHistoryCount - store.priceHistory.length;
   if (removedHistory > 0) changed = true;
@@ -1264,8 +1268,54 @@ function repairSuspiciousPriceState(book, store, options = {}) {
   return { changed, currentCleared, currentRestored, removedHistory, removedNotifications };
 }
 
-function hasUnvalidatedSeriesUnitPrice(book) {
-  return book.provider === 'amazon_series_unit_price' && book.currentPrice != null;
+function repairStorePriceState(store, options = {}) {
+  if (!store || !Array.isArray(store.books)) {
+    return {
+      changed: false,
+      booksRepaired: 0,
+      currentCleared: 0,
+      currentRestored: 0,
+      removedHistory: 0,
+      removedNotifications: 0
+    };
+  }
+
+  const now = options.now || new Date().toISOString();
+  const summary = {
+    changed: false,
+    booksRepaired: 0,
+    currentCleared: 0,
+    currentRestored: 0,
+    removedHistory: 0,
+    removedNotifications: 0
+  };
+
+  for (const book of store.books) {
+    const repair = repairSuspiciousPriceState(book, store, {
+      clearCurrent: options.clearCurrent !== false,
+      restoreMissingCurrent: options.restoreMissingCurrent === true
+    });
+    if (!repair.changed) continue;
+
+    if (repair.currentCleared && !repair.currentRestored) {
+      book.lastCheckedAt = null;
+      book.lastError ||= '未検証のシリーズ価格を破棄しました。次回チェックで再取得します';
+    }
+
+    book.updatedAt = now;
+    summary.changed = true;
+    summary.booksRepaired += 1;
+    summary.currentCleared += repair.currentCleared ? 1 : 0;
+    summary.currentRestored += repair.currentRestored ? 1 : 0;
+    summary.removedHistory += repair.removedHistory;
+    summary.removedNotifications += repair.removedNotifications;
+  }
+
+  return summary;
+}
+
+function hasUnvalidatedSeriesPrice(book) {
+  return isUnvalidatedSeriesPriceProvider(book.provider) && book.currentPrice != null;
 }
 
 function latestValidPriceHistoryEntry(book, store) {
@@ -1275,13 +1325,17 @@ function latestValidPriceHistoryEntry(book, store) {
         entry.bookId === book.id &&
         entry.price != null &&
         !isSuspiciousHistoryEntry(entry, book) &&
-        !isUnvalidatedSeriesUnitPriceHistoryEntry(entry)
+        !isUnvalidatedSeriesPriceHistoryEntry(entry)
     )
     .sort((a, b) => new Date(b.checkedAt || 0) - new Date(a.checkedAt || 0))[0] || null;
 }
 
-function isUnvalidatedSeriesUnitPriceHistoryEntry(entry) {
-  return entry?.provider === 'amazon_series_unit_price' && entry.price != null;
+function isUnvalidatedSeriesPriceHistoryEntry(entry) {
+  return isUnvalidatedSeriesPriceProvider(entry?.provider) && entry.price != null;
+}
+
+function isUnvalidatedSeriesPriceProvider(provider) {
+  return UNVALIDATED_SERIES_PRICE_PROVIDERS.has(String(provider || '').toLowerCase());
 }
 
 function suspiciousStoredCurrentPriceReason(book) {
@@ -1373,7 +1427,7 @@ function suspiciousPriceReason({ price, points = 0, effectivePrice = null, listP
 
 function recomputeBookPriceFloors(book, store) {
   const entries = store.priceHistory.filter(
-    (entry) => entry.bookId === book.id && entry.price != null && !isUnvalidatedSeriesUnitPriceHistoryEntry(entry)
+    (entry) => entry.bookId === book.id && entry.price != null && !isUnvalidatedSeriesPriceHistoryEntry(entry)
   );
   const prices = entries.map((entry) => entry.price);
   const effectivePrices = entries.map((entry) => entry.effectivePrice).filter((value) => value != null);
@@ -1391,7 +1445,7 @@ function seriesPriceProviderRank(provider) {
   if (normalized === 'amazon_reader') return 90;
   if (normalized === 'listasin') return 85;
   if (normalized === 'amazon_series_bulk') return 95;
-  if (normalized === 'amazon_series_unit_price') return 50;
+  if (normalized === 'amazon_series_unit_price' || normalized === 'amazon_series_source_price') return 0;
   if (normalized === 'amazon_series_reader') return 70;
   if (normalized === 'efox') return 82;
   if (normalized === 'efox_series') return 79;
@@ -1400,7 +1454,6 @@ function seriesPriceProviderRank(provider) {
   if (normalized === 'kintyaku_series') return 76;
   if (normalized === 'kinpome') return 78;
   if (normalized === 'kinpome_series') return 75;
-  if (normalized === 'amazon_series_source_price') return 60;
   if (normalized === 'external_series') return 50;
   if (normalized === 'existing_series') return 40;
   if (normalized === 'curated_series') return 10;
@@ -1415,7 +1468,6 @@ function isRefreshableSeriesPriceProvider(provider) {
     'listasin',
     'amazon_series_reader',
     'amazon_series_bulk',
-    'amazon_series_unit_price',
     'sale_bon_series',
     'efox',
     'efox_series',
@@ -1423,7 +1475,6 @@ function isRefreshableSeriesPriceProvider(provider) {
     'kintyaku_series',
     'kinpome',
     'kinpome_series',
-    'amazon_series_source_price',
     'external_series'
   ].includes(String(provider || '').toLowerCase());
 }
@@ -1578,14 +1629,14 @@ export async function deleteSeries(seriesKey, sourceUrl = '') {
 }
 
 export async function getHistory(bookId) {
-  const store = await readStore();
+  const store = await readStoreWithPriceRepairs();
   return store.priceHistory
     .filter((entry) => entry.bookId === bookId)
     .sort((a, b) => new Date(a.checkedAt) - new Date(b.checkedAt));
 }
 
 export async function checkBookById(id, options = {}) {
-  const store = await readStore();
+  const store = await readStoreWithPriceRepairs();
   const book = store.books.find((item) => item.id === id);
   if (!book) {
     const error = new Error('本が見つかりません');
@@ -1602,7 +1653,7 @@ export async function runDueChecks(options = {}) {
   try {
     const startedAt = Date.now();
     const maxRuntimeMs = floorNumber(process.env.CHECK_MAX_RUNTIME_MS, 0, 0);
-    let store = await readStore();
+    let store = await readStoreWithPriceRepairs();
     let settings = mergedRuntimeSettings(store.settings);
     const forceAll = options.force === true || readEnvBoolean('FORCE_CHECK_ALL', false);
 
@@ -1636,7 +1687,7 @@ export async function runDueChecks(options = {}) {
     const seriesDiscovery = shouldRunSeriesDiscovery(source, options)
       ? await discoverSeriesUpdates({ startedAt, maxRuntimeMs })
       : null;
-    store = await readStore();
+    store = await readStoreWithPriceRepairs();
     settings = mergedRuntimeSettings(store.settings);
     const plan = planDueChecks(store, settings, startedAt, { forceAll });
     const pacing = checkPacing();
@@ -1668,7 +1719,7 @@ export async function runDueChecks(options = {}) {
       }
     }
 
-    const finalStore = await readStore();
+    const finalStore = await readStoreWithPriceRepairs();
     const remainingDue = countDueBooks(finalStore.books, Date.now(), settings);
     const result = {
       checked: results.length,
@@ -1709,7 +1760,7 @@ export async function runDueChecks(options = {}) {
 
 async function discoverSeriesUpdates(options = {}) {
   const now = new Date().toISOString();
-  const store = await readStore();
+  const store = await readStoreWithPriceRepairs({ now });
   const plan = planSeriesDiscovery(store);
   const pacing = seriesDiscoveryPacing();
   const results = [];
@@ -1760,7 +1811,7 @@ async function discoverSeriesUpdates(options = {}) {
     added,
     completed,
     stoppedByRuntimeLimit,
-    cursor: (await readStore()).seriesDiscoveryCursor,
+    cursor: (await readStoreWithPriceRepairs()).seriesDiscoveryCursor,
     results,
     errors
   };
@@ -2191,6 +2242,8 @@ async function findBookById(id) {
 async function buildBookFromAsin(asin, options = {}) {
   const fetchDetails = options.fetchDetails !== false;
   const seed = options.seed || {};
+  const seedPriceIsUnvalidated = isUnvalidatedSeriesPriceProvider(seed.provider);
+  const seedCurrentPrice = seedPriceIsUnvalidated ? null : seed.currentPrice ?? null;
   const now = options.createdAt || new Date().toISOString();
   let snapshot;
   let lastError = '';
@@ -2206,7 +2259,13 @@ async function buildBookFromAsin(asin, options = {}) {
       lastError = error.message;
     }
   } else {
-    lastError = seed.currentPrice == null ? seed.lastError || 'シリーズ一括登録: 次回チェックで詳細取得します' : '';
+    lastError =
+      seedCurrentPrice == null
+        ? seed.lastError ||
+          (seedPriceIsUnvalidated
+            ? '未検証のシリーズ価格を破棄しました。次回チェックで再取得します'
+            : 'シリーズ一括登録: 次回チェックで詳細取得します')
+        : '';
   }
 
   const fallback = {
@@ -2217,11 +2276,13 @@ async function buildBookFromAsin(asin, options = {}) {
     imageUrl: seed.imageUrl || '',
     imageSource: seed.imageSource || '',
     amazonUrl: seed.amazonUrl || amazonUrlForAsin(asin),
-    currentPrice: seed.currentPrice ?? null,
-    currentPoints: seed.currentPoints ?? 0,
-    effectivePrice: seed.effectivePrice ?? effectivePriceFromSeed(seed),
+    currentPrice: seedCurrentPrice,
+    currentPoints: seedPriceIsUnvalidated ? 0 : seed.currentPoints ?? 0,
+    effectivePrice: seedPriceIsUnvalidated ? null : seed.effectivePrice ?? effectivePriceFromSeed(seed),
     listPrice: seed.listPrice ?? null,
-    provider: seed.provider || (fetchDetails ? 'pending' : 'pending_series')
+    provider: seedPriceIsUnvalidated
+      ? (fetchDetails ? 'pending' : 'pending_series')
+      : seed.provider || (fetchDetails ? 'pending' : 'pending_series')
   };
   snapshot = mergeSnapshot(fallback, snapshot);
   if (snapshot.currentPrice == null && !lastError) {
