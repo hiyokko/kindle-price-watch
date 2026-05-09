@@ -18,7 +18,11 @@ process.once('SIGTERM', () => {
 });
 
 try {
-  const result = await runDueChecks({ notify: true, source: 'cron' });
+  const result = await runDueChecks({
+    notify: true,
+    source: 'cron',
+    backup: readBooleanEnv('CHECK_BACKUP_RUN', false)
+  });
   console.log(JSON.stringify(result, null, 2));
 } finally {
   if (watchdog) clearTimeout(watchdog);
@@ -48,6 +52,12 @@ function checkHardTimeoutMs() {
   if (Number.isFinite(maxRuntimeMs) && maxRuntimeMs > 0) return Math.round(maxRuntimeMs + 5 * 60 * 1000);
 
   return 0;
+}
+
+function readBooleanEnv(name, fallback) {
+  const value = process.env[name];
+  if (value == null || value === '') return fallback;
+  return ['1', 'true', 'yes', 'on'].includes(String(value).trim().toLowerCase());
 }
 
 async function recordForcedExit(error, exitCode, details = {}) {

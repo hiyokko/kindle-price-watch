@@ -2329,6 +2329,7 @@ export async function runDueChecks(options = {}) {
     let store = await readStoreWithPriceRepairs();
     let settings = mergedRuntimeSettings(store.settings);
     const forceAll = options.force === true || readEnvBoolean('FORCE_CHECK_ALL', false);
+    const isBackupRun = source === 'cron' && options.backup === true;
 
     if (!forceAll && shouldWaitForScheduledExecutionWindow(source, options, startedAt, settings)) {
       const remainingDue = countDueBooks(store.books, startedAt, settings);
@@ -2348,6 +2349,28 @@ export async function runDueChecks(options = {}) {
       };
 
       return result;
+    }
+
+    if (!forceAll && isBackupRun) {
+      const backupSkip = backupCronSkipState(store.automation, startedAt, settings);
+      if (backupSkip.shouldSkip) {
+        return {
+          checked: 0,
+          remainingDue: countDueBooks(store.books, startedAt, settings),
+          cursor: store.checkCursor,
+          overlapped: 0,
+          stoppedByRuntimeLimit: false,
+          forced: false,
+          backup: true,
+          skipped: true,
+          skipReason: 'primary_cron_activity',
+          executionBoundaryAt: backupSkip.executionBoundaryAt,
+          lastCronStartedAt: backupSkip.lastCronStartedAt,
+          lastCronFinishedAt: backupSkip.lastCronFinishedAt,
+          seriesDiscovery: null,
+          results: []
+        };
+      }
     }
 
     const importQueue = shouldRunBookImportQueue(source, options)
@@ -2424,6 +2447,7 @@ export async function runDueChecks(options = {}) {
       overlapped: Math.max(0, results.length - plan.dueSelected),
       stoppedByRuntimeLimit,
       forced: forceAll,
+      backup: isBackupRun,
       importQueue,
       seriesDiscovery,
       seriesNotifications,
@@ -4184,6 +4208,25 @@ function scheduledExecutionTimes(settings = {}) {
 
 function scheduledExecutionGraceMs() {
   return floorNumber(process.env.CHECK_EXECUTION_GRACE_MINUTES, 1, 180) * 60 * 1000;
+}
+
+function backupCronSkipState(automation = {}, now = Date.now(), settings = {}) {
+  const executionBoundaryMs = latestJstExecutionBoundaryMs(now, settings);
+  const lastStartedMs = timestampMs(automation?.lastCronStartedAt);
+  const lastFinishedMs = timestampMs(automation?.lastCronFinishedAt);
+  const shouldSkip = lastStartedMs >= executionBoundaryMs || lastFinishedMs >= executionBoundaryMs;
+
+  return {
+    shouldSkip,
+    executionBoundaryAt: new Date(executionBoundaryMs).toISOString(),
+    lastCronStartedAt: automation?.lastCronStartedAt || '',
+    lastCronFinishedAt: automation?.lastCronFinishedAt || ''
+  };
+}
+
+function timestampMs(value) {
+  const time = new Date(value || 0).getTime();
+  return Number.isFinite(time) ? time : 0;
 }
 
 function shouldStopForRuntimeLimit(startedAt, maxRuntimeMs, _completedCount = 0, reserveMs = 0) {
