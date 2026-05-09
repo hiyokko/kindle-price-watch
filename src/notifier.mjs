@@ -54,12 +54,17 @@ export function buildPriceNotification(book, event) {
   const dropLine = event.dropPercent != null ? `値下げ率: ${event.dropPercent}%` : null;
   const lowestLine =
     book.lowestEffectivePrice != null ? `過去最安: ${formatYen(book.lowestEffectivePrice)}` : null;
+  const isSeries = book.notificationScope === 'series' || event.scope === 'series';
+  const title = isSeries ? book.seriesName || book.title : book.title;
+  const footerText = isSeries
+    ? `${Number(book.bookCount || 0).toLocaleString('ja-JP')}冊合計 / ${book.provider || 'series_total'}`
+    : `${book.asin} / ${book.provider || 'unknown'}`;
 
   return {
     username: 'Kindle Price Watch',
     embeds: [
       {
-        title: `${titlePrefix}: ${book.title}`,
+        title: `${titlePrefix}: ${title}`,
         url: book.amazonUrl,
         color,
         thumbnail: book.imageUrl ? { url: book.imageUrl } : undefined,
@@ -68,11 +73,12 @@ export function buildPriceNotification(book, event) {
           event.previousEffectivePrice != null
             ? { name: '前回', value: formatYen(event.previousEffectivePrice), inline: true }
             : null,
+          isSeries ? { name: '対象', value: `${Number(book.bookCount || 0).toLocaleString('ja-JP')}冊合計`, inline: true } : null,
           lowestLine ? { name: '記録', value: lowestLine, inline: true } : null,
           dropLine ? { name: '変化', value: dropLine, inline: true } : null
         ].filter(Boolean),
         footer: {
-          text: `${book.asin} / ${book.provider || 'unknown'}`
+          text: footerText
         },
         timestamp: new Date().toISOString()
       }

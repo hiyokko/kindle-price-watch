@@ -2151,7 +2151,12 @@ export async function deleteSeries(seriesKey, sourceUrl = '') {
 
     store.books = store.books.filter((book) => !targetIds.has(book.id));
     store.priceHistory = store.priceHistory.filter((entry) => !targetIds.has(entry.bookId));
-    store.notifications = store.notifications.filter((entry) => !targetIds.has(entry.bookId));
+    store.notifications = store.notifications.filter((entry) => {
+      if (targetIds.has(entry.bookId)) return false;
+      if (seriesKey && (entry.seriesKey === seriesKey || entry.notificationKey === seriesKey)) return false;
+      if (sourceUrl && entry.notificationKey === `series:url:${sourceUrl}`) return false;
+      return true;
+    });
     resetCursorIfDeleted(store, targetIds);
     return store;
   });
@@ -2359,6 +2364,7 @@ export async function runDueChecks(options = {}) {
     const plan = planDueChecks(store, settings, startedAt, { forceAll });
     const pacing = checkPacing();
     const getWebhookUrls = options.notify === false ? null : sharedWebhookUrlLoader();
+    const seriesNotificationBaselines = new Map();
 
     const results = [];
     let stoppedByRuntimeLimit = false;
@@ -2385,7 +2391,9 @@ export async function runDueChecks(options = {}) {
           ...options,
           signal: runtime.signal,
           updateCursor: true,
-          getWebhookUrls
+          getWebhookUrls,
+          deferSeriesNotifications: true,
+          seriesNotificationBaselines
         });
       } finally {
         runtime.cleanup();
@@ -2406,6 +2414,10 @@ export async function runDueChecks(options = {}) {
       }
     }
 
+    const seriesNotifications = await sendDeferredSeriesNotifications(store, seriesNotificationBaselines, {
+      ...options,
+      getWebhookUrls
+    });
     const remainingDue = countDueBooks(store.books, Date.now(), settings);
     const finishedAt = new Date().toISOString();
     const result = {
@@ -2417,6 +2429,7 @@ export async function runDueChecks(options = {}) {
       forced: forceAll,
       importQueue,
       seriesDiscovery,
+      seriesNotifications,
       results
     };
 
@@ -3107,6 +3120,9 @@ function applyCheckResultToStore(store, bookRef, snapshotResult, now, options = 
 
   const previousEffectivePrice = book.effectivePrice;
   const previousLowestEffectivePrice = book.lowestEffectivePrice;
+  const seriesScope = notificationSeriesScope(book);
+  const seriesBaseline =
+    snapshotResult.ok && seriesScope ? captureSeriesNotificationBaseline(store, seriesScope, options) : null;
 
   if (!snapshotResult.ok) {
     if (snapshotResult.snapshot) {
@@ -3160,32 +3176,108 @@ function applyCheckResultToStore(store, bookRef, snapshotResult, now, options = 
   }
   repairSuspiciousPriceState(book, store);
 
-  const events =
-    options.recordNotifications === false
-      ? []
-      : detectEvents({
-          book,
-          previousEffectivePrice,
-          previousLowestEffectivePrice,
-          settings
-        }).filter((event) => !alreadyNotified(store, book.id, event));
+  const events = notificationEventsForCheckedBook(store, book, {
+    options,
+    previousEffectivePrice,
+    previousLowestEffectivePrice,
+    seriesBaseline,
+    seriesScope,
+    settings
+  });
 
   if (options.recordNotifications !== false) {
-    for (const event of events) {
-      store.notifications.push({
-        id: crypto.randomUUID(),
-        bookId: book.id,
-        asin: book.asin,
-        type: event.type,
-        effectivePrice: book.effectivePrice,
-        previousEffectivePrice,
-        createdAt: now,
-        status: 'pending'
-      });
-    }
+    recordNotificationEvents(store, book, events, now);
   }
 
   return { checkedBook: { ...book }, events };
+}
+
+function notificationEventsForCheckedBook(store, book, context = {}) {
+  if (context.options?.recordNotifications === false) return [];
+
+  if (context.seriesScope) {
+    if (context.options?.deferSeriesNotifications) return [];
+    const after = seriesAggregateSnapshot(store, context.seriesScope);
+    return detectSeriesEvents({
+      before: context.seriesBaseline,
+      after,
+      settings: context.settings
+    }).filter((event) => !alreadyNotifiedSeries(store, event));
+  }
+
+  return detectEvents({
+    book,
+    previousEffectivePrice: context.previousEffectivePrice,
+    previousLowestEffectivePrice: context.previousLowestEffectivePrice,
+    settings: context.settings
+  }).filter((event) => !alreadyNotified(store, book.id, event));
+}
+
+function captureSeriesNotificationBaseline(store, seriesScope, options = {}) {
+  if (!seriesScope) return null;
+
+  if (options.deferSeriesNotifications && options.seriesNotificationBaselines) {
+    const existing = options.seriesNotificationBaselines.get(seriesScope.key);
+    if (existing) return existing;
+
+    const baseline = seriesAggregateSnapshot(store, seriesScope);
+    options.seriesNotificationBaselines.set(seriesScope.key, baseline);
+    return baseline;
+  }
+
+  return seriesAggregateSnapshot(store, seriesScope);
+}
+
+async function sendDeferredSeriesNotifications(store, baselines, options = {}) {
+  const sent = [];
+  if (options.recordNotifications === false) return sent;
+  if (!baselines || baselines.size === 0) return sent;
+
+  const settings = mergedRuntimeSettings(store.settings);
+  const now = new Date().toISOString();
+  for (const baseline of baselines.values()) {
+    const after = seriesAggregateSnapshot(store, baseline.scope);
+    const representativeBook = after.representativeBook || baseline.representativeBook;
+    if (!representativeBook) continue;
+
+    const events = detectSeriesEvents({ before: baseline, after, settings }).filter(
+      (event) => !alreadyNotifiedSeries(store, event)
+    );
+    if (events.length === 0) continue;
+
+    if (options.recordNotifications !== false) {
+      recordNotificationEvents(store, representativeBook, events, now);
+    }
+
+    sent.push(
+      ...(await sendCheckNotifications(representativeBook, events, {
+        ...options,
+        notificationStore: store
+      }))
+    );
+  }
+
+  return sent;
+}
+
+function recordNotificationEvents(store, book, events, now) {
+  for (const event of events) {
+    const notificationBookId = event.notificationBookId || book.id;
+    store.notifications.push({
+      id: crypto.randomUUID(),
+      bookId: notificationBookId,
+      asin: event.asin || book.asin,
+      scope: event.scope || 'book',
+      seriesKey: event.seriesKey || '',
+      seriesName: event.seriesName || '',
+      notificationKey: event.notificationKey || '',
+      type: event.type,
+      effectivePrice: event.effectivePrice ?? book.effectivePrice,
+      previousEffectivePrice: event.previousEffectivePrice,
+      createdAt: now,
+      status: 'pending'
+    });
+  }
 }
 
 async function sendCheckNotifications(checkedBook, events, options = {}) {
@@ -3194,21 +3286,29 @@ async function sendCheckNotifications(checkedBook, events, options = {}) {
 
   const webhookUrls = await notificationWebhookUrls(options);
   for (const event of events) {
-    const notification = buildPriceNotification(checkedBook, event);
+    const notificationBook = event.notificationBook || checkedBook;
+    const notificationBookId = event.notificationBookId || checkedBook.id;
+    const notification = buildPriceNotification(notificationBook, event);
     try {
       await sendDiscordNotification(notification, { webhookUrls });
-      sent.push({ type: event.type, ok: true });
+      sent.push({ type: event.type, scope: event.scope || 'book', seriesKey: event.seriesKey || '', ok: true });
       if (options.notificationStore) {
-        markNotificationInStore(options.notificationStore, checkedBook.id, event, 'sent');
+        markNotificationInStore(options.notificationStore, notificationBookId, event, 'sent');
       } else {
-        await markNotification(checkedBook.id, event, 'sent');
+        await markNotification(notificationBookId, event, 'sent');
       }
     } catch (error) {
-      sent.push({ type: event.type, ok: false, error: error.message });
+      sent.push({
+        type: event.type,
+        scope: event.scope || 'book',
+        seriesKey: event.seriesKey || '',
+        ok: false,
+        error: error.message
+      });
       if (options.notificationStore) {
-        markNotificationInStore(options.notificationStore, checkedBook.id, event, 'failed', error.message);
+        markNotificationInStore(options.notificationStore, notificationBookId, event, 'failed', error.message);
       } else {
-        await markNotification(checkedBook.id, event, 'failed', error.message);
+        await markNotification(notificationBookId, event, 'failed', error.message);
       }
     }
   }
@@ -3220,9 +3320,14 @@ function checkResultPayload(checkedBook, snapshotResult, events, notifications) 
     book: checkedBook ? publicBook(checkedBook) : null,
     ok: snapshotResult.ok,
     error: snapshotResult.ok ? null : snapshotResult.error,
-    events,
+    events: events.map(publicNotificationEvent),
     notifications
   };
+}
+
+function publicNotificationEvent(event) {
+  const { notificationBook, ...publicEvent } = event;
+  return publicEvent;
 }
 
 async function sendCronSummaryNotification(result, context = {}) {
@@ -3243,7 +3348,10 @@ async function sendCronSummaryNotification(result, context = {}) {
 }
 
 function cronSummaryPayload(result, context = {}) {
-  const notifications = (result.results || []).flatMap((entry) => entry.notifications || []);
+  const notifications = [
+    ...(result.results || []).flatMap((entry) => entry.notifications || []),
+    ...(result.seriesNotifications || [])
+  ];
   return {
     source: context.source || 'cron',
     startedAt: context.startedAt,
@@ -3637,6 +3745,160 @@ function nullableNumber(value) {
   return Number.isFinite(number) ? number : null;
 }
 
+function notificationSeriesScope(book) {
+  if (!book || (book.importMode !== 'kindle_series' && !book.seriesKey)) return null;
+
+  const seriesKey = String(book.seriesKey || '').trim();
+  const sourceUrl = String(book.sourceUrl || '').trim();
+  const key = seriesKey || (sourceUrl ? `series:url:${sourceUrl}` : '');
+  if (!key) return null;
+
+  return { key, seriesKey, sourceUrl };
+}
+
+function seriesAggregateSnapshot(store, scope) {
+  const books = seriesBooksForNotification(store, scope);
+  const representativeBook = books[0] || null;
+  const seriesName =
+    books.find((book) => String(book.seriesName || '').trim())?.seriesName ||
+    (representativeBook ? seriesTitleFromBook(representativeBook) : 'Kindle シリーズ');
+  const sourceUrl = books.find((book) => String(book.sourceUrl || '').trim())?.sourceUrl || scope?.sourceUrl || '';
+  const seriesKey = scope?.seriesKey || books.find((book) => String(book.seriesKey || '').trim())?.seriesKey || '';
+  const currentPrices = books.map((book) => nullableNumber(book.currentPrice));
+  const currentPoints = books.map((book) => nullableNumber(book.currentPoints) ?? 0);
+  const currentEffectivePrices = books.map((book) => nullableNumber(book.effectivePrice));
+  const lowestEffectivePrices = books.map((book) => nullableNumber(book.lowestEffectivePrice));
+
+  return {
+    scope,
+    key: scope?.key || seriesKey || sourceUrl,
+    seriesKey,
+    seriesName,
+    sourceUrl,
+    url: canonicalSeriesNotificationUrl({ seriesKey, sourceUrl, representativeBook }),
+    representativeBook,
+    bookCount: books.length,
+    pricedCount: currentEffectivePrices.filter((value) => value != null).length,
+    lowestPricedCount: lowestEffectivePrices.filter((value) => value != null).length,
+    currentPriceTotal: sumWhenComplete(currentPrices),
+    currentPointsTotal: currentPrices.every((value) => value != null) ? sumNumbers(currentPoints) : null,
+    currentEffectiveTotal: sumWhenComplete(currentEffectivePrices),
+    lowestEffectiveTotal: sumWhenComplete(lowestEffectivePrices)
+  };
+}
+
+function seriesBooksForNotification(store, scope) {
+  if (!scope) return [];
+  return (store.books || [])
+    .filter((book) => {
+      if (scope.seriesKey) return book.seriesKey === scope.seriesKey;
+      return (
+        scope.sourceUrl &&
+        book.sourceUrl === scope.sourceUrl &&
+        (book.importMode === 'kindle_series' || Boolean(book.seriesKey))
+      );
+    })
+    .sort(compareNotificationSeriesBooks);
+}
+
+function compareNotificationSeriesBooks(left, right) {
+  const leftVolume = Number(left.volume);
+  const rightVolume = Number(right.volume);
+  if (Number.isFinite(leftVolume) && Number.isFinite(rightVolume) && leftVolume !== rightVolume) {
+    return leftVolume - rightVolume;
+  }
+  return String(left.title || left.asin || '').localeCompare(String(right.title || right.asin || ''), 'ja');
+}
+
+function sumWhenComplete(values) {
+  if (values.length === 0 || values.some((value) => value == null)) return null;
+  return sumNumbers(values);
+}
+
+function sumNumbers(values) {
+  return values.reduce((sum, value) => sum + Number(value || 0), 0);
+}
+
+function canonicalSeriesNotificationUrl({ seriesKey = '', sourceUrl = '', representativeBook = null } = {}) {
+  const asin =
+    extractAsin(sourceUrl) || String(seriesKey || '').match(/^series:asin:([A-Z0-9]{10})$/i)?.[1] || '';
+  if (asin) return amazonUrlForAsin(asin.toUpperCase());
+  return sourceUrl || representativeBook?.amazonUrl || '';
+}
+
+function detectSeriesEvents({ before, after, settings }) {
+  if (!before || !after || after.currentEffectiveTotal == null) return [];
+  if (after.bookCount === 0 || after.pricedCount !== after.bookCount) return [];
+
+  const events = [];
+  const eventBase = {
+    scope: 'series',
+    notificationKey: after.key,
+    notificationBookId: after.representativeBook?.id || before.representativeBook?.id || '',
+    asin: extractAsin(after.url) || after.representativeBook?.asin || before.representativeBook?.asin || '',
+    seriesKey: after.seriesKey,
+    seriesName: after.seriesName,
+    seriesUrl: after.url,
+    bookCount: after.bookCount,
+    effectivePrice: after.currentEffectiveTotal,
+    notificationBook: seriesNotificationBook(after)
+  };
+
+  if (
+    settings.notifyOnBestEver &&
+    before.lowestEffectiveTotal != null &&
+    before.lowestPricedCount === before.bookCount &&
+    after.currentEffectiveTotal < before.lowestEffectiveTotal
+  ) {
+    events.push({
+      ...eventBase,
+      type: 'best_ever',
+      previousEffectivePrice: before.currentEffectiveTotal,
+      previousLowestEffectivePrice: before.lowestEffectiveTotal,
+      dropPercent: percentDrop(before.lowestEffectiveTotal, after.currentEffectiveTotal)
+    });
+  }
+
+  if (
+    settings.notifyOnPriceDrop &&
+    before.currentEffectiveTotal != null &&
+    before.pricedCount === before.bookCount &&
+    after.currentEffectiveTotal < before.currentEffectiveTotal
+  ) {
+    const dropPercent = percentDrop(before.currentEffectiveTotal, after.currentEffectiveTotal);
+    if (dropPercent >= settings.notificationThreshold) {
+      events.push({
+        ...eventBase,
+        type: 'price_drop',
+        previousEffectivePrice: before.currentEffectiveTotal,
+        dropPercent
+      });
+    }
+  }
+
+  return events;
+}
+
+function seriesNotificationBook(snapshot) {
+  const representative = snapshot.representativeBook || {};
+  return {
+    ...representative,
+    title: snapshot.seriesName || representative.seriesName || representative.title || 'Kindle シリーズ',
+    amazonUrl: snapshot.url || representative.amazonUrl || '',
+    currentPrice: snapshot.currentPriceTotal ?? snapshot.currentEffectiveTotal,
+    currentPoints: snapshot.currentPriceTotal != null ? snapshot.currentPointsTotal || 0 : 0,
+    effectivePrice: snapshot.currentEffectiveTotal,
+    lowestEffectivePrice: snapshot.lowestEffectiveTotal,
+    provider: 'series_total',
+    notificationScope: 'series',
+    asin: extractAsin(snapshot.url) || representative.asin || '',
+    seriesKey: snapshot.seriesKey,
+    seriesName: snapshot.seriesName,
+    bookCount: snapshot.bookCount,
+    pricedCount: snapshot.pricedCount
+  };
+}
+
 function detectEvents({ book, previousEffectivePrice, previousLowestEffectivePrice, settings }) {
   const events = [];
   const current = book.effectivePrice;
@@ -3681,6 +3943,17 @@ function alreadyNotified(store, bookId, event) {
   );
 }
 
+function alreadyNotifiedSeries(store, event) {
+  return store.notifications.some(
+    (notification) =>
+      notification.scope === 'series' &&
+      notification.notificationKey === event.notificationKey &&
+      notification.type === event.type &&
+      notification.effectivePrice === event.effectivePrice &&
+      notification.status === 'sent'
+  );
+}
+
 async function markNotification(bookId, event, status, error = '') {
   await updateStore((store) => {
     markNotificationInStore(store, bookId, event, status, error);
@@ -3693,9 +3966,7 @@ function markNotificationInStore(store, bookId, event, status, error = '') {
     .reverse()
     .find(
       (item) =>
-        item.bookId === bookId &&
-        item.type === event.type &&
-        item.effectivePrice === event.effectivePrice &&
+        notificationMatchesEvent(item, bookId, event) &&
         item.status === 'pending'
     );
 
@@ -3704,6 +3975,24 @@ function markNotificationInStore(store, bookId, event, status, error = '') {
     notification.error = error;
     notification.sentAt = new Date().toISOString();
   }
+}
+
+function notificationMatchesEvent(item, bookId, event) {
+  if (
+    !(
+        item.type === event.type &&
+        item.effectivePrice === event.effectivePrice &&
+        item.status === 'pending'
+    )
+  ) {
+    return false;
+  }
+
+  if (event.scope === 'series') {
+    return item.scope === 'series' && item.notificationKey === event.notificationKey;
+  }
+
+  return item.bookId === bookId;
 }
 
 function planDueChecks(store, settings, now, options = {}) {
