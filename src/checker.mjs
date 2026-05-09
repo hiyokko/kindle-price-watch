@@ -1574,11 +1574,11 @@ function shouldStoreSnapshotError(book, error) {
 }
 
 function isTransientSnapshotError(error) {
-  return /(?:価格を取得できませんでした|Amazonにブロック|HTTP\s*(?:429|500|503)|fetch failed|タイムアウト|reader:|商品ページではなくエラーページ)/i.test(String(error || ''));
+  return /(?:価格を取得できませんでした|Amazonにブロック|HTTP\s*(?:403|429|500|503)|fetch failed|タイムアウト|reader:|商品ページではなくエラーページ)/i.test(String(error || ''));
 }
 
 function isBlockingSnapshotError(error) {
-  return /(?:HTTP\s*(?:429|503)|Too Many Requests|ServiceUnavailable|サービスが利用できません|Amazonにブロック|captcha|robot check|自動化されたアクセス|ショッピングを続けてください)/i.test(String(error || ''));
+  return /(?:HTTP\s*(?:403|429|503)|Too Many Requests|Forbidden|ServiceUnavailable|サービスが利用できません|Amazonにブロック|captcha|robot check|自動化されたアクセス|ショッピングを続けてください)/i.test(String(error || ''));
 }
 
 function repairSuspiciousPriceState(book, store, options = {}) {

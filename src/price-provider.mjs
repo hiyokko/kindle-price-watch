@@ -12,6 +12,12 @@ const AMAZON_HEADERS = {
   'User-Agent':
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36'
 };
+const AMAZON_USER_AGENTS = [
+  AMAZON_HEADERS['User-Agent'],
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0'
+];
 
 export function extractAsin(input) {
   const value = String(input || '').trim();
@@ -140,6 +146,7 @@ async function fetchAmazonSeriesHtml(input, options = {}) {
       return { url, html: await fetchAmazonHtml(url, options) };
     } catch (error) {
       lastError = error;
+      if (isAmazonBlockingFetchError(error)) break;
     }
   }
 
@@ -1163,6 +1170,7 @@ async function fetchFromKeepa(asin) {
 async function fetchFromAmazonHtml(asin, inputUrl = '', options = {}) {
   let lastSnapshot = null;
   const errors = [];
+  let amazonBlocked = false;
 
   for (const url of amazonProductCandidateUrls(asin, inputUrl)) {
     try {
@@ -1175,10 +1183,14 @@ async function fetchFromAmazonHtml(asin, inputUrl = '', options = {}) {
     } catch (error) {
       if (isPermanentKindleProductError(error)) throw error;
       errors.push(`${amazonFetchUrlLabel(url)}: ${error.message}`);
+      if (isAmazonBlockingFetchError(error)) {
+        amazonBlocked = true;
+        break;
+      }
     }
   }
 
-  if (shouldUseAmazonReaderFallback()) {
+  if (!amazonBlocked && shouldUseAmazonReaderFallback()) {
     try {
       const snapshot = await fetchFromAmazonReader(asin, inputUrl, options);
       if (snapshot.currentPrice != null) return lastSnapshot ? mergeSnapshotLike(lastSnapshot, snapshot) : snapshot;
@@ -2051,27 +2063,53 @@ function safeExtractAmazonHtmlSnapshotFromHtml(html, asin, url, provider) {
 }
 
 async function fetchAmazonHtml(url, options = {}) {
-  return fetchHtml(url, { ...options, rejectRobotCheck: true });
+  return fetchHtml(url, {
+    ...options,
+    headers: amazonRequestHeaders(url),
+    proxyTemplate: process.env.AMAZON_HTML_PROXY_URL_TEMPLATE,
+    rejectRobotCheck: true,
+    retries: options.retries ?? process.env.HTTP_AMAZON_FETCH_RETRIES ?? 1,
+    retryDelayMs: options.retryDelayMs ?? process.env.HTTP_FETCH_RETRY_DELAY_MS ?? 1000,
+    throttleUrl: url
+  });
 }
 
 async function fetchHtml(url, options = {}) {
+  const retries = readNonNegativeInteger(options.retries, 0);
+  let lastError = null;
+
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      return await fetchHtmlOnce(url, options);
+    } catch (error) {
+      lastError = error;
+      if (attempt >= retries || !isRetriableFetchError(error)) throw error;
+      await sleepWithSignal(fetchRetryDelayMs(attempt, options), options.signal);
+    }
+  }
+
+  throw lastError || new Error('HTTP取得に失敗しました');
+}
+
+async function fetchHtmlOnce(url, options = {}) {
   const timeoutMs = readPositiveInteger(
     options.timeoutMs ?? process.env.HTTP_FETCH_TIMEOUT_MS,
     DEFAULT_FETCH_TIMEOUT_MS
   );
   const { signal, cleanup } = requestSignal(options.signal, timeoutMs);
+  const fetchUrl = proxiedFetchUrl(url, options.proxyTemplate);
 
   try {
-    await waitForHostFetchSlot(url, { ...options, signal });
-    const response = await fetch(url, { headers: AMAZON_HEADERS, signal });
+    await waitForHostFetchSlot(options.throttleUrl || url, { ...options, signal });
+    const response = await fetch(fetchUrl, { headers: options.headers || AMAZON_HEADERS, signal });
     if (!response.ok) {
-      noteHostFetchPenalty(url, response);
+      noteHostFetchPenalty(options.throttleUrl || url, response);
       throw new Error(`HTTP ${response.status}`);
     }
 
     const html = await response.text();
-    if (options.rejectRobotCheck && /captcha|robot check|自動化されたアクセス/i.test(html)) {
-      noteHostFetchPenalty(url, { status: 503 });
+    if (options.rejectRobotCheck && /captcha|robot check|自動化されたアクセス|ショッピングを続けてください/i.test(html)) {
+      noteHostFetchPenalty(options.throttleUrl || url, { status: 503 });
       throw new Error('Amazonにブロックされました');
     }
 
@@ -2083,6 +2121,58 @@ async function fetchHtml(url, options = {}) {
     throw error;
   } finally {
     cleanup();
+  }
+}
+
+function amazonRequestHeaders(url) {
+  const userAgents = amazonUserAgents();
+  const userAgent = userAgents[Math.floor(Math.random() * userAgents.length)] || AMAZON_HEADERS['User-Agent'];
+  const referer = amazonReferer(url);
+  const headers = {
+    ...AMAZON_HEADERS,
+    'User-Agent': userAgent,
+    Pragma: 'no-cache',
+    DNT: '1',
+    'Upgrade-Insecure-Requests': '1',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': referer ? 'same-origin' : 'none',
+    'Sec-Fetch-User': '?1'
+  };
+
+  if (referer) headers.Referer = referer;
+  return headers;
+}
+
+function amazonUserAgents() {
+  const configured = String(process.env.AMAZON_USER_AGENTS || '')
+    .split(/\r?\n|,/)
+    .map((value) => value.trim())
+    .filter(Boolean);
+  return configured.length > 0 ? configured : AMAZON_USER_AGENTS;
+}
+
+function amazonReferer(url) {
+  try {
+    const parsed = new URL(String(url || ''));
+    if (!/amazon\./i.test(parsed.hostname)) return '';
+    return `${parsed.protocol}//${parsed.hostname}/`;
+  } catch {
+    return '';
+  }
+}
+
+function proxiedFetchUrl(url, template = '') {
+  const value = String(template || '').trim();
+  if (!value) return url;
+  if (value.includes('{url}')) return value.replaceAll('{url}', encodeURIComponent(url));
+
+  try {
+    const proxyUrl = new URL(value);
+    proxyUrl.searchParams.set('url', url);
+    return proxyUrl.toString();
+  } catch {
+    return url;
   }
 }
 
@@ -2186,7 +2276,14 @@ function hostBlockCooldownMs(host) {
 }
 
 function isBlockingHttpStatus(status) {
-  return Number(status) === 429 || Number(status) === 503;
+  const value = Number(status);
+  return value === 403 || value === 429 || value === 503;
+}
+
+function isAmazonBlockingFetchError(error) {
+  return /(?:Amazonにブロックされました|HTTP\s*(?:403|429|503)|captcha|robot check|自動化されたアクセス|ショッピングを続けてください)/i.test(
+    String(error?.message || error || '')
+  );
 }
 
 function retryAfterHeaderMs(value) {
@@ -2202,7 +2299,7 @@ function isRetriableFetchError(error) {
   const message = String(error?.message || '');
   const code = String(error?.cause?.code || error?.code || '');
   return (
-    /fetch failed|HTTP取得がタイムアウトしました/i.test(message) ||
+    /fetch failed|HTTP取得がタイムアウトしました|HTTP\s*(?:429|500|502|503|504)/i.test(message) ||
     /^(?:ENOTFOUND|EAI_AGAIN|ECONNRESET|ECONNREFUSED|ETIMEDOUT|UND_ERR_CONNECT_TIMEOUT)$/i.test(code)
   );
 }
