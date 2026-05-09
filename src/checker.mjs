@@ -2378,10 +2378,13 @@ export async function runDueChecks(options = {}) {
           forced: false,
           backup: true,
           skipped: true,
-          skipReason: 'primary_cron_activity',
+          skipReason: 'primary_cron_completed',
+          skipDetail: backupSkip.skipDetail,
           executionBoundaryAt: backupSkip.executionBoundaryAt,
           lastCronStartedAt: backupSkip.lastCronStartedAt,
           lastCronFinishedAt: backupSkip.lastCronFinishedAt,
+          lastCronStoppedByRuntimeLimit: backupSkip.lastCronStoppedByRuntimeLimit,
+          lastCronError: backupSkip.lastCronError,
           seriesDiscovery: null,
           results: []
         };
@@ -4522,15 +4525,23 @@ function scheduledExecutionGraceMs() {
 
 function backupCronSkipState(automation = {}, now = Date.now(), settings = {}) {
   const executionBoundaryMs = latestJstExecutionBoundaryMs(now, settings);
-  const lastStartedMs = timestampMs(automation?.lastCronStartedAt);
   const lastFinishedMs = timestampMs(automation?.lastCronFinishedAt);
-  const shouldSkip = lastStartedMs >= executionBoundaryMs || lastFinishedMs >= executionBoundaryMs;
+  const lastCronError = String(automation?.lastCronError || '').trim();
+  const lastCronStoppedByRuntimeLimit = Boolean(automation?.lastCronStoppedByRuntimeLimit);
+  const hasSameWindowCompletion = lastFinishedMs >= executionBoundaryMs;
+  const hasSuccessfulCompletion = hasSameWindowCompletion && !lastCronError;
+  const hasSavedRuntimeLimitCompletion =
+    hasSameWindowCompletion && lastCronStoppedByRuntimeLimit && !lastCronError;
+  const shouldSkip = hasSuccessfulCompletion || hasSavedRuntimeLimitCompletion;
 
   return {
     shouldSkip,
+    skipDetail: hasSavedRuntimeLimitCompletion ? 'saved_runtime_limit' : hasSuccessfulCompletion ? 'successful_completion' : '',
     executionBoundaryAt: new Date(executionBoundaryMs).toISOString(),
     lastCronStartedAt: automation?.lastCronStartedAt || '',
-    lastCronFinishedAt: automation?.lastCronFinishedAt || ''
+    lastCronFinishedAt: automation?.lastCronFinishedAt || '',
+    lastCronStoppedByRuntimeLimit,
+    lastCronError
   };
 }
 

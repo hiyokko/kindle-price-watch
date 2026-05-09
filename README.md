@@ -58,7 +58,7 @@ vercel blob put data/store.json --pathname kindle-price-watch/store.json --acces
 
 ### 4. GitHub Actionsで定期実行
 
-Vercel Cronは使わず、`.github/workflows/kindle-price-check.yml` で価格チェックとシリーズ新刊探索をGitHub Actions上で実行します。VercelはWeb GUIとAPI、Vercel Blobはデータ保存先として使います。Vercel上の常駐スケジューラは `AUTO_CHECK_ENABLED=false` のままにしてください。GitHub Actionsは毎日JST 03:54と15:54に起動し、GitHub側の欠落対策として04:07と16:07にもバックアップ起動します。バックアップは同じ実行枠の本実行が開始または完了済みなら価格チェックを行わずに終了します。
+Vercel Cronは使わず、`.github/workflows/kindle-price-check.yml` で価格チェックとシリーズ新刊探索をGitHub Actions上で実行します。VercelはWeb GUIとAPI、Vercel Blobはデータ保存先として使います。Vercel上の常駐スケジューラは `AUTO_CHECK_ENABLED=false` のままにしてください。GitHub Actionsは毎日JST 03:54と15:54に起動し、GitHub側の欠落対策として04:07と16:07にもバックアップ起動します。バックアップは同じ実行枠の完了記録があり、かつ `lastCronError` が空の場合だけ価格チェックを行わずに終了します。
 
 チェック対象は未取得・未検証シリーズ価格の破棄後・シリーズ内の未取得巻を優先します。Amazon側の一時エラーやブロック直後の本は短時間の再試行を避け、アクセス回数を増やさずに取得済み件数を戻す方針です。価格通知は、単巻価格ではなくシリーズ全巻の直近取得が揃った場合にシリーズ合計で判定します。シリーズの過去最安合計は各巻の過去最安の寄せ集めではなく、`seriesPriceHistory` に実際に観測したシリーズ合計を保存し、その最安で判定します。大型シリーズで数冊だけ未取得のまま残ることを避けるため、チェック計画では同一シリーズの未取得・古い巻を同じバッチに寄せ、直近 `SERIES_TOTAL_OBSERVATION_RUNS` 回の実行枠内に全巻が揃った場合も同一観測として扱います。
 
@@ -107,7 +107,7 @@ Blob Advanced Operationsを増やさずに本を追加したい場合は、GUI�
 
 ## 定期実行
 
-GitHub Actionsでは毎日JST 03:54と15:54にWorkflowを起動します。アプリ画面ではこの固定時刻を表示し、時刻や実行回数は変更できません。GitHub Actionsの混雑を避けるため、毎時0分や5分刻みではない時刻にしています。GitHub scheduled workflowの欠落・遅延に備え、04:07と16:07にもバックアップWorkflowを起動します。バックアップは同じ実行枠の `lastCronStartedAt` または `lastCronFinishedAt` がすでに記録されている場合、価格チェック・新刊探索・サマリー通知を行わずに終了します。1000冊規模でもAmazonや補助サイトに連続アクセスしすぎないよう、`CHECK_REQUEST_DELAY_MS` / `CHECK_REQUEST_JITTER_MS` / `HTTP_REQUEST_MIN_INTERVAL_MS` で待機時間を調整します。429/503/CAPTCHA系の応答を検知した場合は、`CHECK_BLOCK_COOLDOWN_MS` / `HTTP_BLOCK_COOLDOWN_MS` のクールダウンを挟みます。GitHub Actions側では `CHECK_MAX_RUNTIME_MS=18000000` と `CHECK_SAVE_RESERVE_MS=300000` を設定し、Workflowの強制終了より前にアプリ自身が停止して一括保存できるようにします。ホスト待機や1冊ごとの処理にもAbortSignalを渡し、最後の保険として `CHECK_HARD_TIMEOUT_MS=18600000` でプロセスを強制終了します。
+GitHub Actionsでは毎日JST 03:54と15:54にWorkflowを起動します。アプリ画面ではこの固定時刻を表示し、時刻や実行回数は変更できません。GitHub Actionsの混雑を避けるため、毎時0分や5分刻みではない時刻にしています。GitHub scheduled workflowの欠落・遅延に備え、04:07と16:07にもバックアップWorkflowを起動します。バックアップは同じ実行枠の完了記録があり、かつ `lastCronError` が空の場合だけ、価格チェック・新刊探索・サマリー通知を行わずに終了します。本実行がエラーを記録した場合はバックアップが実行されます。1000冊規模でもAmazonや補助サイトに連続アクセスしすぎないよう、`CHECK_REQUEST_DELAY_MS` / `CHECK_REQUEST_JITTER_MS` / `HTTP_REQUEST_MIN_INTERVAL_MS` で待機時間を調整します。429/503/CAPTCHA系の応答を検知した場合は、`CHECK_BLOCK_COOLDOWN_MS` / `HTTP_BLOCK_COOLDOWN_MS` のクールダウンを挟みます。GitHub Actions側では `CHECK_MAX_RUNTIME_MS=18000000` と `CHECK_SAVE_RESERVE_MS=300000` を設定し、Workflowの強制終了より前にアプリ自身が停止して一括保存できるようにします。ホスト待機や1冊ごとの処理にもAbortSignalを渡し、最後の保険として `CHECK_HARD_TIMEOUT_MS=18600000` でプロセスを強制終了します。
 
 Blob Advanced Operationsを抑えるため、定期実行では本ごとに保存せず、価格チェック・通知状態・シリーズ合計価格履歴・シリーズ新刊探索結果・カーソルをメモリ上で更新して最後にまとめて保存します。正常終了またはアプリ側のランタイム停止判定で終了した場合は、最後に確認できた本を `checkCursor` として保存し、次回はその続きから確認します。
 
