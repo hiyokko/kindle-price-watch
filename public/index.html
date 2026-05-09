@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Kindle Price Watch</title>
-    <link rel="stylesheet" href="/styles.css?v=20260509-5">
+    <link rel="stylesheet" href="/styles.css?v=20260509-6">
   </head>
   <body>
     <header class="topbar">
@@ -70,19 +70,26 @@
             </select>
           </label>
           <label class="field compact">
-            <span>再確認間隔</span>
-            <select id="intervalInput" name="checkIntervalHours">
-              <option value="24">24時間</option>
-              <option value="48">48時間</option>
-              <option value="72">72時間</option>
+            <span>1日の実行回数</span>
+            <select id="runsPerDayInput" name="checkRunsPerDay">
+              <option value="1">1回</option>
+              <option value="2">2回</option>
             </select>
           </label>
           <label class="field compact">
-            <span>実行時刻(JST)</span>
+            <span>1回目(JST)</span>
             <div class="time-selects">
               <select id="executionHourInput" name="checkExecutionHourJst" aria-label="実行時"></select>
               <span aria-hidden="true">:</span>
               <select id="executionMinuteInput" name="checkExecutionMinuteJst" aria-label="実行分"></select>
+            </div>
+          </label>
+          <label class="field compact">
+            <span>2回目(JST)</span>
+            <div class="time-selects">
+              <select id="secondExecutionHourInput" name="secondCheckExecutionHourJst" aria-label="2回目の実行時"></select>
+              <span aria-hidden="true">:</span>
+              <select id="secondExecutionMinuteInput" name="secondCheckExecutionMinuteJst" aria-label="2回目の実行分"></select>
             </div>
           </label>
           <label class="field compact">
@@ -219,6 +226,6 @@
       </article>
     </template>
 
-    <script src="/app.js?v=20260509-6" type="module"></script>
+    <script src="/app.js?v=20260509-7" type="module"></script>
   </body>
 </html>

@@ -9,13 +9,9 @@ on:
         type: boolean
         default: true
   schedule:
-    # Primary daily run at 15:54 JST. GitHub cron is best-effort, so backup
-    # slots later in the same execution window recover from delayed/dropped runs.
+    # Daily at 09:56 and 15:54 JST. GitHub cron uses UTC.
+    - cron: "56 0 * * *"
     - cron: "54 6 * * *"
-    - cron: "17 7 * * *"
-    - cron: "43 7 * * *"
-    - cron: "11 8 * * *"
-    - cron: "47 8 * * *"
 
 concurrency:
   group: kindle-price-check

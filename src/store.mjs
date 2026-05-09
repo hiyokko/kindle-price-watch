@@ -11,9 +11,12 @@ const defaultStore = {
   version: 1,
   settings: {
     notificationThreshold: 10,
+    checkRunsPerDay: 2,
     checkIntervalHours: 24,
-    checkExecutionHourJst: 15,
-    checkExecutionMinuteJst: 54,
+    checkExecutionHourJst: 9,
+    checkExecutionMinuteJst: 56,
+    secondCheckExecutionHourJst: 15,
+    secondCheckExecutionMinuteJst: 54,
     batchSize: 50,
     notifyOnPriceDrop: true,
     notifyOnBestEver: true,
@@ -75,10 +78,7 @@ function mergeStore(store) {
   return {
     ...defaultStore,
     ...store,
-    settings: {
-      ...defaultStore.settings,
-      ...(store.settings || {})
-    },
+    settings: mergeSettings(store.settings),
     books: Array.isArray(store.books) ? store.books.map(normalizeBook) : [],
     priceHistory: Array.isArray(store.priceHistory) ? store.priceHistory : [],
     notifications: Array.isArray(store.notifications) ? store.notifications : [],
@@ -87,6 +87,24 @@ function mergeStore(store) {
     seriesDiscoveryCursor: normalizeSeriesDiscoveryCursor(store.seriesDiscoveryCursor),
     importQueue: normalizeImportQueue(store.importQueue)
   };
+}
+
+function mergeSettings(settings = {}) {
+  const merged = {
+    ...defaultStore.settings,
+    ...(settings || {})
+  };
+
+  if (settings?.checkRunsPerDay == null) {
+    merged.checkRunsPerDay = 2;
+    merged.checkExecutionHourJst = 9;
+    merged.checkExecutionMinuteJst = 56;
+    merged.secondCheckExecutionHourJst = settings?.checkExecutionHourJst ?? defaultStore.settings.secondCheckExecutionHourJst;
+    merged.secondCheckExecutionMinuteJst =
+      settings?.checkExecutionMinuteJst ?? defaultStore.settings.secondCheckExecutionMinuteJst;
+  }
+
+  return merged;
 }
 
 export async function readStore() {
