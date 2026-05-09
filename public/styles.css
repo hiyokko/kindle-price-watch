@@ -203,6 +203,18 @@ select {
   height: 42px;
 }
 
+.readonly-setting {
+  display: grid;
+  align-items: center;
+  min-height: 42px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #f6f4ef;
+  color: var(--text);
+  font-weight: 700;
+}
+
 textarea {
   min-height: 170px;
   padding-top: 10px;

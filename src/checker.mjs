@@ -2920,12 +2920,12 @@ function importQueueSummary(queue = {}) {
 export async function saveSettings(settings) {
   const cleaned = {
     notificationThreshold: clampNumber(settings.notificationThreshold, 0, 95, 10),
-    checkRunsPerDay: normalizeCheckRunsPerDay(settings.checkRunsPerDay, 2),
+    checkRunsPerDay: 2,
     checkIntervalHours: 24,
-    checkExecutionHourJst: normalizeCheckExecutionHourJst(settings.checkExecutionHourJst, 9),
-    checkExecutionMinuteJst: normalizeCheckExecutionMinuteJst(settings.checkExecutionMinuteJst, 56),
-    secondCheckExecutionHourJst: normalizeCheckExecutionHourJst(settings.secondCheckExecutionHourJst, 15),
-    secondCheckExecutionMinuteJst: normalizeCheckExecutionMinuteJst(settings.secondCheckExecutionMinuteJst, 54),
+    checkExecutionHourJst: 9,
+    checkExecutionMinuteJst: 54,
+    secondCheckExecutionHourJst: 15,
+    secondCheckExecutionMinuteJst: 54,
     batchSize: floorNumber(settings.batchSize, 1, 50),
     notifyOnPriceDrop: Boolean(settings.notifyOnPriceDrop),
     notifyOnBestEver: Boolean(settings.notifyOnBestEver)
@@ -4176,21 +4176,9 @@ function todayJstExecutionBoundaryMs(now, time) {
 }
 
 function scheduledExecutionTimes(settings = {}) {
-  const first = {
-    hour: normalizeCheckExecutionHourJst(settings.checkExecutionHourJst, 9),
-    minute: normalizeCheckExecutionMinuteJst(settings.checkExecutionMinuteJst, 56)
-  };
-  const second = {
-    hour: normalizeCheckExecutionHourJst(settings.secondCheckExecutionHourJst, 15),
-    minute: normalizeCheckExecutionMinuteJst(settings.secondCheckExecutionMinuteJst, 54)
-  };
-  const values = normalizeCheckRunsPerDay(settings.checkRunsPerDay, 2) >= 2 ? [first, second] : [first];
   return [
-    ...new Map(
-      values
-        .sort((left, right) => left.hour * 60 + left.minute - (right.hour * 60 + right.minute))
-        .map((time) => [`${time.hour}:${time.minute}`, time])
-    ).values()
+    { hour: 9, minute: 54 },
+    { hour: 15, minute: 54 }
   ];
 }
 
@@ -4408,19 +4396,12 @@ function mergedRuntimeSettings(settings = {}) {
 }
 
 function runtimeScheduleSettings(settings = {}) {
-  const hasRunCount = settings.checkRunsPerDay != null;
-  const legacyHour = normalizeCheckExecutionHourJst(settings.checkExecutionHourJst, 15);
-  const legacyMinute = normalizeCheckExecutionMinuteJst(settings.checkExecutionMinuteJst, 54);
-
   return {
-    checkRunsPerDay: normalizeCheckRunsPerDay(settings.checkRunsPerDay, 2),
-    checkExecutionHourJst: hasRunCount ? normalizeCheckExecutionHourJst(settings.checkExecutionHourJst, 9) : 9,
-    checkExecutionMinuteJst: hasRunCount ? normalizeCheckExecutionMinuteJst(settings.checkExecutionMinuteJst, 56) : 56,
-    secondCheckExecutionHourJst: normalizeCheckExecutionHourJst(settings.secondCheckExecutionHourJst, legacyHour),
-    secondCheckExecutionMinuteJst: normalizeCheckExecutionMinuteJst(
-      settings.secondCheckExecutionMinuteJst,
-      legacyMinute
-    )
+    checkRunsPerDay: 2,
+    checkExecutionHourJst: 9,
+    checkExecutionMinuteJst: 54,
+    secondCheckExecutionHourJst: 15,
+    secondCheckExecutionMinuteJst: 54
   };
 }
 

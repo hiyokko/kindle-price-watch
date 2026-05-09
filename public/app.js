@@ -24,11 +24,7 @@ const els = {
   refreshButton: document.getElementById('refreshButton'),
   settingsForm: document.getElementById('settingsForm'),
   thresholdInput: document.getElementById('thresholdInput'),
-  runsPerDayInput: document.getElementById('runsPerDayInput'),
-  executionHourInput: document.getElementById('executionHourInput'),
-  executionMinuteInput: document.getElementById('executionMinuteInput'),
-  secondExecutionHourInput: document.getElementById('secondExecutionHourInput'),
-  secondExecutionMinuteInput: document.getElementById('secondExecutionMinuteInput'),
+  scheduleDisplay: document.getElementById('scheduleDisplay'),
   batchInput: document.getElementById('batchInput'),
   testNotifyButton: document.getElementById('testNotifyButton'),
   sortInput: document.getElementById('sortInput'),
@@ -65,9 +61,6 @@ const els = {
   saveImportQueueButton: document.getElementById('saveImportQueueButton')
 };
 
-populateExecutionHourOptions();
-els.runsPerDayInput.addEventListener('change', syncRunCountControls);
-
 els.addForm.addEventListener('submit', async (event) => {
   event.preventDefault();
   setBusy(els.addButton, true, '追加中');
@@ -95,11 +88,6 @@ els.settingsForm.addEventListener('submit', async (event) => {
   event.preventDefault();
   const payload = {
     notificationThreshold: Number(els.thresholdInput.value),
-    checkRunsPerDay: Number(els.runsPerDayInput.value),
-    checkExecutionHourJst: Number(els.executionHourInput.value),
-    checkExecutionMinuteJst: Number(els.executionMinuteInput.value),
-    secondCheckExecutionHourJst: Number(els.secondExecutionHourInput.value),
-    secondCheckExecutionMinuteJst: Number(els.secondExecutionMinuteInput.value),
     batchSize: Number(els.batchInput.value),
     notifyOnPriceDrop: true,
     notifyOnBestEver: true
@@ -235,49 +223,19 @@ async function loadSettings() {
   state.discordWebhookTotalCount = data.discordWebhookTotalCount || state.discordWebhookCount;
   state.discordWebhookPausedCount = data.discordWebhookPausedCount || 0;
   els.thresholdInput.value = String(data.settings.notificationThreshold);
-  els.runsPerDayInput.value = String(data.settings.checkRunsPerDay ?? 2);
-  els.executionHourInput.value = String(data.settings.checkExecutionHourJst ?? 9);
-  els.executionMinuteInput.value = String(data.settings.checkExecutionMinuteJst ?? 56);
-  els.secondExecutionHourInput.value = String(data.settings.secondCheckExecutionHourJst ?? 15);
-  els.secondExecutionMinuteInput.value = String(data.settings.secondCheckExecutionMinuteJst ?? 54);
+  els.scheduleDisplay.textContent = fixedScheduleLabel(data.settings);
   els.batchInput.value = String(data.settings.batchSize);
-  syncRunCountControls();
   renderSummary();
 }
 
-function populateExecutionHourOptions() {
-  populateHourOptions(els.executionHourInput);
-  populateHourOptions(els.secondExecutionHourInput);
-  populateMinuteOptions(els.executionMinuteInput);
-  populateMinuteOptions(els.secondExecutionMinuteInput);
+function fixedScheduleLabel(settings = {}) {
+  const first = formatScheduleTime(settings.checkExecutionHourJst ?? 9, settings.checkExecutionMinuteJst ?? 54);
+  const second = formatScheduleTime(settings.secondCheckExecutionHourJst ?? 15, settings.secondCheckExecutionMinuteJst ?? 54);
+  return `${first} / ${second}`;
 }
 
-function populateHourOptions(select) {
-  if (!select) return;
-  select.innerHTML = '';
-  for (let hour = 0; hour < 24; hour += 1) {
-    const option = document.createElement('option');
-    option.value = String(hour);
-    option.textContent = String(hour).padStart(2, '0');
-    select.append(option);
-  }
-}
-
-function populateMinuteOptions(select) {
-  if (!select) return;
-  select.innerHTML = '';
-  for (let minute = 0; minute < 60; minute += 1) {
-    const option = document.createElement('option');
-    option.value = String(minute);
-    option.textContent = String(minute).padStart(2, '0');
-    select.append(option);
-  }
-}
-
-function syncRunCountControls() {
-  const enabled = Number(els.runsPerDayInput.value || 1) >= 2;
-  els.secondExecutionHourInput.disabled = !enabled;
-  els.secondExecutionMinuteInput.disabled = !enabled;
+function formatScheduleTime(hour, minute) {
+  return `${String(Number(hour || 0)).padStart(2, '0')}:${String(Number(minute || 0)).padStart(2, '0')}`;
 }
 
 async function loadBooks() {

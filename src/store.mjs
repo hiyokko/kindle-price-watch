@@ -14,7 +14,7 @@ const defaultStore = {
     checkRunsPerDay: 2,
     checkIntervalHours: 24,
     checkExecutionHourJst: 9,
-    checkExecutionMinuteJst: 56,
+    checkExecutionMinuteJst: 54,
     secondCheckExecutionHourJst: 15,
     secondCheckExecutionMinuteJst: 54,
     batchSize: 50,
@@ -95,14 +95,12 @@ function mergeSettings(settings = {}) {
     ...(settings || {})
   };
 
-  if (settings?.checkRunsPerDay == null) {
-    merged.checkRunsPerDay = 2;
-    merged.checkExecutionHourJst = 9;
-    merged.checkExecutionMinuteJst = 56;
-    merged.secondCheckExecutionHourJst = settings?.checkExecutionHourJst ?? defaultStore.settings.secondCheckExecutionHourJst;
-    merged.secondCheckExecutionMinuteJst =
-      settings?.checkExecutionMinuteJst ?? defaultStore.settings.secondCheckExecutionMinuteJst;
-  }
+  merged.checkRunsPerDay = 2;
+  merged.checkIntervalHours = 24;
+  merged.checkExecutionHourJst = 9;
+  merged.checkExecutionMinuteJst = 54;
+  merged.secondCheckExecutionHourJst = 15;
+  merged.secondCheckExecutionMinuteJst = 54;
 
   return merged;
 }

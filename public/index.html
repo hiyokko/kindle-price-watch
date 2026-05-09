@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Kindle Price Watch</title>
-    <link rel="stylesheet" href="/styles.css?v=20260509-6">
+    <link rel="stylesheet" href="/styles.css?v=20260509-7">
   </head>
   <body>
     <header class="topbar">
@@ -70,27 +70,8 @@
             </select>
           </label>
           <label class="field compact">
-            <span>1日の実行回数</span>
-            <select id="runsPerDayInput" name="checkRunsPerDay">
-              <option value="1">1回</option>
-              <option value="2">2回</option>
-            </select>
-          </label>
-          <label class="field compact">
-            <span>1回目(JST)</span>
-            <div class="time-selects">
-              <select id="executionHourInput" name="checkExecutionHourJst" aria-label="実行時"></select>
-              <span aria-hidden="true">:</span>
-              <select id="executionMinuteInput" name="checkExecutionMinuteJst" aria-label="実行分"></select>
-            </div>
-          </label>
-          <label class="field compact">
-            <span>2回目(JST)</span>
-            <div class="time-selects">
-              <select id="secondExecutionHourInput" name="secondCheckExecutionHourJst" aria-label="2回目の実行時"></select>
-              <span aria-hidden="true">:</span>
-              <select id="secondExecutionMinuteInput" name="secondCheckExecutionMinuteJst" aria-label="2回目の実行分"></select>
-            </div>
+            <span>自動実行(JST)</span>
+            <output class="readonly-setting" id="scheduleDisplay">09:54 / 15:54</output>
           </label>
           <label class="field compact">
             <span>1回の件数</span>
@@ -226,6 +207,6 @@
       </article>
     </template>
 
-    <script src="/app.js?v=20260509-7" type="module"></script>
+    <script src="/app.js?v=20260509-8" type="module"></script>
   </body>
 </html>

@@ -9,8 +9,8 @@ on:
         type: boolean
         default: true
   schedule:
-    # Daily at 09:56 and 15:54 JST. GitHub cron uses UTC.
-    - cron: "56 0 * * *"
+    # Daily at 09:54 and 15:54 JST. GitHub cron uses UTC.
+    - cron: "54 0 * * *"
     - cron: "54 6 * * *"
 
 concurrency:
