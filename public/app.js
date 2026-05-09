@@ -856,6 +856,13 @@ function groupBooks(books) {
     group.seriesDiscoverySkippedAt = latestSeriesDiscoverySkippedAt(group.books);
     group.seriesDiscoveryError = latestSeriesDiscoveryError(group.books);
     group.totalMetrics = seriesTotalMetrics(group);
+    if (shouldDisplayGroupAsSingle(group)) {
+      const book = group.books[0];
+      group.key = `single:${book.id}`;
+      group.seriesKey = '';
+      group.isSeries = false;
+      group.title = book.title;
+    }
     return group;
   });
 }
@@ -866,6 +873,11 @@ function isSeriesBook(book) {
     Boolean(book.seriesKey) ||
     Number(book.seriesExpectedCount || 0) > 1
   );
+}
+
+function shouldDisplayGroupAsSingle(group) {
+  if (!group?.isSeries || group.books.length !== 1) return false;
+  return expectedSeriesCount(group.books) <= 1;
 }
 
 function sortedGroups(groups) {

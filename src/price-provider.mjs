@@ -53,10 +53,10 @@ export function amazonUrlForAsin(asin) {
 export function isKindleSeriesUrl(input) {
   try {
     const url = new URL(String(input || '').trim());
+    const ref = `${url.searchParams.get('ref') || ''} ${url.searchParams.get('ref_') || ''}`;
     return (
-      url.searchParams.get('binding') === 'kindle_edition' ||
-      url.searchParams.get('ref')?.includes('dbs_dp_rwt_sb_pc_tkin') ||
-      url.searchParams.get('ref_')?.includes('dbs_dp_rwt_sb_pc_tkin')
+      /\/series\//i.test(url.pathname) ||
+      /dbs_|dbs-|saga_sdp|hulkbuy|dbs_dp_rwt_sb_pc_tkin|dbs_s_ks_series_rwt_tkin/i.test(ref)
     );
   } catch {
     return false;
