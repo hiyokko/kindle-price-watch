@@ -27,7 +27,12 @@ import {
 
 const UNVALIDATED_SERIES_PRICE_PROVIDERS = new Set([
   'amazon_series_source_price',
-  'amazon_series_unit_price'
+  'amazon_series_unit_price',
+  'efox_series',
+  'external_series',
+  'kinpome_series',
+  'kintyaku_series',
+  'sale_bon_series'
 ]);
 const SINGLE_EPISODE_SERIES_PRICE_MAX = 250;
 const SUSPICIOUS_BULK_SERIES_COUNT_MIN = 20;
@@ -1468,6 +1473,7 @@ function shouldRefreshSeriesTitle(book, item) {
 
 function shouldRefreshSeriesPrice(book, item) {
   if (item.currentPrice == null) return false;
+  if (isUnvalidatedSeriesPriceProvider(item.provider)) return false;
   if (isUnverifiedFreeSeriesPriceProvider(item.provider, item.currentPrice)) return false;
   if (book.currentPrice == null) return true;
   if (book.currentPrice === 0 && item.currentPrice > 0) return true;
