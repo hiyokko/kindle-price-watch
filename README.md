@@ -60,6 +60,8 @@ vercel blob put data/store.json --pathname kindle-price-watch/store.json --acces
 
 Vercel Cronは使わず、`.github/workflows/kindle-price-check.yml` で価格チェックとシリーズ新刊探索をGitHub Actions上で実行します。VercelはWeb GUIとAPI、Vercel Blobはデータ保存先として使います。Vercel上の常駐スケジューラは `AUTO_CHECK_ENABLED=false` のままにしてください。主実行は15:54 JSTで、GitHubの定期実行が遅延・欠落した場合に備えて同日夕方に複数のバックアップ枠を置いています。
 
+チェック対象は未取得・未検証シリーズ価格の破棄後・シリーズ内の未取得巻を優先します。Amazon側の一時エラーやブロック直後の本は短時間の再試行を避け、アクセス回数を増やさずに取得済み件数を戻す方針です。価格通知は、単巻価格ではなくシリーズ全巻の直近取得が揃った場合にシリーズ合計で判定します。
+
 GitHubリポジトリの Settings > Secrets and variables > Actions に、少なくとも次を登録します。
 
 ```text

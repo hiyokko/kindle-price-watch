@@ -2393,7 +2393,8 @@ export async function runDueChecks(options = {}) {
           updateCursor: true,
           getWebhookUrls,
           deferSeriesNotifications: true,
-          seriesNotificationBaselines
+          seriesNotificationBaselines,
+          seriesFreshAfter: cronStartedAt
         });
       } finally {
         runtime.cleanup();
@@ -3221,6 +3222,7 @@ function captureSeriesNotificationBaseline(store, seriesScope, options = {}) {
     if (existing) return existing;
 
     const baseline = seriesAggregateSnapshot(store, seriesScope);
+    baseline.freshAfter = options.seriesFreshAfter || '';
     options.seriesNotificationBaselines.set(seriesScope.key, baseline);
     return baseline;
   }
@@ -3236,7 +3238,7 @@ async function sendDeferredSeriesNotifications(store, baselines, options = {}) {
   const settings = mergedRuntimeSettings(store.settings);
   const now = new Date().toISOString();
   for (const baseline of baselines.values()) {
-    const after = seriesAggregateSnapshot(store, baseline.scope);
+    const after = seriesAggregateSnapshot(store, baseline.scope, { freshAfter: baseline.freshAfter });
     const representativeBook = after.representativeBook || baseline.representativeBook;
     if (!representativeBook) continue;
 
@@ -3756,7 +3758,7 @@ function notificationSeriesScope(book) {
   return { key, seriesKey, sourceUrl };
 }
 
-function seriesAggregateSnapshot(store, scope) {
+function seriesAggregateSnapshot(store, scope, options = {}) {
   const books = seriesBooksForNotification(store, scope);
   const representativeBook = books[0] || null;
   const seriesName =
@@ -3768,6 +3770,14 @@ function seriesAggregateSnapshot(store, scope) {
   const currentPoints = books.map((book) => nullableNumber(book.currentPoints) ?? 0);
   const currentEffectivePrices = books.map((book) => nullableNumber(book.effectivePrice));
   const lowestEffectivePrices = books.map((book) => nullableNumber(book.lowestEffectivePrice));
+  const freshAfterMs = new Date(options.freshAfter || 0).getTime();
+  const requiresFreshCheck = Number.isFinite(freshAfterMs) && freshAfterMs > 0;
+  const freshCheckedCount = requiresFreshCheck
+    ? books.filter((book) => {
+        const checkedAt = new Date(book.lastCheckedAt || 0).getTime();
+        return Number.isFinite(checkedAt) && checkedAt >= freshAfterMs;
+      }).length
+    : books.length;
 
   return {
     scope,
@@ -3779,6 +3789,8 @@ function seriesAggregateSnapshot(store, scope) {
     representativeBook,
     bookCount: books.length,
     pricedCount: currentEffectivePrices.filter((value) => value != null).length,
+    freshCheckedCount,
+    requiresFreshCheck,
     lowestPricedCount: lowestEffectivePrices.filter((value) => value != null).length,
     currentPriceTotal: sumWhenComplete(currentPrices),
     currentPointsTotal: currentPrices.every((value) => value != null) ? sumNumbers(currentPoints) : null,
@@ -3829,6 +3841,7 @@ function canonicalSeriesNotificationUrl({ seriesKey = '', sourceUrl = '', repres
 function detectSeriesEvents({ before, after, settings }) {
   if (!before || !after || after.currentEffectiveTotal == null) return [];
   if (after.bookCount === 0 || after.pricedCount !== after.bookCount) return [];
+  if (after.requiresFreshCheck && after.freshCheckedCount !== after.bookCount) return [];
 
   const events = [];
   const eventBase = {
@@ -3997,19 +4010,26 @@ function notificationMatchesEvent(item, bookId, event) {
 
 function planDueChecks(store, settings, now, options = {}) {
   const rotatedBooks = rotateAfterCursor(store.books, store.checkCursor?.lastBookId);
+  const priorityContext = checkPriorityContext(rotatedBooks, now);
   if (options.forceAll) {
-    const selected = rotatedBooks.slice(0, settings.batchSize);
+    const selected = orderCheckCandidates(rotatedBooks, priorityContext, now).slice(0, settings.batchSize);
     return { books: selected, dueSelected: selected.length };
   }
 
   const dueBefore = scheduledDueCutoffMs(now, settings);
-  const dueBooks = rotatedBooks.filter((book) => isBookDue(book, dueBefore));
-  const selected = dueBooks.slice(0, settings.batchSize);
+  const dueBooks = rotatedBooks.filter((book) => isBookDue(book, dueBefore) && !isCheckRetryCoolingDown(book, now));
+  const orderedDueBooks = orderCheckCandidates(dueBooks, priorityContext, now);
+  const selected = orderedDueBooks.slice(0, settings.batchSize);
   const dueSelected = selected.length;
 
   if (dueBooks.length > 0 && selected.length < settings.batchSize) {
     const selectedIds = new Set(selected.map((book) => book.id));
-    for (const book of rotatedBooks) {
+    const fillerBooks = orderCheckCandidates(
+      rotatedBooks.filter((book) => !isCheckRetryCoolingDown(book, now)),
+      priorityContext,
+      now
+    );
+    for (const book of fillerBooks) {
       if (selected.length >= settings.batchSize) break;
       if (selectedIds.has(book.id) || isBookDue(book, dueBefore)) continue;
       selected.push(book);
@@ -4018,6 +4038,95 @@ function planDueChecks(store, settings, now, options = {}) {
   }
 
   return { books: selected, dueSelected };
+}
+
+function checkPriorityContext(books, now) {
+  const series = new Map();
+  const rotatedIndex = new Map();
+
+  for (const [index, book] of books.entries()) {
+    rotatedIndex.set(book.id, index);
+    const scope = notificationSeriesScope(book);
+    if (!scope) continue;
+
+    const key = scope.key;
+    if (!series.has(key)) {
+      series.set(key, {
+        total: 0,
+        priced: 0,
+        unpriced: 0,
+        stale: 0
+      });
+    }
+    const group = series.get(key);
+    group.total += 1;
+    if (hasTrustedCurrentPrice(book)) {
+      group.priced += 1;
+    } else {
+      group.unpriced += 1;
+    }
+    if (isBookStaleForPriority(book, now)) group.stale += 1;
+  }
+
+  return { series, rotatedIndex };
+}
+
+function orderCheckCandidates(books, context, now) {
+  return [...books].sort((left, right) => {
+    const scoreDiff = checkPriorityScore(right, context, now) - checkPriorityScore(left, context, now);
+    if (scoreDiff !== 0) return scoreDiff;
+    return (context.rotatedIndex.get(left.id) ?? 0) - (context.rotatedIndex.get(right.id) ?? 0);
+  });
+}
+
+function checkPriorityScore(book, context, now) {
+  let score = 0;
+  if (!hasTrustedCurrentPrice(book)) score += 100000;
+  if (isDiscardedUnvalidatedSeriesPrice(book)) score += 25000;
+  if (!book.lastCheckedAt) score += 12000;
+  if (isBookStaleForPriority(book, now)) score += 2500;
+  if (isTransientSnapshotError(book.lastError) && !isBlockingSnapshotError(book.lastError)) score += 1500;
+
+  const scope = notificationSeriesScope(book);
+  const series = scope ? context.series.get(scope.key) : null;
+  if (series?.unpriced > 0) score += 10000 + Math.min(series.unpriced, 1000);
+  if (series?.stale > 0) score += 1000 + Math.min(series.stale, 500);
+
+  if (isBlockingSnapshotError(book.lastError)) score -= 5000;
+  return score;
+}
+
+function hasTrustedCurrentPrice(book) {
+  return (
+    book?.currentPrice != null &&
+    book?.effectivePrice != null &&
+    !isUnvalidatedSeriesPriceProvider(book.provider) &&
+    !isUnverifiedFreeSeriesPriceProvider(book.provider, book.currentPrice)
+  );
+}
+
+function isDiscardedUnvalidatedSeriesPrice(book) {
+  return String(book?.lastError || '').includes('未検証のシリーズ価格を破棄しました');
+}
+
+function isBookStaleForPriority(book, now) {
+  const checkedAt = new Date(book?.lastCheckedAt || 0).getTime();
+  if (!Number.isFinite(checkedAt) || checkedAt <= 0) return true;
+  return now - checkedAt >= 3 * 24 * 60 * 60 * 1000;
+}
+
+function isCheckRetryCoolingDown(book, now) {
+  if (!isTransientSnapshotError(book?.lastError) && !isBlockingSnapshotError(book?.lastError)) return false;
+  if (isDiscardedUnvalidatedSeriesPrice(book)) return false;
+
+  const checkedAt = new Date(book.lastCheckedAt || book.updatedAt || book.createdAt || 0).getTime();
+  if (!Number.isFinite(checkedAt) || checkedAt <= 0) return false;
+  return now - checkedAt < checkRetryCooldownMs(book);
+}
+
+function checkRetryCooldownMs(book) {
+  const fallbackHours = isBlockingSnapshotError(book?.lastError) ? 12 : 3;
+  return floorNumber(process.env.CHECK_RETRY_COOLDOWN_HOURS, 0, fallbackHours) * 60 * 60 * 1000;
 }
 
 function rotateAfterCursor(books, lastBookId = '') {
