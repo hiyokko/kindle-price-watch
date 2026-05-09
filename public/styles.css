@@ -755,14 +755,26 @@ button:disabled {
 
 .webhook-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(120px, 0.4fr) minmax(0, 1fr) auto auto;
   gap: 8px;
   align-items: center;
 }
 
-.webhook-row input {
+.webhook-row input[type="url"] {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   font-size: 13px;
+}
+
+.webhook-row.is-paused input {
+  color: var(--muted);
+}
+
+.webhook-row.is-paused input[type="url"] {
+  text-decoration: line-through;
+}
+
+.webhook-toggle-button {
+  min-width: 82px;
 }
 
 .dialog-actions {

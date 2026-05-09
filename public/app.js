@@ -6,7 +6,10 @@ const state = {
   importQueue: { pending: [], completed: [], errors: [], summary: { pendingCount: 0, completedCount: 0, errorCount: 0 } },
   discordConfigured: false,
   discordWebhookCount: 0,
+  discordWebhookTotalCount: 0,
+  discordWebhookPausedCount: 0,
   discordWebhookUrls: [],
+  discordWebhooks: [],
   selectedBookIds: new Set(),
   expandedSeriesKeys: new Set(),
   activeFilter: 'all',
@@ -154,12 +157,10 @@ els.webhookForm.addEventListener('submit', async (event) => {
   event.preventDefault();
   setBusy(els.saveWebhookButton, true, '保存中');
   try {
-    const urls = collectWebhookUrls();
-    const data = await api('/api/webhooks', { method: 'PUT', body: { urls } });
-    state.discordWebhookUrls = data.urls || [];
-    state.discordWebhookCount = data.count || 0;
-    state.discordConfigured = state.discordWebhookCount > 0;
-    renderWebhookRows(state.discordWebhookUrls);
+    const entries = collectWebhookEntries();
+    const data = await api('/api/webhooks', { method: 'PUT', body: { entries } });
+    applyWebhookState(data);
+    renderWebhookRows(state.discordWebhooks);
     renderSummary();
     setMessage('Webhookを保存しました', 'success');
     els.webhookDialog.close();
@@ -224,6 +225,8 @@ async function loadSettings() {
   state.importQueue = { ...state.importQueue, summary: data.importQueue || state.importQueue.summary };
   state.discordConfigured = data.discordConfigured;
   state.discordWebhookCount = data.discordWebhookCount || 0;
+  state.discordWebhookTotalCount = data.discordWebhookTotalCount || state.discordWebhookCount;
+  state.discordWebhookPausedCount = data.discordWebhookPausedCount || 0;
   els.thresholdInput.value = String(data.settings.notificationThreshold);
   els.intervalInput.value = String(data.settings.checkIntervalHours);
   els.executionHourInput.value = String(data.settings.checkExecutionHourJst ?? 16);
@@ -262,7 +265,7 @@ function renderSummary() {
   els.bookCount.setAttribute('aria-pressed', String(state.activeFilter === 'all'));
   els.bestCount.classList.toggle('active', state.activeFilter === 'best');
   els.bestCount.setAttribute('aria-pressed', String(state.activeFilter === 'best'));
-  els.discordState.textContent = state.discordConfigured ? `設定済み${state.discordWebhookCount > 1 ? `(${state.discordWebhookCount})` : ''}` : '未設定';
+  els.discordState.textContent = discordSummaryText();
   els.discordState.title = 'Webhookを編集';
   els.cronState.textContent = cronSummary(state.automation);
 }
@@ -278,10 +281,8 @@ function setBookFilter(filter) {
 async function openWebhookDialog() {
   try {
     const data = await api('/api/webhooks');
-    state.discordWebhookUrls = data.urls || [];
-    state.discordWebhookCount = data.count || 0;
-    state.discordConfigured = state.discordWebhookCount > 0;
-    renderWebhookRows(state.discordWebhookUrls);
+    applyWebhookState(data);
+    renderWebhookRows(state.discordWebhooks);
     renderSummary();
     els.webhookDialog.showModal();
   } catch (error) {
@@ -322,30 +323,90 @@ function renderImportQueue(data) {
     .join('');
 }
 
-function renderWebhookRows(urls) {
+function renderWebhookRows(entries) {
   els.webhookList.innerHTML = '';
-  const values = urls.length > 0 ? urls : [''];
-  for (const url of values) {
-    addWebhookRow(url, false);
+  const values = entries.length > 0 ? entries : [{ name: '', url: '', enabled: true }];
+  for (const entry of values) {
+    addWebhookRow(entry, false);
   }
 }
 
-function addWebhookRow(url, focus = false) {
+function addWebhookRow(entry, focus = false) {
+  const webhook = normalizeWebhookEntryForUi(entry);
   const row = document.createElement('div');
   row.className = 'webhook-row';
+  row.dataset.enabled = String(webhook.enabled);
   row.innerHTML = `
-    <input type="url" placeholder="https://discord.com/api/webhooks/..." value="${escapeHtml(url)}">
-    <button class="danger-button" type="button">削除</button>
+    <input class="webhook-name-input" type="text" placeholder="名前" value="${escapeHtml(webhook.name)}" aria-label="Webhook名">
+    <input class="webhook-url-input" type="url" placeholder="https://discord.com/api/webhooks/..." value="${escapeHtml(webhook.url)}" aria-label="Webhook URL">
+    <button class="ghost-button webhook-toggle-button" type="button"></button>
+    <button class="danger-button webhook-delete-button" type="button">削除</button>
   `;
-  row.querySelector('button').addEventListener('click', () => row.remove());
+  row.querySelector('.webhook-toggle-button').addEventListener('click', () => {
+    row.dataset.enabled = row.dataset.enabled === 'false' ? 'true' : 'false';
+    syncWebhookRowState(row);
+  });
+  row.querySelector('.webhook-delete-button').addEventListener('click', () => row.remove());
+  syncWebhookRowState(row);
   els.webhookList.append(row);
-  if (focus) row.querySelector('input').focus();
+  if (focus) row.querySelector('.webhook-name-input').focus();
 }
 
-function collectWebhookUrls() {
-  return [...els.webhookList.querySelectorAll('input')]
-    .map((input) => input.value.trim())
-    .filter(Boolean);
+function collectWebhookEntries() {
+  return [...els.webhookList.querySelectorAll('.webhook-row')]
+    .map((row) => ({
+      name: row.querySelector('.webhook-name-input')?.value.trim() || '',
+      url: row.querySelector('.webhook-url-input')?.value.trim() || '',
+      enabled: row.dataset.enabled !== 'false'
+    }))
+    .filter((entry) => entry.url);
+}
+
+function applyWebhookState(data = {}) {
+  state.discordWebhooks = webhookEntriesFromPayload(data);
+  state.discordWebhookUrls = data.urls || state.discordWebhooks.filter((entry) => entry.enabled).map((entry) => entry.url);
+  state.discordWebhookCount = data.count ?? state.discordWebhookUrls.length;
+  state.discordWebhookTotalCount = data.totalCount ?? state.discordWebhooks.length;
+  state.discordWebhookPausedCount = data.pausedCount ?? Math.max(0, state.discordWebhookTotalCount - state.discordWebhookCount);
+  state.discordConfigured = state.discordWebhookCount > 0;
+}
+
+function webhookEntriesFromPayload(data = {}) {
+  if (Array.isArray(data.entries)) return data.entries.map(normalizeWebhookEntryForUi).filter((entry) => entry.url);
+  return (data.urls || []).map((url) => ({ name: '', url, enabled: true }));
+}
+
+function normalizeWebhookEntryForUi(entry) {
+  if (typeof entry === 'string') return { name: '', url: entry, enabled: true };
+  return {
+    name: String(entry?.name || ''),
+    url: String(entry?.url || ''),
+    enabled: entry?.enabled !== false
+  };
+}
+
+function syncWebhookRowState(row) {
+  const enabled = row.dataset.enabled !== 'false';
+  const button = row.querySelector('.webhook-toggle-button');
+  row.classList.toggle('is-paused', !enabled);
+  button.textContent = enabled ? '一時停止' : '再開';
+  button.title = enabled ? 'このWebhookを一時停止' : 'このWebhookを再開';
+  button.setAttribute('aria-pressed', String(!enabled));
+}
+
+function discordSummaryText() {
+  if (state.discordWebhookCount > 0) {
+    if (state.discordWebhookTotalCount > state.discordWebhookCount) {
+      return `設定済み(${state.discordWebhookCount}/${state.discordWebhookTotalCount})`;
+    }
+    return state.discordWebhookCount > 1 ? `設定済み(${state.discordWebhookCount})` : '設定済み';
+  }
+
+  if (state.discordWebhookPausedCount > 0 || state.discordWebhookTotalCount > 0) {
+    return `停止中(${state.discordWebhookTotalCount})`;
+  }
+
+  return '未設定';
 }
 
 function renderBooks() {

@@ -102,7 +102,7 @@ export async function webhooksPayload() {
 }
 
 export async function saveWebhooksPayload(body = {}) {
-  return saveDiscordWebhooks(body.urls || []);
+  return saveDiscordWebhooks(body.entries || body.webhooks || body.urls || []);
 }
 
 export async function testNotificationPayload() {

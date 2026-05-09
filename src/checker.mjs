@@ -2720,7 +2720,9 @@ export async function getSettingsSummary() {
     automation: store.automation || {},
     importQueue: importQueueSummary(store.importQueue),
     discordConfigured: webhooks.count > 0,
-    discordWebhookCount: webhooks.count
+    discordWebhookCount: webhooks.count,
+    discordWebhookTotalCount: webhooks.totalCount,
+    discordWebhookPausedCount: webhooks.pausedCount
   };
 }
 
@@ -2823,43 +2825,39 @@ export async function sendTestNotification() {
 
 export async function getDiscordWebhooks() {
   const webhookStore = await readWebhookStore();
-  const dedicated = storedDiscordWebhookUrls(webhookStore);
+  const dedicated = storedDiscordWebhooks(webhookStore);
   if (dedicated != null) {
-    return {
-      urls: dedicated,
-      count: dedicated.length,
+    return discordWebhooksPayload(dedicated, {
       usingEnvFallback: false,
       source: 'webhook_store'
-    };
+    });
   }
 
   const store = await readStore();
-  const stored = storedDiscordWebhookUrls(store.settings);
-  const urls = stored ?? getDiscordWebhookUrls();
-  return {
-    urls,
-    count: urls.length,
+  const stored = storedDiscordWebhooks(store.settings);
+  const entries = stored ?? getDiscordWebhookUrls().map((url) => ({ name: '', url, enabled: true }));
+  return discordWebhooksPayload(entries, {
     usingEnvFallback: stored == null,
     source: stored == null ? 'env' : 'legacy_settings'
-  };
+  });
 }
 
-export async function saveDiscordWebhooks(urls) {
-  const cleaned = normalizeDiscordWebhookUrls(urls);
+export async function saveDiscordWebhooks(entries) {
+  const cleaned = normalizeDiscordWebhookEntries(entries);
+  const activeUrls = activeDiscordWebhookUrls(cleaned);
   await writeWebhookStore(cleaned);
   await updateStore((store) => {
     store.settings = {
       ...store.settings,
-      discordWebhookUrls: cleaned
+      discordWebhooks: cleaned,
+      discordWebhookUrls: activeUrls
     };
     return store;
   });
-  return {
-    urls: cleaned,
-    count: cleaned.length,
+  return discordWebhooksPayload(cleaned, {
     usingEnvFallback: false,
     source: 'webhook_store'
-  };
+  });
 }
 
 export async function getDiscordWebhookCount() {
@@ -2878,16 +2876,63 @@ function storedDiscordWebhookUrls(settings = {}) {
   return null;
 }
 
-function normalizeDiscordWebhookUrls(urls) {
-  const parsed = parseDiscordWebhookUrls(Array.isArray(urls) ? urls.join('\n') : String(urls || ''));
-  for (const url of parsed) {
-    if (!isValidDiscordWebhookUrl(url)) {
+function storedDiscordWebhooks(settings = {}) {
+  if (Array.isArray(settings.discordWebhooks)) return normalizeDiscordWebhookEntries(settings.discordWebhooks);
+  const urls = storedDiscordWebhookUrls(settings);
+  return urls == null ? null : normalizeDiscordWebhookEntries(urls);
+}
+
+function normalizeDiscordWebhookEntries(value) {
+  const source = Array.isArray(value) ? value : parseDiscordWebhookUrls(String(value || ''));
+  const seen = new Set();
+  const entries = [];
+
+  for (const item of source) {
+    const entry = normalizeDiscordWebhookEntry(item);
+    if (!entry || seen.has(entry.url)) continue;
+    if (!isValidDiscordWebhookUrl(entry.url)) {
       const error = new Error('Discord Webhook URL の形式が正しくありません');
       error.status = 400;
       throw error;
     }
+    seen.add(entry.url);
+    entries.push(entry);
   }
-  return parsed;
+
+  return entries;
+}
+
+function normalizeDiscordWebhookEntry(item) {
+  if (typeof item === 'string') {
+    const url = item.trim();
+    return url ? { name: '', url, enabled: true } : null;
+  }
+
+  if (!item || typeof item !== 'object') return null;
+  const url = String(item.url || '').trim();
+  if (!url) return null;
+  return {
+    name: String(item.name || '').trim(),
+    url,
+    enabled: item.enabled !== false
+  };
+}
+
+function activeDiscordWebhookUrls(entries = []) {
+  return entries.filter((entry) => entry.enabled !== false).map((entry) => entry.url);
+}
+
+function discordWebhooksPayload(entries, extra = {}) {
+  const normalized = normalizeDiscordWebhookEntries(entries);
+  const urls = activeDiscordWebhookUrls(normalized);
+  return {
+    entries: normalized,
+    urls,
+    count: urls.length,
+    totalCount: normalized.length,
+    pausedCount: normalized.length - urls.length,
+    ...extra
+  };
 }
 
 function isValidDiscordWebhookUrl(value) {

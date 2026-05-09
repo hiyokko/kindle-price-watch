@@ -26,9 +26,11 @@ export async function readWebhookStore() {
   }
 }
 
-export async function writeWebhookStore(urls) {
+export async function writeWebhookStore(entries) {
+  const discordWebhooks = normalizeWebhookEntries(entries);
   const next = normalizeWebhookStore({
-    discordWebhookUrls: Array.isArray(urls) ? urls : [],
+    discordWebhooks,
+    discordWebhookUrls: activeWebhookUrls(discordWebhooks),
     updatedAt: new Date().toISOString()
   });
 
@@ -51,11 +53,62 @@ export async function writeWebhookStore(urls) {
 }
 
 function normalizeWebhookStore(value = {}) {
+  const hasEntries =
+    Array.isArray(value.discordWebhooks) ||
+    Array.isArray(value.discordWebhookUrls) ||
+    typeof value.discordWebhookUrls === 'string';
+  const discordWebhooks = hasEntries
+    ? normalizeWebhookEntries(value.discordWebhooks ?? value.discordWebhookUrls)
+    : null;
+
   return {
-    version: 1,
-    discordWebhookUrls: Array.isArray(value.discordWebhookUrls) ? value.discordWebhookUrls : null,
+    version: 2,
+    discordWebhooks,
+    discordWebhookUrls: discordWebhooks ? activeWebhookUrls(discordWebhooks) : null,
     updatedAt: value.updatedAt || ''
   };
+}
+
+function normalizeWebhookEntries(value = []) {
+  const source = Array.isArray(value) ? value : parseWebhookUrls(value);
+  const seen = new Set();
+  const entries = [];
+
+  for (const item of source) {
+    const entry = normalizeWebhookEntry(item);
+    if (!entry || seen.has(entry.url)) continue;
+    seen.add(entry.url);
+    entries.push(entry);
+  }
+
+  return entries;
+}
+
+function normalizeWebhookEntry(item) {
+  if (typeof item === 'string') {
+    const url = item.trim();
+    return url ? { name: '', url, enabled: true } : null;
+  }
+
+  if (!item || typeof item !== 'object') return null;
+  const url = String(item.url || '').trim();
+  if (!url) return null;
+  return {
+    name: String(item.name || '').trim(),
+    url,
+    enabled: item.enabled !== false
+  };
+}
+
+function activeWebhookUrls(entries = []) {
+  return entries.filter((entry) => entry.enabled !== false).map((entry) => entry.url);
+}
+
+function parseWebhookUrls(value) {
+  return String(value || '')
+    .split(/[\s,]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 async function ensureLocalWebhookDir() {
