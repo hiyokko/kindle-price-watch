@@ -3,7 +3,7 @@ import { handleError, readJsonBody, requireMethod, sendJson } from '../src/api-u
 
 export default async function handler(req, res) {
   try {
-    if (!requireMethod(req, res, ['GET', 'PUT'])) return;
+    if (!requireMethod(req, res, ['GET', 'PUT', 'POST'])) return;
 
     if (req.method === 'GET') {
       sendJson(res, 200, await importQueuePayload());

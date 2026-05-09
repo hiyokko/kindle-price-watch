@@ -63,24 +63,30 @@ const els = {
 
 els.addForm.addEventListener('submit', async (event) => {
   event.preventDefault();
-  setBusy(els.addButton, true, '追加中');
+  const input = els.bookInput.value.trim();
+  const existing = existingBookForInput(input);
+  if (existing) {
+    els.bookInput.value = '';
+    setMessage(`${displayBookTitle(existing)} は登録済みです`, 'success');
+    return;
+  }
+
+  setBusy(els.addButton, true, '登録中');
   try {
-    const data = await api('/api/books', {
+    const data = await api('/api/import-queue', {
       method: 'POST',
-      body: { url: els.bookInput.value }
+      body: { append: true, input }
     });
     els.bookInput.value = '';
-    setMessage(addResultMessage(data), 'success');
-    await load();
+    applyImportQueueState(data);
+    renderImportQueue(data);
+    renderBooks();
+    renderSummary();
+    setMessage(queueAddResultMessage(data), 'success');
   } catch (error) {
-    if (error.status === 409) {
-      setMessage('既に登録済みです。一覧を更新しました', 'success');
-      await loadBooks();
-    } else {
-      setMessage(error.message, 'error');
-    }
+    setMessage(error.message, 'error');
   } finally {
-    setBusy(els.addButton, false, '追加');
+    setBusy(els.addButton, false, '追加予約');
   }
 });
 
@@ -176,6 +182,7 @@ els.importQueueForm.addEventListener('submit', async (event) => {
     state.importQueue = data;
     renderImportQueue(data);
     renderSummary();
+    renderBooks();
     setMessage('追加キューを保存しました', 'success');
     els.importQueueDialog.close();
   } catch (error) {
@@ -217,7 +224,7 @@ async function loadSettings() {
   const data = await api('/api/settings');
   state.settings = data.settings;
   state.automation = data.automation || null;
-  state.importQueue = { ...state.importQueue, summary: data.importQueue || state.importQueue.summary };
+  applyImportQueueState(data.importQueue || state.importQueue);
   state.discordConfigured = data.discordConfigured;
   state.discordWebhookCount = data.discordWebhookCount || 0;
   state.discordWebhookTotalCount = data.discordWebhookTotalCount || state.discordWebhookCount;
@@ -226,6 +233,8 @@ async function loadSettings() {
   els.scheduleDisplay.textContent = fixedScheduleLabel(data.settings);
   els.batchInput.value = String(data.settings.batchSize);
   renderSummary();
+  renderBooks();
+  renderBulkControls();
 }
 
 function fixedScheduleLabel(settings = {}) {
@@ -296,6 +305,8 @@ async function openImportQueueDialog() {
 }
 
 function renderImportQueue(data) {
+  applyImportQueueState(data);
+  data = state.importQueue;
   const pending = data.pending || [];
   const completed = data.completed || [];
   const errors = data.errors || [];
@@ -304,7 +315,6 @@ function renderImportQueue(data) {
     completedCount: completed.length,
     errorCount: errors.length
   };
-  state.importQueue = { pending, completed, errors, summary };
   els.importQueueInput.value = pending.map((entry) => entry.input).join('\n');
   els.importQueuePendingCount.textContent = String(summary.pendingCount || 0);
   els.importQueueCompletedCount.textContent = String(summary.completedCount || 0);
@@ -314,6 +324,18 @@ function renderImportQueue(data) {
   els.importQueueErrors.innerHTML = visibleErrors
     .map((entry) => `<div class="import-queue-error"><strong>${escapeHtml(entry.input)}</strong><br>${escapeHtml(entry.error)}</div>`)
     .join('');
+}
+
+function applyImportQueueState(data = {}) {
+  const pending = Array.isArray(data.pending) ? data.pending : state.importQueue?.pending || [];
+  const completed = Array.isArray(data.completed) ? data.completed : state.importQueue?.completed || [];
+  const errors = Array.isArray(data.errors) ? data.errors : state.importQueue?.errors || [];
+  const summary = data.summary || {
+    pendingCount: pending.length,
+    completedCount: completed.length,
+    errorCount: errors.length
+  };
+  state.importQueue = { pending, completed, errors, summary };
 }
 
 function renderWebhookRows(entries) {
@@ -405,7 +427,8 @@ function discordSummaryText() {
 function renderBooks() {
   els.bookGrid.innerHTML = '';
   const groups = sortedGroups(filteredGroups());
-  if (groups.length === 0) {
+  const queued = pendingImportQueueEntries();
+  if (groups.length === 0 && queued.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'book-card';
     empty.innerHTML =
@@ -418,6 +441,9 @@ function renderBooks() {
   }
 
   const fragment = document.createDocumentFragment();
+  for (const entry of queued) {
+    fragment.append(createImportQueueNode(entry));
+  }
   for (const group of groups) {
     if (!group.isSeries) {
       fragment.append(createBookNode(group.books[0]));
@@ -434,8 +460,81 @@ function filteredGroups() {
   return state.groups;
 }
 
+function pendingImportQueueEntries() {
+  if (state.activeFilter !== 'all') return [];
+  return state.importQueue?.pending || [];
+}
+
 function visibleBookIds() {
   return new Set(filteredGroups().flatMap((group) => group.books.map((book) => book.id)));
+}
+
+function createImportQueueNode(entry) {
+  const node = els.template.content.cloneNode(true);
+  const card = node.querySelector('.book-card');
+  const select = node.querySelector('.book-select');
+  const cover = node.querySelector('.cover');
+  const coverLink = node.querySelector('.cover-link');
+  const title = node.querySelector('.book-title');
+  const meta = node.querySelector('.book-meta');
+  const badge = node.querySelector('.badge');
+  const current = node.querySelector('.current-price');
+  const lowest = node.querySelector('.lowest-price');
+  const checked = node.querySelector('.checked-at');
+  const error = node.querySelector('.error-text');
+  const amazon = node.querySelector('.amazon-link');
+  const history = node.querySelector('.history-button');
+  const check = node.querySelector('.check-button');
+  const remove = node.querySelector('.delete-button');
+  const amazonUrl = amazonUrlFromInput(entry.input);
+
+  card.classList.add('pending', 'import-queued');
+  card.dataset.importQueueKey = entry.key || '';
+  select.hidden = true;
+  cover.removeAttribute('src');
+  cover.alt = '';
+  title.textContent = '未追加（自動実行で追加予定）';
+  meta.textContent = entry.input || '';
+  current.textContent = '自動実行待ち';
+  lowest.textContent = '-';
+  checked.textContent = entry.addedAt ? relativeTime(entry.addedAt) : '未実行';
+  error.textContent = '次回のGitHub Actionsで追加・価格取得します';
+  error.classList.add('active');
+  badge.textContent = '追加予定';
+  badge.classList.add('queued');
+
+  if (amazonUrl) {
+    coverLink.href = amazonUrl;
+    amazon.href = amazonUrl;
+  } else {
+    coverLink.removeAttribute('href');
+    coverLink.tabIndex = -1;
+    amazon.hidden = true;
+  }
+
+  history.hidden = true;
+  check.textContent = 'キュー編集';
+  check.addEventListener('click', openImportQueueDialog);
+  remove.textContent = 'キュー削除';
+  remove.addEventListener('click', async () => {
+    try {
+      const nextInputs = (state.importQueue?.pending || [])
+        .filter((item) => item.key !== entry.key)
+        .map((item) => item.input);
+      const data = await api('/api/import-queue', {
+        method: 'PUT',
+        body: { inputs: nextInputs }
+      });
+      renderImportQueue(data);
+      renderBooks();
+      renderSummary();
+      setMessage('追加キューから削除しました', 'success');
+    } catch (err) {
+      setMessage(err.message, 'error');
+    }
+  });
+
+  return node;
 }
 
 function createSeriesNode(group) {
@@ -712,32 +811,11 @@ function setMessage(text, tone = '') {
   else delete els.message.dataset.tone;
 }
 
-function addResultMessage(data) {
-  if (data.mode === 'kindle_series') {
-    if (data.imported === 0 && data.skippedDuplicates > 0) {
-      const updated = data.updatedDuplicates > 0 ? `、既存${data.updatedDuplicates}冊を補完` : '';
-      return `このシリーズは登録済みです（既存${data.skippedDuplicates}冊を確認${updated}）`;
-    }
-    const skipped = data.skippedDuplicates > 0 ? `、重複${data.skippedDuplicates}冊をスキップ` : '';
-    const updated = data.updatedDuplicates > 0 ? `、既存${data.updatedDuplicates}冊を補完` : '';
-    const incomplete = Array.isArray(data.errors) && data.errors.some((entry) => /series incomplete/i.test(String(entry)));
-    const incompleteText = incomplete ? '（一部未取得。次回以降も補完します）' : '';
-    return `シリーズから${data.imported}冊を追加しました${skipped}${updated}${incompleteText}`;
+function queueAddResultMessage(data) {
+  if (Number(data.alreadyPending || 0) > 0 && Number(data.added || 0) === 0) {
+    return 'この入力は追加キューに登録済みです';
   }
-
-  if (data.book) {
-    if (data.imported === 0 && data.skippedDuplicates > 0) {
-      return data.updatedDuplicates > 0
-        ? `${displayBookTitle(data.book)} は登録済みです。既存データを更新しました`
-        : `${displayBookTitle(data.book)} は登録済みです`;
-    }
-    if (data.book.currentPrice == null || visibleBookError(data.book)) {
-      return `${displayBookTitle(data.book)} を追加しました。詳細は次回チェックで再取得します`;
-    }
-    return `${data.book.title} を追加しました`;
-  }
-
-  return `${data.imported || 0}冊を追加しました`;
+  return '追加キューに登録しました。次回の自動実行で追加します';
 }
 
 function groupBooks(books) {
@@ -907,6 +985,45 @@ function displayBookTitle(book) {
 
 function isKindleBookAsin(asin) {
   return /^B[A-Z0-9]{9}$/i.test(String(asin || ''));
+}
+
+function existingBookForInput(input) {
+  const asin = extractAsinFromInput(input);
+  if (asin) {
+    const existing = state.books.find((book) => String(book.asin || '').toUpperCase() === asin);
+    if (existing) return existing;
+  }
+
+  const normalizedUrl = normalizeInputUrl(input);
+  if (!normalizedUrl) return null;
+  return state.books.find((book) => {
+    return [book.amazonUrl, book.sourceUrl].some((url) => normalizeInputUrl(url) === normalizedUrl);
+  }) || null;
+}
+
+function amazonUrlFromInput(input) {
+  const text = String(input || '').trim();
+  if (/^https?:\/\//i.test(text)) return text;
+  const asin = extractAsinFromInput(text);
+  return asin ? `https://www.amazon.co.jp/dp/${asin}` : '';
+}
+
+function extractAsinFromInput(input) {
+  const text = String(input || '').trim();
+  const match = text.match(/\b(B[A-Z0-9]{9})\b/i);
+  return match ? match[1].toUpperCase() : '';
+}
+
+function normalizeInputUrl(input) {
+  const text = String(input || '').trim();
+  if (!/^https?:\/\//i.test(text)) return '';
+  try {
+    const url = new URL(text);
+    url.hash = '';
+    return url.toString();
+  } catch {
+    return text;
+  }
 }
 
 function escapeHtml(value) {

@@ -101,9 +101,9 @@ Vercel Hobbyでは登録時に全巻の詳細取得まで行うとタイムア�
 
 ## 追加キュー
 
-Blob Advanced Operationsを増やさずに本を追加したい場合は、GUIで都度保存せず、`data/import-queue.txt` にAmazon Kindle URLまたはASINを1行ずつ追加します。次回のGitHub Actions実行時に未処理の行だけを取り込み、価格チェック・シリーズ新刊探索と同じ最後の一括保存に含めます。環境変数で渡す場合は `BOOK_IMPORT_INPUTS` に改行区切りまたはJSON配列を設定できます。キューファイルを使わない場合は `BOOK_IMPORT_QUEUE_PATH=false` にします。
+GUIの通常追加は即時取得せず、Blobの `importQueue.pending` に「未追加（自動実行で追加予定）」として保存します。次回のGitHub Actions実行時に未処理の行だけを取り込み、価格チェック・シリーズ新刊探索と同じ最後の一括保存に含めます。環境変数で渡す場合は `BOOK_IMPORT_INPUTS` に改行区切りまたはJSON配列を設定できます。キューファイルを使わない場合は `BOOK_IMPORT_QUEUE_PATH=false` にします。
 
-画面上部の「追加キュー」からも次回追加予定のURL/ASINを保存できます。画面で保存したキューはBlobの `importQueue.pending` に入り、`data/import-queue.txt` や `BOOK_IMPORT_INPUTS` と同じく次回のGitHub Actions実行時に処理されます。成功した入力はpendingから外れ、直近の処理済み・エラー履歴は画面で確認できます。
+画面上部の「追加キュー」からも次回追加予定のURL/ASINをまとめて保存できます。画面で保存したキューは `data/import-queue.txt` や `BOOK_IMPORT_INPUTS` と同じく次回のGitHub Actions実行時に処理されます。成功した入力はpendingから外れ、直近の処理済み・エラー履歴は画面で確認できます。
 
 ## 定期実行
 

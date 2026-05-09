@@ -557,6 +557,24 @@ button:disabled {
   border-color: #ecd6a4;
 }
 
+.book-card.import-queued {
+  border-color: #b8d9ea;
+  background: #f8fcfd;
+}
+
+.book-card.import-queued .cover-link {
+  pointer-events: none;
+}
+
+.book-card.import-queued .book-meta {
+  overflow-wrap: anywhere;
+}
+
+.book-card.import-queued .book-select,
+.book-card.import-queued .history-button {
+  display: none;
+}
+
 .book-select {
   position: absolute;
   top: 10px;
@@ -649,6 +667,11 @@ button:disabled {
 .badge.best {
   background: #fff7e8;
   color: var(--warning);
+}
+
+.badge.queued {
+  background: #e9f7fb;
+  color: #226f7d;
 }
 
 .price-strip {

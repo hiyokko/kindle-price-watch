@@ -7,6 +7,7 @@ import {
   deleteBook,
   deleteBooks,
   deleteSeries,
+  enqueueBookImportQueue,
   getDiscordWebhooks,
   getBookImportQueue,
   getHistory,
@@ -90,6 +91,10 @@ export async function importQueuePayload() {
 }
 
 export async function saveImportQueuePayload(body = {}) {
+  if (body.append === true || body.mode === 'append') {
+    return enqueueBookImportQueue(body.input || body.url || body.asin || body.inputs || body.text || body.urls || '');
+  }
+
   return saveBookImportQueue(Array.isArray(body.inputs) ? body.inputs : body.text || body.urls || '');
 }
 

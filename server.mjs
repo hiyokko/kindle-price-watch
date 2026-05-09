@@ -115,7 +115,7 @@ async function handleApi(req, res, url) {
     return;
   }
 
-  if (method === 'PUT' && url.pathname === '/api/import-queue') {
+  if ((method === 'PUT' || method === 'POST') && url.pathname === '/api/import-queue') {
     sendJson(res, 200, await saveImportQueuePayload(await readBody(req)));
     return;
   }

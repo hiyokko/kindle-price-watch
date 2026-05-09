@@ -2955,7 +2955,7 @@ export async function getSettingsSummary() {
   return {
     settings: mergedRuntimeSettings(store.settings),
     automation: store.automation || {},
-    importQueue: importQueueSummary(store.importQueue),
+    importQueue: publicBookImportQueue(store.importQueue),
     discordConfigured: webhooks.count > 0,
     discordWebhookCount: webhooks.count,
     discordWebhookTotalCount: webhooks.totalCount,
@@ -2989,6 +2989,55 @@ export async function saveBookImportQueue(inputs) {
       };
     });
     result = publicBookImportQueue(store.importQueue);
+    return store;
+  });
+
+  return result;
+}
+
+export async function enqueueBookImportQueue(inputs) {
+  const parsedInputs = Array.isArray(inputs)
+    ? inputs.map(normalizeBookImportInput).filter(Boolean)
+    : parseBookImportInputs(inputs);
+  const deduped = [...new Map(parsedInputs.map((input) => [bookImportQueueKey(input), input])).values()];
+  if (deduped.length === 0) {
+    const error = new Error('Amazon Kindle URL または ASIN を入力してください');
+    error.status = 400;
+    throw error;
+  }
+
+  const now = new Date().toISOString();
+  let result;
+  let added = 0;
+
+  await updateStore((store) => {
+    store.importQueue = store.importQueue || { pending: [], completed: [], errors: [] };
+    const pending = new Map((store.importQueue.pending || []).map((entry) => [entry.key, entry]));
+    const completed = new Map((store.importQueue.completed || []).map((entry) => [entry.key, entry]));
+    const errors = new Map((store.importQueue.errors || []).map((entry) => [entry.key, entry]));
+
+    for (const input of deduped) {
+      const key = bookImportQueueKey(input);
+      const previous = pending.get(key);
+      if (!previous) added += 1;
+      pending.set(key, {
+        key,
+        input,
+        addedAt: previous?.addedAt || now
+      });
+      completed.delete(key);
+      errors.delete(key);
+    }
+
+    store.importQueue.pending = [...pending.values()];
+    store.importQueue.completed = [...completed.values()].slice(-200);
+    store.importQueue.errors = [...errors.values()].slice(-100);
+    result = {
+      ...publicBookImportQueue(store.importQueue),
+      queued: deduped.length,
+      added,
+      alreadyPending: Math.max(0, deduped.length - added)
+    };
     return store;
   });
 
