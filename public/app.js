@@ -913,14 +913,13 @@ function seriesTotalLabel(group) {
 
 function seriesTotalMetrics(group) {
   const pricedBooks = group.books.filter((book) => book.currentPrice != null);
-  const lowestBooks = group.books.filter((book) => book.lowestEffectivePrice != null);
+  const seriesLowest = observedSeriesLowest(group);
   const totalPrice = pricedBooks.reduce((sum, book) => sum + Number(book.currentPrice || 0), 0);
   const totalPoints = pricedBooks.reduce((sum, book) => sum + Number(book.currentPoints || 0), 0);
   const effectiveTotal = pricedBooks.reduce(
     (sum, book) => sum + Number(book.effectivePrice ?? Math.max(0, (book.currentPrice || 0) - (book.currentPoints || 0))),
     0
   );
-  const lowestEffectiveTotal = lowestBooks.reduce((sum, book) => sum + Number(book.lowestEffectivePrice || 0), 0);
   const missing = group.books.length - pricedBooks.length;
   const unregistered = Math.max(0, (group.expectedCount || group.books.length) - group.books.length);
 
@@ -929,12 +928,19 @@ function seriesTotalMetrics(group) {
     totalPrice,
     totalPoints,
     effectiveTotal,
-    lowestEffectiveTotal,
-    lowestPricedCount: lowestBooks.length,
+    lowestEffectiveTotal: seriesLowest,
+    lowestPricedCount: seriesLowest == null ? 0 : group.books.length,
     missing,
     unregistered,
     complete: pricedBooks.length > 0 && missing === 0 && unregistered === 0
   };
+}
+
+function observedSeriesLowest(group) {
+  const values = group.books
+    .map((book) => Number(book.seriesLowestEffectiveTotal))
+    .filter((value) => Number.isFinite(value));
+  return values.length ? Math.min(...values) : null;
 }
 
 function seriesStatusLabel(group) {

@@ -39,7 +39,8 @@ const SUSPICIOUS_BULK_SERIES_COUNT_MIN = 20;
 
 export async function listBooks() {
   const store = await readStoreWithPriceRepairs();
-  return store.books.map(publicBook).sort(sortBooks);
+  const seriesHistory = seriesHistorySummaries(store);
+  return store.books.map((book) => publicBookWithSeriesHistory(book, seriesHistory)).sort(sortBooks);
 }
 
 async function readStoreWithPriceRepairs(options = {}) {
@@ -1702,6 +1703,11 @@ function repairStorePriceState(store, options = {}) {
     summary.removedHistory += compacted.removed;
   }
 
+  const compactedSeries = compactSeriesPriceHistory(store);
+  if (compactedSeries.removed > 0) {
+    summary.changed = true;
+  }
+
   return summary;
 }
 
@@ -1950,6 +1956,7 @@ function removeStoreBooksById(store, ids) {
   store.books = store.books.filter((book) => !ids.has(book.id));
   store.priceHistory = store.priceHistory.filter((entry) => !ids.has(entry.bookId));
   store.notifications = store.notifications.filter((entry) => !ids.has(entry.bookId));
+  compactSeriesPriceHistory(store);
   resetCursorIfDeleted(store, ids);
 }
 
@@ -2116,6 +2123,7 @@ export async function deleteBooks(ids) {
     store.books = store.books.filter((book) => !targetIds.has(book.id));
     store.priceHistory = store.priceHistory.filter((entry) => !targetIds.has(entry.bookId));
     store.notifications = store.notifications.filter((entry) => !targetIds.has(entry.bookId));
+    compactSeriesPriceHistory(store);
     resetCursorIfDeleted(store, targetIds);
     return store;
   });
@@ -2129,6 +2137,7 @@ export async function deleteAllBooks() {
     deleted = store.books.length;
     store.books = [];
     store.priceHistory = [];
+    store.seriesPriceHistory = [];
     store.notifications = [];
     store.checkCursor = emptyCheckCursor();
     return store;
@@ -2151,12 +2160,18 @@ export async function deleteSeries(seriesKey, sourceUrl = '') {
 
     store.books = store.books.filter((book) => !targetIds.has(book.id));
     store.priceHistory = store.priceHistory.filter((entry) => !targetIds.has(entry.bookId));
+    store.seriesPriceHistory = store.seriesPriceHistory.filter((entry) => {
+      if (seriesKey && (entry.seriesKey === seriesKey || entry.key === seriesKey)) return false;
+      if (sourceUrl && entry.sourceUrl === sourceUrl) return false;
+      return true;
+    });
     store.notifications = store.notifications.filter((entry) => {
       if (targetIds.has(entry.bookId)) return false;
       if (seriesKey && (entry.seriesKey === seriesKey || entry.notificationKey === seriesKey)) return false;
       if (sourceUrl && entry.notificationKey === `series:url:${sourceUrl}`) return false;
       return true;
     });
+    compactSeriesPriceHistory(store);
     resetCursorIfDeleted(store, targetIds);
     return store;
   });
@@ -3257,7 +3272,9 @@ async function sendDeferredSeriesNotifications(store, baselines, options = {}) {
   const settings = mergedRuntimeSettings(store.settings);
   const now = new Date().toISOString();
   for (const baseline of baselines.values()) {
-    const after = seriesAggregateSnapshot(store, baseline.scope, { freshAfter: baseline.freshAfter });
+    let after = seriesAggregateSnapshot(store, baseline.scope, { freshAfter: baseline.freshAfter });
+    appendSeriesPriceHistoryEntry(store, after, now);
+    after = seriesAggregateSnapshot(store, baseline.scope, { freshAfter: baseline.freshAfter });
     const representativeBook = after.representativeBook || baseline.representativeBook;
     if (!representativeBook) continue;
 
@@ -3736,6 +3753,70 @@ function compactPriceHistory(store) {
   return { removed: originalCount - store.priceHistory.length };
 }
 
+function compactSeriesPriceHistory(store) {
+  if (!Array.isArray(store.seriesPriceHistory)) {
+    store.seriesPriceHistory = [];
+    return { removed: 0 };
+  }
+  if (store.seriesPriceHistory.length === 0) return { removed: 0 };
+
+  const originalCount = store.seriesPriceHistory.length;
+  const contexts = activeSeriesHistoryContexts(store);
+  const maxEntriesPerSeries = floorNumber(process.env.SERIES_PRICE_HISTORY_MAX_ENTRIES_PER_SERIES, 1, 120);
+  const bySeries = new Map();
+
+  for (const entry of store.seriesPriceHistory) {
+    const context = seriesHistoryContextForEntry(entry, contexts);
+    if (!context) continue;
+    if (Number(entry.bookCount || 0) !== context.bookCount) continue;
+    if (nullableNumber(entry.effectivePriceTotal) == null) continue;
+    if (!bySeries.has(context.key)) bySeries.set(context.key, []);
+    bySeries.get(context.key).push({ ...entry, key: context.key });
+  }
+
+  const compacted = [];
+  for (const entries of bySeries.values()) {
+    const reduced = [];
+    for (const entry of entries.sort(compareSeriesHistoryEntriesAscending)) {
+      const previous = reduced[reduced.length - 1];
+      if (previous && sameSeriesPriceHistoryState(previous, entry)) continue;
+      reduced.push(entry);
+    }
+
+    const selected = reduced.slice(-maxEntriesPerSeries);
+    const lowest = lowestSeriesPriceHistoryEntry(reduced);
+    if (lowest && !selected.includes(lowest)) selected.unshift(lowest);
+    compacted.push(...selected);
+  }
+
+  store.seriesPriceHistory = compacted.sort(compareSeriesHistoryEntriesAscending);
+  return { removed: originalCount - store.seriesPriceHistory.length };
+}
+
+function activeSeriesHistoryContexts(store) {
+  const contexts = [];
+  const seen = new Set();
+  for (const book of store.books || []) {
+    const scope = notificationSeriesScope(book);
+    if (!scope || seen.has(scope.key)) continue;
+    const bookCount = seriesBooksForNotification(store, scope).length;
+    contexts.push({ ...scope, bookCount });
+    seen.add(scope.key);
+  }
+  return contexts;
+}
+
+function seriesHistoryContextForEntry(entry, contexts) {
+  return contexts.find((context) => seriesHistoryEntryMatchesScope(entry, context)) || null;
+}
+
+function seriesHistoryEntryMatchesScope(entry, scope) {
+  if (!entry || !scope) return false;
+  if (entry.seriesKey && scope.seriesKey && entry.seriesKey === scope.seriesKey) return true;
+  if (entry.sourceUrl && scope.sourceUrl && entry.sourceUrl === scope.sourceUrl) return true;
+  return Boolean(entry.key && scope.key && entry.key === scope.key);
+}
+
 function samePriceHistoryState(left, right) {
   return (
     nullableNumber(left.price) === nullableNumber(right.price) &&
@@ -3743,6 +3824,30 @@ function samePriceHistoryState(left, right) {
     nullableNumber(left.effectivePrice) === nullableNumber(right.effectivePrice) &&
     nullableNumber(left.listPrice) === nullableNumber(right.listPrice)
   );
+}
+
+function sameSeriesPriceHistoryState(left, right) {
+  return (
+    nullableNumber(left.currentPriceTotal) === nullableNumber(right.currentPriceTotal) &&
+    nullableNumber(left.currentPointsTotal) === nullableNumber(right.currentPointsTotal) &&
+    nullableNumber(left.effectivePriceTotal) === nullableNumber(right.effectivePriceTotal) &&
+    Number(left.bookCount || 0) === Number(right.bookCount || 0) &&
+    Number(left.pricedCount || 0) === Number(right.pricedCount || 0)
+  );
+}
+
+function compareSeriesHistoryEntriesAscending(left, right) {
+  return new Date(left.checkedAt || 0) - new Date(right.checkedAt || 0);
+}
+
+function lowestSeriesPriceHistoryEntry(entries) {
+  return [...entries]
+    .filter((entry) => nullableNumber(entry.effectivePriceTotal) != null)
+    .sort((left, right) => {
+      const priceDiff = Number(left.effectivePriceTotal) - Number(right.effectivePriceTotal);
+      if (priceDiff !== 0) return priceDiff;
+      return new Date(right.checkedAt || 0) - new Date(left.checkedAt || 0);
+    })[0] || null;
 }
 
 function priceStateForComparison(book) {
@@ -3764,6 +3869,45 @@ function nullableNumber(value) {
   if (value == null || value === '') return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
+}
+
+function publicBookWithSeriesHistory(book, seriesHistory) {
+  const result = publicBook(book);
+  const scope = notificationSeriesScope(book);
+  const summary = scope ? seriesHistory.get(scope.key) : null;
+  if (!summary) return result;
+
+  return {
+    ...result,
+    seriesLowestEffectiveTotal: summary.lowestEffectiveTotal,
+    seriesLowestCheckedAt: summary.lowestCheckedAt,
+    seriesLatestObservedEffectiveTotal: summary.latestObservedEffectiveTotal,
+    seriesLatestObservedAt: summary.latestObservedAt,
+    seriesObservedBookCount: summary.bookCount,
+    seriesObservedHistoryCount: summary.historyCount
+  };
+}
+
+function seriesHistorySummaries(store) {
+  const summaries = new Map();
+  const seen = new Set();
+  for (const book of store.books || []) {
+    const scope = notificationSeriesScope(book);
+    if (!scope || seen.has(scope.key)) continue;
+    const snapshot = seriesAggregateSnapshot(store, scope);
+    if (snapshot.observedHistoryCount > 0) {
+      summaries.set(scope.key, {
+        lowestEffectiveTotal: snapshot.lowestEffectiveTotal,
+        lowestCheckedAt: snapshot.lowestObservedAt,
+        latestObservedEffectiveTotal: snapshot.latestObservedEffectiveTotal,
+        latestObservedAt: snapshot.latestObservedAt,
+        bookCount: snapshot.bookCount,
+        historyCount: snapshot.observedHistoryCount
+      });
+    }
+    seen.add(scope.key);
+  }
+  return summaries;
 }
 
 function notificationSeriesScope(book) {
@@ -3788,7 +3932,10 @@ function seriesAggregateSnapshot(store, scope, options = {}) {
   const currentPrices = books.map((book) => nullableNumber(book.currentPrice));
   const currentPoints = books.map((book) => nullableNumber(book.currentPoints) ?? 0);
   const currentEffectivePrices = books.map((book) => nullableNumber(book.effectivePrice));
-  const lowestEffectivePrices = books.map((book) => nullableNumber(book.lowestEffectivePrice));
+  const checkedTimes = books
+    .map((book) => timestampMs(book.lastCheckedAt))
+    .filter((time) => time > 0)
+    .sort((left, right) => left - right);
   const freshAfterMs = new Date(options.freshAfter || 0).getTime();
   const requiresFreshCheck = Number.isFinite(freshAfterMs) && freshAfterMs > 0;
   const freshCheckedCount = requiresFreshCheck
@@ -3798,7 +3945,7 @@ function seriesAggregateSnapshot(store, scope, options = {}) {
       }).length
     : books.length;
 
-  return {
+  const snapshot = {
     scope,
     key: scope?.key || seriesKey || sourceUrl,
     seriesKey,
@@ -3810,12 +3957,92 @@ function seriesAggregateSnapshot(store, scope, options = {}) {
     pricedCount: currentEffectivePrices.filter((value) => value != null).length,
     freshCheckedCount,
     requiresFreshCheck,
-    lowestPricedCount: lowestEffectivePrices.filter((value) => value != null).length,
     currentPriceTotal: sumWhenComplete(currentPrices),
     currentPointsTotal: currentPrices.every((value) => value != null) ? sumNumbers(currentPoints) : null,
     currentEffectiveTotal: sumWhenComplete(currentEffectivePrices),
-    lowestEffectiveTotal: sumWhenComplete(lowestEffectivePrices)
+    observedFrom: checkedTimes.length === books.length ? new Date(checkedTimes[0]).toISOString() : '',
+    observedTo: checkedTimes.length === books.length ? new Date(checkedTimes[checkedTimes.length - 1]).toISOString() : ''
   };
+
+  const observed = seriesObservedPriceStats(store, snapshot);
+  snapshot.observedHistoryCount = observed.count;
+  snapshot.latestObservedEffectiveTotal = observed.latest?.effectivePriceTotal ?? null;
+  snapshot.latestObservedAt = observed.latest?.checkedAt || '';
+  snapshot.lowestEffectiveTotal = observed.lowest?.effectivePriceTotal ?? null;
+  snapshot.lowestObservedAt = observed.lowest?.checkedAt || '';
+  snapshot.lowestPricedCount = observed.lowest ? snapshot.bookCount : 0;
+  snapshot.currentTotalRecordable = canRecordSeriesAggregateSnapshot(snapshot);
+  snapshot.currentTotalObserved =
+    snapshot.currentTotalRecordable &&
+    observed.latest &&
+    nullableNumber(observed.latest.effectivePriceTotal) === nullableNumber(snapshot.currentEffectiveTotal);
+
+  return snapshot;
+}
+
+function appendSeriesPriceHistoryEntry(store, snapshot, checkedAt) {
+  if (!canRecordSeriesAggregateSnapshot(snapshot)) return false;
+  const entry = seriesPriceHistoryEntry(snapshot, checkedAt);
+  store.seriesPriceHistory ||= [];
+  const latest = latestSeriesPriceHistoryEntry(store, snapshot);
+  if (latest && sameSeriesPriceHistoryState(latest, entry)) return false;
+  store.seriesPriceHistory.push(entry);
+  return true;
+}
+
+function seriesPriceHistoryEntry(snapshot, checkedAt) {
+  return {
+    id: crypto.randomUUID(),
+    key: snapshot.key,
+    seriesKey: snapshot.seriesKey,
+    sourceUrl: snapshot.sourceUrl,
+    seriesName: snapshot.seriesName,
+    bookCount: snapshot.bookCount,
+    pricedCount: snapshot.pricedCount,
+    currentPriceTotal: snapshot.currentPriceTotal,
+    currentPointsTotal: snapshot.currentPointsTotal || 0,
+    effectivePriceTotal: snapshot.currentEffectiveTotal,
+    observedFrom: snapshot.observedFrom || '',
+    observedTo: snapshot.observedTo || '',
+    checkedAt: snapshot.observedTo || checkedAt || new Date().toISOString()
+  };
+}
+
+function canRecordSeriesAggregateSnapshot(snapshot) {
+  return Boolean(
+    snapshot &&
+      snapshot.bookCount > 0 &&
+      snapshot.pricedCount === snapshot.bookCount &&
+      snapshot.currentEffectiveTotal != null &&
+      (!snapshot.requiresFreshCheck || snapshot.freshCheckedCount === snapshot.bookCount)
+  );
+}
+
+function seriesObservedPriceStats(store, snapshot) {
+  const entries = seriesPriceHistoryEntriesForSnapshot(store, snapshot);
+  return {
+    count: entries.length,
+    latest: latestSeriesPriceHistoryEntryFromEntries(entries),
+    lowest: lowestSeriesPriceHistoryEntry(entries)
+  };
+}
+
+function latestSeriesPriceHistoryEntry(store, snapshot) {
+  return latestSeriesPriceHistoryEntryFromEntries(seriesPriceHistoryEntriesForSnapshot(store, snapshot));
+}
+
+function latestSeriesPriceHistoryEntryFromEntries(entries) {
+  return [...entries].sort((left, right) => new Date(right.checkedAt || 0) - new Date(left.checkedAt || 0))[0] || null;
+}
+
+function seriesPriceHistoryEntriesForSnapshot(store, snapshot) {
+  if (!Array.isArray(store.seriesPriceHistory) || !snapshot) return [];
+  return store.seriesPriceHistory.filter((entry) => {
+    if (!seriesHistoryEntryMatchesScope(entry, snapshot)) return false;
+    if (Number(entry.bookCount || 0) !== Number(snapshot.bookCount || 0)) return false;
+    if (Number(entry.pricedCount || entry.bookCount || 0) !== Number(snapshot.bookCount || 0)) return false;
+    return nullableNumber(entry.effectivePriceTotal) != null;
+  });
 }
 
 function seriesBooksForNotification(store, scope) {
@@ -3861,8 +4088,10 @@ function detectSeriesEvents({ before, after, settings }) {
   if (!before || !after || after.currentEffectiveTotal == null) return [];
   if (after.bookCount === 0 || after.pricedCount !== after.bookCount) return [];
   if (after.requiresFreshCheck && after.freshCheckedCount !== after.bookCount) return [];
+  if (!after.currentTotalObserved) return [];
 
   const events = [];
+  const previousObservedEffectiveTotal = before.latestObservedEffectiveTotal;
   const eventBase = {
     scope: 'series',
     notificationKey: after.key,
@@ -3879,13 +4108,12 @@ function detectSeriesEvents({ before, after, settings }) {
   if (
     settings.notifyOnBestEver &&
     before.lowestEffectiveTotal != null &&
-    before.lowestPricedCount === before.bookCount &&
     after.currentEffectiveTotal < before.lowestEffectiveTotal
   ) {
     events.push({
       ...eventBase,
       type: 'best_ever',
-      previousEffectivePrice: before.currentEffectiveTotal,
+      previousEffectivePrice: previousObservedEffectiveTotal,
       previousLowestEffectivePrice: before.lowestEffectiveTotal,
       dropPercent: percentDrop(before.lowestEffectiveTotal, after.currentEffectiveTotal)
     });
@@ -3893,16 +4121,15 @@ function detectSeriesEvents({ before, after, settings }) {
 
   if (
     settings.notifyOnPriceDrop &&
-    before.currentEffectiveTotal != null &&
-    before.pricedCount === before.bookCount &&
-    after.currentEffectiveTotal < before.currentEffectiveTotal
+    previousObservedEffectiveTotal != null &&
+    after.currentEffectiveTotal < previousObservedEffectiveTotal
   ) {
-    const dropPercent = percentDrop(before.currentEffectiveTotal, after.currentEffectiveTotal);
+    const dropPercent = percentDrop(previousObservedEffectiveTotal, after.currentEffectiveTotal);
     if (dropPercent >= settings.notificationThreshold) {
       events.push({
         ...eventBase,
         type: 'price_drop',
-        previousEffectivePrice: before.currentEffectiveTotal,
+        previousEffectivePrice: previousObservedEffectiveTotal,
         dropPercent
       });
     }

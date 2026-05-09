@@ -24,6 +24,7 @@ const defaultStore = {
   },
   books: [],
   priceHistory: [],
+  seriesPriceHistory: [],
   notifications: [],
   automation: {
     lastCronStartedAt: '',
@@ -81,6 +82,7 @@ function mergeStore(store) {
     settings: mergeSettings(store.settings),
     books: Array.isArray(store.books) ? store.books.map(normalizeBook) : [],
     priceHistory: Array.isArray(store.priceHistory) ? store.priceHistory : [],
+    seriesPriceHistory: Array.isArray(store.seriesPriceHistory) ? store.seriesPriceHistory : [],
     notifications: Array.isArray(store.notifications) ? store.notifications : [],
     automation: normalizeAutomation(store.automation),
     checkCursor: normalizeCheckCursor(store.checkCursor),
@@ -321,6 +323,7 @@ function compactStoreForWrite(store) {
     seriesDiscoveryCursor: compactAgainstDefaults(store.seriesDiscoveryCursor, defaultStore.seriesDiscoveryCursor),
     books: (store.books || []).map(compactBookForWrite),
     priceHistory: (store.priceHistory || []).map(compactHistoryEntryForWrite),
+    seriesPriceHistory: (store.seriesPriceHistory || []).map(compactSeriesHistoryEntryForWrite),
     notifications: (store.notifications || []).map(compactObject),
     importQueue: compactImportQueueForWrite(store.importQueue)
   });
@@ -381,6 +384,16 @@ function compactHistoryEntryForWrite(entry) {
     points: Number(entry.points || 0) === 0 ? undefined : entry.points,
     listPrice: entry.listPrice == null ? undefined : entry.listPrice,
     provider: emptyToUndefined(entry.provider)
+  });
+}
+
+function compactSeriesHistoryEntryForWrite(entry) {
+  return compactObject({
+    ...entry,
+    sourceUrl: emptyToUndefined(entry.sourceUrl),
+    currentPointsTotal: Number(entry.currentPointsTotal || 0) === 0 ? undefined : entry.currentPointsTotal,
+    observedFrom: emptyToUndefined(entry.observedFrom),
+    observedTo: emptyToUndefined(entry.observedTo)
   });
 }
 
