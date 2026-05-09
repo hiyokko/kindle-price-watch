@@ -60,7 +60,7 @@ vercel blob put data/store.json --pathname kindle-price-watch/store.json --acces
 
 Vercel Cronは使わず、`.github/workflows/kindle-price-check.yml` で価格チェックとシリーズ新刊探索をGitHub Actions上で実行します。VercelはWeb GUIとAPI、Vercel Blobはデータ保存先として使います。Vercel上の常駐スケジューラは `AUTO_CHECK_ENABLED=false` のままにしてください。GitHub Actionsは毎日JST 03:54と15:54に起動し、GitHub側の欠落対策として04:07と16:07にもバックアップ起動します。バックアップは同じ実行枠の本実行が開始または完了済みなら価格チェックを行わずに終了します。
 
-チェック対象は未取得・未検証シリーズ価格の破棄後・シリーズ内の未取得巻を優先します。Amazon側の一時エラーやブロック直後の本は短時間の再試行を避け、アクセス回数を増やさずに取得済み件数を戻す方針です。価格通知は、単巻価格ではなくシリーズ全巻の直近取得が揃った場合にシリーズ合計で判定します。シリーズの過去最安合計は各巻の過去最安の寄せ集めではなく、`seriesPriceHistory` に実際に観測したシリーズ合計を保存し、その最安で判定します。大型シリーズで数冊だけ未取得のまま残ることを避けるため、チェック計画では同一シリーズの未取得・古い巻を同じバッチに寄せ、直近 `SERIES_TOTAL_OBSERVATION_WINDOW_HOURS` 時間以内に全巻が揃った場合も同一観測として扱います。
+チェック対象は未取得・未検証シリーズ価格の破棄後・シリーズ内の未取得巻を優先します。Amazon側の一時エラーやブロック直後の本は短時間の再試行を避け、アクセス回数を増やさずに取得済み件数を戻す方針です。価格通知は、単巻価格ではなくシリーズ全巻の直近取得が揃った場合にシリーズ合計で判定します。シリーズの過去最安合計は各巻の過去最安の寄せ集めではなく、`seriesPriceHistory` に実際に観測したシリーズ合計を保存し、その最安で判定します。大型シリーズで数冊だけ未取得のまま残ることを避けるため、チェック計画では同一シリーズの未取得・古い巻を同じバッチに寄せ、直近 `SERIES_TOTAL_OBSERVATION_RUNS` 回の実行枠内に全巻が揃った場合も同一観測として扱います。
 
 GitHubリポジトリの Settings > Secrets and variables > Actions に、少なくとも次を登録します。
 
@@ -111,7 +111,7 @@ GitHub Actionsでは毎日JST 03:54と15:54にWorkflowを起動します。ア�
 
 Blob Advanced Operationsを抑えるため、定期実行では本ごとに保存せず、価格チェック・通知状態・シリーズ合計価格履歴・シリーズ新刊探索結果・カーソルをメモリ上で更新して最後にまとめて保存します。正常終了またはアプリ側のランタイム停止判定で終了した場合は、最後に確認できた本を `checkCursor` として保存し、次回はその続きから確認します。
 
-Fast Origin Transferを抑えるため、Blob読み込みはプロセス内で短時間キャッシュします。`BLOB_STORE_MEMORY_CACHE_MS` でキャッシュ時間を調整できます。また、価格履歴は価格・ポイント・実質価格・定価が変わった時だけ追加し、単巻は `PRICE_HISTORY_MAX_ENTRIES_PER_BOOK` 件、シリーズ合計は `SERIES_PRICE_HISTORY_MAX_ENTRIES_PER_SERIES` 件まで保持します。シリーズ合計履歴では上限外でも観測済み最安のエントリを保持します。`SERIES_TOTAL_OBSERVATION_WINDOW_HOURS` はシリーズ合計として同一観測扱いする直近時間で、未設定時は8時間です。
+Fast Origin Transferを抑えるため、Blob読み込みはプロセス内で短時間キャッシュします。`BLOB_STORE_MEMORY_CACHE_MS` でキャッシュ時間を調整できます。また、価格履歴は価格・ポイント・実質価格・定価が変わった時だけ追加し、単巻は `PRICE_HISTORY_MAX_ENTRIES_PER_BOOK` 件、シリーズ合計は `SERIES_PRICE_HISTORY_MAX_ENTRIES_PER_SERIES` 件まで保持します。シリーズ合計履歴では上限外でも観測済み最安のエントリを保持します。`SERIES_TOTAL_OBSERVATION_RUNS` はシリーズ合計として同一観測扱いする直近実行枠数で、未設定時は5回です。
 
 定期実行時は、登録済みシリーズのAmazonシリーズページも巡回し、新しい巻が見つかった場合は自動で追加します。明示的に完結が確認できたシリーズには完結フラグを保存し、次回以降の新刊探索から除外します。`SERIES_DISCOVERY_BATCH_SIZE` を設定すると、1回の実行で探索するシリーズ数を調整できます。`SERIES_DISCOVERY_INTERVAL_HOURS` の既定値は24時間です。
 

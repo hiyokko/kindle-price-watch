@@ -2399,7 +2399,7 @@ export async function runDueChecks(options = {}) {
     const pacing = checkPacing();
     const getWebhookUrls = options.notify === false ? null : sharedWebhookUrlLoader();
     const seriesNotificationBaselines = new Map();
-    const seriesFreshAfter = seriesAggregateFreshAfter(startedAt).toISOString();
+    const seriesFreshAfter = seriesAggregateFreshAfter(startedAt, settings).toISOString();
 
     const results = [];
     let stoppedByRuntimeLimit = false;
@@ -3981,14 +3981,33 @@ function seriesAggregateSnapshot(store, scope, options = {}) {
   return snapshot;
 }
 
-function seriesAggregateFreshAfter(now = Date.now()) {
+function seriesAggregateFreshAfter(now = Date.now(), settings = {}) {
   const timestamp = Number(now);
   const base = Number.isFinite(timestamp) ? timestamp : Date.now();
-  return new Date(base - seriesAggregateObservationWindowMs());
+  return new Date(recentJstExecutionBoundaryMs(base, settings, seriesAggregateObservationRuns()));
 }
 
-function seriesAggregateObservationWindowMs() {
-  return floorNumber(process.env.SERIES_TOTAL_OBSERVATION_WINDOW_HOURS, 1, 8) * 60 * 60 * 1000;
+function recentJstExecutionBoundaryMs(now, settings = {}, runCount = 5) {
+  const count = floorNumber(runCount, 1, 5);
+  const dayMs = 24 * 60 * 60 * 1000;
+  const times = scheduledExecutionTimes(settings).sort(
+    (left, right) => left.hour * 60 + left.minute - (right.hour * 60 + right.minute)
+  );
+  const boundaries = [];
+
+  for (let dayOffset = 0; boundaries.length < count && dayOffset <= count; dayOffset += 1) {
+    for (const time of [...times].reverse()) {
+      const boundary = todayJstExecutionBoundaryMs(now, time) - dayOffset * dayMs;
+      if (boundary <= now) boundaries.push(boundary);
+      if (boundaries.length >= count) break;
+    }
+  }
+
+  return boundaries[count - 1] ?? latestJstExecutionBoundaryMs(now, settings);
+}
+
+function seriesAggregateObservationRuns() {
+  return floorNumber(process.env.SERIES_TOTAL_OBSERVATION_RUNS, 1, 5);
 }
 
 function appendSeriesPriceHistoryEntry(store, snapshot, checkedAt) {
@@ -4267,7 +4286,7 @@ function notificationMatchesEvent(item, bookId, event) {
 
 function planDueChecks(store, settings, now, options = {}) {
   const rotatedBooks = rotateAfterCursor(store.books, store.checkCursor?.lastBookId);
-  const priorityContext = checkPriorityContext(rotatedBooks, now);
+  const priorityContext = checkPriorityContext(rotatedBooks, now, settings);
   if (options.forceAll) {
     const selected = orderCheckCandidates(rotatedBooks, priorityContext, now).slice(0, settings.batchSize);
     return { books: selected, dueSelected: selected.length };
@@ -4337,10 +4356,10 @@ function seriesCompletionBooksForPlan(book, allBooks, context, now, selectedIds)
   return orderCheckCandidates(candidates, context, now);
 }
 
-function checkPriorityContext(books, now) {
+function checkPriorityContext(books, now, settings = {}) {
   const series = new Map();
   const rotatedIndex = new Map();
-  const seriesFreshAfterMs = seriesAggregateFreshAfter(now).getTime();
+  const seriesFreshAfterMs = seriesAggregateFreshAfter(now, settings).getTime();
 
   for (const [index, book] of books.entries()) {
     rotatedIndex.set(book.id, index);
