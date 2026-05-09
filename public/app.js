@@ -229,7 +229,7 @@ async function loadSettings() {
 }
 
 function fixedScheduleLabel(settings = {}) {
-  const first = formatScheduleTime(settings.checkExecutionHourJst ?? 9, settings.checkExecutionMinuteJst ?? 54);
+  const first = formatScheduleTime(settings.checkExecutionHourJst ?? 3, settings.checkExecutionMinuteJst ?? 54);
   const second = formatScheduleTime(settings.secondCheckExecutionHourJst ?? 15, settings.secondCheckExecutionMinuteJst ?? 54);
   return `${first} / ${second}`;
 }

@@ -2962,7 +2962,7 @@ export async function saveSettings(settings) {
     notificationThreshold: clampNumber(settings.notificationThreshold, 0, 95, 10),
     checkRunsPerDay: 2,
     checkIntervalHours: 24,
-    checkExecutionHourJst: 9,
+    checkExecutionHourJst: 3,
     checkExecutionMinuteJst: 54,
     secondCheckExecutionHourJst: 15,
     secondCheckExecutionMinuteJst: 54,
@@ -4492,7 +4492,7 @@ function todayJstExecutionBoundaryMs(now, time) {
 
 function scheduledExecutionTimes(settings = {}) {
   return [
-    { hour: 9, minute: 54 },
+    { hour: 3, minute: 54 },
     { hour: 15, minute: 54 }
   ];
 }
@@ -4732,7 +4732,7 @@ function mergedRuntimeSettings(settings = {}) {
 function runtimeScheduleSettings(settings = {}) {
   return {
     checkRunsPerDay: 2,
-    checkExecutionHourJst: 9,
+    checkExecutionHourJst: 3,
     checkExecutionMinuteJst: 54,
     secondCheckExecutionHourJst: 15,
     secondCheckExecutionMinuteJst: 54

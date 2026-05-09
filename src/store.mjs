@@ -13,7 +13,7 @@ const defaultStore = {
     notificationThreshold: 10,
     checkRunsPerDay: 2,
     checkIntervalHours: 24,
-    checkExecutionHourJst: 9,
+    checkExecutionHourJst: 3,
     checkExecutionMinuteJst: 54,
     secondCheckExecutionHourJst: 15,
     secondCheckExecutionMinuteJst: 54,
@@ -99,7 +99,7 @@ function mergeSettings(settings = {}) {
 
   merged.checkRunsPerDay = 2;
   merged.checkIntervalHours = 24;
-  merged.checkExecutionHourJst = 9;
+  merged.checkExecutionHourJst = 3;
   merged.checkExecutionMinuteJst = 54;
   merged.secondCheckExecutionHourJst = 15;
   merged.secondCheckExecutionMinuteJst = 54;

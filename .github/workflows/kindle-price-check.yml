@@ -9,11 +9,11 @@ on:
         type: boolean
         default: true
   schedule:
-    # Daily at 09:54 and 15:54 JST. GitHub cron uses UTC.
-    - cron: "54 0 * * *"
+    # Daily at 03:54 and 15:54 JST. GitHub cron uses UTC.
+    - cron: "54 18 * * *"
     - cron: "54 6 * * *"
-    # Backup runs at 10:07 and 16:07 JST only proceed when the primary run did not record activity.
-    - cron: "7 1 * * *"
+    # Backup runs at 04:07 and 16:07 JST only proceed when the primary run did not record activity.
+    - cron: "7 19 * * *"
     - cron: "7 7 * * *"
 
 concurrency:
@@ -45,7 +45,7 @@ jobs:
       HTTP_REQUEST_JITTER_MS: "900"
       HTTP_BLOCK_COOLDOWN_MS: "90000"
       FORCE_CHECK_ALL: ${{ github.event_name == 'workflow_dispatch' && inputs.force_all }}
-      CHECK_BACKUP_RUN: ${{ github.event_name == 'schedule' && (github.event.schedule == '7 1 * * *' || github.event.schedule == '7 7 * * *') }}
+      CHECK_BACKUP_RUN: ${{ github.event_name == 'schedule' && (github.event.schedule == '7 19 * * *' || github.event.schedule == '7 7 * * *') }}
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
     steps:
       - name: Checkout
