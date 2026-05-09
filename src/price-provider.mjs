@@ -2061,7 +2061,7 @@ async function fetchHtml(url, options = {}) {
   const { signal, cleanup } = requestSignal(options.signal, timeoutMs);
 
   try {
-    await waitForHostFetchSlot(url, options);
+    await waitForHostFetchSlot(url, { ...options, signal });
     const response = await fetch(url, { headers: AMAZON_HEADERS, signal });
     if (!response.ok) {
       noteHostFetchPenalty(url, response);
@@ -2127,7 +2127,7 @@ async function waitForHostFetchSlot(url, options = {}) {
   const next = previous.catch(() => {}).then(async () => {
     const state = HOST_THROTTLES.get(host) || {};
     const waitMs = Math.max(0, Number(state.nextAt || 0) - Date.now());
-    if (waitMs > 0) await sleep(waitMs);
+    if (waitMs > 0) await sleepWithSignal(waitMs, options.signal);
 
     const current = HOST_THROTTLES.get(host) || {};
     HOST_THROTTLES.set(host, {
@@ -2218,6 +2218,31 @@ function randomJitter(maxMs) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, Math.max(0, Math.round(ms || 0))));
+}
+
+function sleepWithSignal(ms, signal) {
+  const delay = Math.max(0, Math.round(ms || 0));
+  if (!signal) return sleep(delay);
+  if (signal.aborted) return Promise.reject(abortError());
+
+  return new Promise((resolve, reject) => {
+    const timeoutId = setTimeout(done, delay);
+    signal.addEventListener('abort', aborted, { once: true });
+
+    function done() {
+      signal.removeEventListener('abort', aborted);
+      resolve();
+    }
+
+    function aborted() {
+      clearTimeout(timeoutId);
+      reject(abortError());
+    }
+  });
+}
+
+function abortError() {
+  return new DOMException('Aborted', 'AbortError');
 }
 
 function requestSignal(externalSignal, timeoutMs) {
