@@ -269,7 +269,9 @@ async function addBooksFromInputInStore(store, input, options = {}) {
     series = await fetchSeriesCandidates(input, {
       allowIncomplete: true,
       skipExternalFallback: options.skipExternalFallback === true,
-      skipBackfill: options.skipBackfill === true
+      skipBackfill: options.skipBackfill === true,
+      signal: options.signal,
+      timeoutMs: options.timeoutMs
     });
     if (!series) {
       const error = new Error('シリーズ内のKindle ASINを取得できませんでした');
@@ -278,7 +280,7 @@ async function addBooksFromInputInStore(store, input, options = {}) {
     }
     asins = series.items.map((item) => item.asin);
   } else {
-    series = await detectCollectionSeries(input);
+    series = await detectCollectionSeries(input, options);
     asins = series?.items?.map((item) => item.asin) || [];
   }
 
@@ -294,15 +296,17 @@ async function addBooksFromInputInStore(store, input, options = {}) {
 
   return importSeriesIntoStore(store, input, series, {
     fetchDetails: String(process.env.SERIES_IMPORT_FETCH_DETAILS || '').toLowerCase() === 'true',
-    now: options.now || new Date().toISOString()
+    now: options.now || new Date().toISOString(),
+    signal: options.signal,
+    timeoutMs: options.timeoutMs
   });
 }
 
 async function addSeriesBooksFromInputInStore(store, input, options = {}) {
   const explicitSeriesUrl = isKindleSeriesUrl(input);
   const series = explicitSeriesUrl
-    ? await fetchSeriesCandidates(input, { allowIncomplete: true })
-    : await detectCollectionSeries(input);
+    ? await fetchSeriesCandidates(input, { allowIncomplete: true, signal: options.signal, timeoutMs: options.timeoutMs })
+    : await detectCollectionSeries(input, options);
   const asins = series?.items?.map((item) => item.asin) || [];
 
   if (!series || asins.length === 0) {
@@ -313,7 +317,9 @@ async function addSeriesBooksFromInputInStore(store, input, options = {}) {
 
   return importSeriesIntoStore(store, input, series, {
     fetchDetails: String(process.env.SERIES_IMPORT_FETCH_DETAILS || '').toLowerCase() === 'true',
-    now: options.now || new Date().toISOString()
+    now: options.now || new Date().toISOString(),
+    signal: options.signal,
+    timeoutMs: options.timeoutMs
   });
 }
 
@@ -355,7 +361,9 @@ async function addSingleBookFromInputInStore(store, input, options = {}) {
     fetchDetails: options.fetchDetails !== false,
     inputUrl: input,
     sourceUrl,
-    createdAt: now
+    createdAt: now,
+    signal: options.signal,
+    timeoutMs: options.timeoutMs
   });
   if (isPermanentSnapshotError(book.lastError)) {
     const error = new Error(book.lastError);
@@ -469,7 +477,9 @@ async function importSeriesIntoStore(store, input, series, options = {}) {
       seriesKey,
       seriesName,
       seriesExpectedCount,
-      volume: seriesItemVolume(item) || index + 1
+      volume: seriesItemVolume(item) || index + 1,
+      signal: options.signal,
+      timeoutMs: options.timeoutMs
     });
     if (isClearlyDifferentSeriesTitle(book.title, seriesName)) {
       seriesErrors.push(`${asin}: skipped title outside series (${book.title})`);
@@ -608,8 +618,9 @@ async function refreshExistingSingleBookFromInput(id, input) {
   return { updated, book: publicResult || publicBook(await findBookById(id)) };
 }
 
-async function detectCollectionSeries(input) {
+async function detectCollectionSeries(input, options = {}) {
   return fetchSeriesCandidates(input, {
+    ...options,
     requireCollectionPage: true,
     allowReaderFallback: false,
     skipExternalFallback: true
@@ -628,7 +639,7 @@ async function fetchSeriesCandidates(input, options = {}) {
 
   if (!options.skipExternalFallback) {
     try {
-      const series = await fetchExternalKindleSeriesItems(input);
+      const series = await fetchExternalKindleSeriesItems(input, options);
       if (series?.items?.length > 1) candidates.push(series);
     } catch {
       // No usable external fallback.
@@ -636,7 +647,7 @@ async function fetchSeriesCandidates(input, options = {}) {
 
     const saleBonNames = new Set(seriesNamesForSaleBon(candidates));
     if (saleBonNames.size === 0) {
-      for (const seriesName of await sourceSeriesNamesForSaleBon(input)) saleBonNames.add(seriesName);
+      for (const seriesName of await sourceSeriesNamesForSaleBon(input, options)) saleBonNames.add(seriesName);
     }
 
     for (const seriesName of saleBonNames) {
@@ -800,13 +811,17 @@ function supplementalSeriesQueries(candidates, fallbackSeriesNames = new Set()) 
     .slice(0, 8);
 }
 
-async function sourceSeriesNamesForSaleBon(input) {
+async function sourceSeriesNamesForSaleBon(input, options = {}) {
   const asin = extractAsin(input);
   if (!asin) return [];
   const names = new Set(seriesNameCandidatesFromAmazonSlug(input));
 
   try {
-    const snapshot = await fetchBookSnapshot(asin, { url: input });
+    const snapshot = await fetchBookSnapshot(asin, {
+      url: input,
+      signal: options.signal,
+      timeoutMs: options.timeoutMs
+    });
     for (const seriesName of seriesNameCandidatesFromBookTitle(snapshot.title)) names.add(seriesName);
   } catch {
     // URL slug candidates remain useful when Amazon product/search pages are blocked.
@@ -2298,6 +2313,7 @@ export async function runDueChecks(options = {}) {
   try {
     const startedAt = Date.now();
     const maxRuntimeMs = floorNumber(process.env.CHECK_MAX_RUNTIME_MS, 0, 0);
+    const saveReserveMs = runtimeSaveReserveMs();
     let store = await readStoreWithPriceRepairs();
     let settings = mergedRuntimeSettings(store.settings);
     const forceAll = options.force === true || readEnvBoolean('FORCE_CHECK_ALL', false);
@@ -2327,10 +2343,10 @@ export async function runDueChecks(options = {}) {
     }
 
     const importQueue = shouldRunBookImportQueue(source, options)
-      ? await processBookImportQueueInStore(store, { startedAt, maxRuntimeMs, now: cronStartedAt })
+      ? await processBookImportQueueInStore(store, { startedAt, maxRuntimeMs, saveReserveMs, now: cronStartedAt })
       : null;
     const seriesDiscovery = shouldRunSeriesDiscovery(source, options, store, settings, startedAt)
-      ? await discoverSeriesUpdates(store, { startedAt, maxRuntimeMs })
+      ? await discoverSeriesUpdates(store, { startedAt, maxRuntimeMs, saveReserveMs })
       : null;
     settings = mergedRuntimeSettings(store.settings);
     const plan = planDueChecks(store, settings, startedAt, { forceAll });
@@ -2341,26 +2357,45 @@ export async function runDueChecks(options = {}) {
     let stoppedByRuntimeLimit = false;
     const processedBookIds = new Set();
     for (let index = 0; index < plan.books.length; index += 1) {
-      if (shouldStopForRuntimeLimit(startedAt, maxRuntimeMs, results.length)) {
+      if (shouldStopForRuntimeLimit(startedAt, maxRuntimeMs, results.length, saveReserveMs)) {
         stoppedByRuntimeLimit = true;
         break;
       }
 
-      if (!(await waitBeforeCheck(pacing, results.length, startedAt, maxRuntimeMs))) {
+      if (!(await waitBeforeCheck(pacing, results.length, startedAt, maxRuntimeMs, saveReserveMs))) {
         stoppedByRuntimeLimit = true;
         break;
       }
 
       const book = plan.books[index];
-      const result = await checkOneBookInStore(store, book, { ...options, updateCursor: true, getWebhookUrls });
+      const runtime = runtimeAbortOptions(startedAt, maxRuntimeMs, {
+        reserveMs: saveReserveMs,
+        capMs: checkBookMaxRuntimeMs()
+      });
+      let result;
+      try {
+        result = await checkOneBookInStore(store, book, {
+          ...options,
+          signal: runtime.signal,
+          updateCursor: true,
+          getWebhookUrls
+        });
+      } finally {
+        runtime.cleanup();
+      }
       results.push(result);
       processedBookIds.add(book.id);
 
       if (isBlockingCheckResult(result)) {
-        if (!(await waitAfterBlockedCheck(pacing, startedAt, maxRuntimeMs))) {
+        if (!(await waitAfterBlockedCheck(pacing, startedAt, maxRuntimeMs, saveReserveMs))) {
           stoppedByRuntimeLimit = true;
           break;
         }
+      }
+
+      if (shouldStopForRuntimeLimit(startedAt, maxRuntimeMs, results.length, saveReserveMs)) {
+        stoppedByRuntimeLimit = true;
+        break;
       }
     }
 
@@ -2423,6 +2458,7 @@ async function discoverSeriesUpdates(store, options = {}) {
   const now = new Date().toISOString();
   const plan = planSeriesDiscovery(store);
   const pacing = seriesDiscoveryPacing();
+  const saveReserveMs = Number(options.saveReserveMs || 0);
   const results = [];
   const errors = [];
   let added = 0;
@@ -2430,18 +2466,45 @@ async function discoverSeriesUpdates(store, options = {}) {
   let stoppedByRuntimeLimit = false;
 
   for (const group of plan.groups) {
-    if (shouldStopSeriesDiscoveryForRuntimeLimit(options.startedAt, options.maxRuntimeMs, results.length + errors.length)) {
+    if (
+      shouldStopSeriesDiscoveryForRuntimeLimit(
+        options.startedAt,
+        options.maxRuntimeMs,
+        results.length + errors.length,
+        saveReserveMs
+      )
+    ) {
       stoppedByRuntimeLimit = true;
       break;
     }
 
     try {
-      if (!(await waitBeforeSeriesDiscovery(pacing, results.length + errors.length, options.startedAt, options.maxRuntimeMs))) {
+      if (
+        !(await waitBeforeSeriesDiscovery(
+          pacing,
+          results.length + errors.length,
+          options.startedAt,
+          options.maxRuntimeMs,
+          saveReserveMs
+        ))
+      ) {
         stoppedByRuntimeLimit = true;
         break;
       }
 
-      const result = await addSeriesBooksFromInputInStore(store, seriesDiscoveryInput(group.sourceUrl, group.seriesKey), { now });
+      const runtime = runtimeAbortOptions(options.startedAt, options.maxRuntimeMs, {
+        reserveMs: saveReserveMs,
+        capMs: importItemMaxRuntimeMs()
+      });
+      let result;
+      try {
+        result = await addSeriesBooksFromInputInStore(store, seriesDiscoveryInput(group.sourceUrl, group.seriesKey), {
+          now,
+          signal: runtime.signal
+        });
+      } finally {
+        runtime.cleanup();
+      }
       const newBooks = Number(result.imported || 0);
       const seriesCompleted = Boolean(result.seriesCompleted);
       added += newBooks;
@@ -2463,6 +2526,18 @@ async function discoverSeriesUpdates(store, options = {}) {
       });
       markSeriesDiscoveryErrorInStore(store, group, now, message);
       recordSeriesDiscoveryCursorInStore(store, group, now);
+    }
+
+    if (
+      shouldStopSeriesDiscoveryForRuntimeLimit(
+        options.startedAt,
+        options.maxRuntimeMs,
+        results.length + errors.length,
+        saveReserveMs
+      )
+    ) {
+      stoppedByRuntimeLimit = true;
+      break;
     }
   }
 
@@ -2508,6 +2583,7 @@ async function processBookImportQueueInStore(store, options = {}) {
   const pending = new Map((store.importQueue?.pending || []).map((entry) => [entry.key, entry]));
   const completed = new Map((store.importQueue?.completed || []).map((entry) => [entry.key, entry]));
   const existingErrors = new Map((store.importQueue?.errors || []).map((entry) => [entry.key, entry]));
+  const saveReserveMs = Number(options.saveReserveMs || 0);
   const results = [];
   const errors = [];
   let imported = 0;
@@ -2519,7 +2595,7 @@ async function processBookImportQueueInStore(store, options = {}) {
   store.importQueue = store.importQueue || { pending: [], completed: [], errors: [] };
 
   for (const input of inputs) {
-    if (shouldStopForRuntimeLimit(options.startedAt, options.maxRuntimeMs, results.length + errors.length)) {
+    if (shouldStopForRuntimeLimit(options.startedAt, options.maxRuntimeMs, results.length + errors.length, saveReserveMs)) {
       stoppedByRuntimeLimit = true;
       break;
     }
@@ -2532,7 +2608,16 @@ async function processBookImportQueueInStore(store, options = {}) {
     }
 
     try {
-      const result = await addBooksFromInputInStore(store, input, { now });
+      const runtime = runtimeAbortOptions(options.startedAt, options.maxRuntimeMs, {
+        reserveMs: saveReserveMs,
+        capMs: importItemMaxRuntimeMs()
+      });
+      let result;
+      try {
+        result = await addBooksFromInputInStore(store, input, { now, signal: runtime.signal });
+      } finally {
+        runtime.cleanup();
+      }
       const entry = {
         key,
         input,
@@ -2558,6 +2643,11 @@ async function processBookImportQueueInStore(store, options = {}) {
       };
       existingErrors.set(key, entry);
       errors.push(entry);
+    }
+
+    if (shouldStopForRuntimeLimit(options.startedAt, options.maxRuntimeMs, results.length + errors.length, saveReserveMs)) {
+      stoppedByRuntimeLimit = true;
+      break;
     }
   }
 
@@ -2693,8 +2783,8 @@ function seriesTitleFromBook(book) {
     .trim();
 }
 
-function shouldStopSeriesDiscoveryForRuntimeLimit(startedAt, maxRuntimeMs, completedCount) {
-  return maxRuntimeMs > 0 && completedCount > 0 && Date.now() - startedAt >= maxRuntimeMs;
+function shouldStopSeriesDiscoveryForRuntimeLimit(startedAt, maxRuntimeMs, completedCount, reserveMs = 0) {
+  return shouldStopForRuntimeLimit(startedAt, maxRuntimeMs, completedCount, reserveMs);
 }
 
 function markSeriesDiscoveryErrorInStore(store, group, now, error) {
@@ -2959,7 +3049,10 @@ function isValidDiscordWebhookUrl(value) {
 
 async function checkOneBook(bookRef, options = {}) {
   const now = new Date().toISOString();
-  const snapshotResult = await settleSnapshot(bookRef.asin, bookRef);
+  const snapshotResult = await settleSnapshot(bookRef.asin, bookRef, {
+    signal: options.signal,
+    timeoutMs: options.timeoutMs
+  });
   let applied = { checkedBook: null, events: [] };
 
   await updateStore((store) => {
@@ -2976,7 +3069,10 @@ async function checkOneBook(bookRef, options = {}) {
 
 async function checkOneBookInStore(store, bookRef, options = {}) {
   const now = new Date().toISOString();
-  const snapshotResult = await settleSnapshot(bookRef.asin, bookRef);
+  const snapshotResult = await settleSnapshot(bookRef.asin, bookRef, {
+    signal: options.signal,
+    timeoutMs: options.timeoutMs
+  });
   const applied = applyCheckResultToStore(store, bookRef, snapshotResult, now, {
     updateCursor: options.updateCursor
   });
@@ -3217,6 +3313,8 @@ async function buildBookFromAsin(asin, options = {}) {
     try {
       snapshot = await fetchBookSnapshot(asin, {
         ...seed,
+        signal: options.signal,
+        timeoutMs: options.timeoutMs,
         url: options.inputUrl || seed.amazonUrl || '',
         sourceUrl: options.sourceUrl || seed.sourceUrl || ''
       });
@@ -3616,8 +3714,8 @@ function todayJstExecutionBoundaryMs(now, hourJst, minuteJst = 54) {
   return jstDayStartUtc + normalizedHour * 60 * 60 * 1000 + normalizedMinute * 60 * 1000;
 }
 
-function shouldStopForRuntimeLimit(startedAt, maxRuntimeMs, completedCount) {
-  return maxRuntimeMs > 0 && completedCount > 0 && Date.now() - startedAt >= maxRuntimeMs;
+function shouldStopForRuntimeLimit(startedAt, maxRuntimeMs, _completedCount = 0, reserveMs = 0) {
+  return maxRuntimeMs > 0 && remainingRuntimeMs(startedAt, maxRuntimeMs, reserveMs) <= 0;
 }
 
 function readEnvBoolean(name, fallback) {
@@ -3641,31 +3739,72 @@ function seriesDiscoveryPacing() {
   };
 }
 
-async function waitBeforeCheck(pacing, completedCount, startedAt, maxRuntimeMs) {
+async function waitBeforeCheck(pacing, completedCount, startedAt, maxRuntimeMs, reserveMs = 0) {
   if (completedCount === 0) return true;
-  return sleepWithinRuntime(randomizedDelay(pacing.delayMs, pacing.jitterMs), startedAt, maxRuntimeMs);
+  return sleepWithinRuntime(randomizedDelay(pacing.delayMs, pacing.jitterMs), startedAt, maxRuntimeMs, reserveMs);
 }
 
-async function waitAfterBlockedCheck(pacing, startedAt, maxRuntimeMs) {
-  return sleepWithinRuntime(randomizedDelay(pacing.blockCooldownMs, Math.floor(pacing.blockCooldownMs / 3)), startedAt, maxRuntimeMs);
+async function waitAfterBlockedCheck(pacing, startedAt, maxRuntimeMs, reserveMs = 0) {
+  return sleepWithinRuntime(
+    randomizedDelay(pacing.blockCooldownMs, Math.floor(pacing.blockCooldownMs / 3)),
+    startedAt,
+    maxRuntimeMs,
+    reserveMs
+  );
 }
 
-async function waitBeforeSeriesDiscovery(pacing, completedCount, startedAt, maxRuntimeMs) {
+async function waitBeforeSeriesDiscovery(pacing, completedCount, startedAt, maxRuntimeMs, reserveMs = 0) {
   if (completedCount === 0) return true;
-  return sleepWithinRuntime(randomizedDelay(pacing.delayMs, pacing.jitterMs), startedAt, maxRuntimeMs);
+  return sleepWithinRuntime(randomizedDelay(pacing.delayMs, pacing.jitterMs), startedAt, maxRuntimeMs, reserveMs);
 }
 
-async function sleepWithinRuntime(ms, startedAt, maxRuntimeMs) {
+async function sleepWithinRuntime(ms, startedAt, maxRuntimeMs, reserveMs = 0) {
   const delay = Math.max(0, Math.round(ms || 0));
   if (delay === 0) return true;
 
   if (maxRuntimeMs > 0) {
-    const remaining = maxRuntimeMs - (Date.now() - startedAt);
+    const remaining = remainingRuntimeMs(startedAt, maxRuntimeMs, reserveMs);
     if (remaining <= delay + 1000) return false;
   }
 
   await sleep(delay);
   return true;
+}
+
+function runtimeSaveReserveMs() {
+  return floorNumber(process.env.CHECK_SAVE_RESERVE_MS, 0, 120000);
+}
+
+function checkBookMaxRuntimeMs() {
+  return floorNumber(process.env.CHECK_BOOK_MAX_RUNTIME_MS, 1000, 60000);
+}
+
+function importItemMaxRuntimeMs() {
+  return floorNumber(process.env.CHECK_IMPORT_ITEM_MAX_RUNTIME_MS, 1000, 90000);
+}
+
+function remainingRuntimeMs(startedAt, maxRuntimeMs, reserveMs = 0) {
+  return maxRuntimeMs - (Date.now() - startedAt) - Math.max(0, Math.round(reserveMs || 0));
+}
+
+function runtimeAbortOptions(startedAt, maxRuntimeMs, options = {}) {
+  const windows = [];
+  if (maxRuntimeMs > 0) windows.push(remainingRuntimeMs(startedAt, maxRuntimeMs, options.reserveMs));
+  if (options.capMs > 0) windows.push(Math.round(options.capMs));
+  if (windows.length === 0) return { signal: undefined, cleanup: () => {} };
+
+  const timeoutMs = Math.max(0, Math.min(...windows));
+  const controller = new AbortController();
+  if (timeoutMs <= 0) {
+    controller.abort();
+    return { signal: controller.signal, cleanup: () => {} };
+  }
+
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  return {
+    signal: controller.signal,
+    cleanup: () => clearTimeout(timeoutId)
+  };
 }
 
 function randomizedDelay(baseMs, jitterMs) {

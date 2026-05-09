@@ -172,7 +172,7 @@ function kindleSeriesCandidateUrls(input) {
   return urls;
 }
 
-export async function fetchExternalKindleSeriesItems(input) {
+export async function fetchExternalKindleSeriesItems(input, options = {}) {
   const sourceAsin = extractAsin(input);
   if (!sourceAsin) return null;
 
@@ -182,7 +182,7 @@ export async function fetchExternalKindleSeriesItems(input) {
 
   for (const url of candidates) {
     try {
-      const html = await fetchHtml(url);
+      const html = await fetchHtml(url, options);
       const items = extractExternalKindleSeriesItemsFromHtml(html, sourceAsin);
       if (items.length > 1) {
         const limit = readPositiveInteger(process.env.SERIES_IMPORT_LIMIT, null);
@@ -209,7 +209,7 @@ export async function fetchSaleBonKindleSeriesItems(seriesName, options = {}) {
   if (!normalizedName || normalizedName === 'Kindle シリーズ') return null;
 
   const url = `https://sale-bon.com/detail/?series_hash=${crypto.createHash('md5').update(normalizedName).digest('hex')}`;
-  const html = await fetchHtml(url);
+  const html = await fetchHtml(url, options);
   const pageSeriesName = extractSaleBonSeriesName(html) || normalizedName;
   if (normalizeSeriesNameForMatch(pageSeriesName) !== normalizeSeriesNameForMatch(normalizedName)) return null;
 
@@ -343,7 +343,7 @@ async function fetchKinpomeSearchHtml(keyword, options = {}) {
   url.searchParams.set('rde', '');
   url.searchParams.set('rds', '');
   url.searchParams.set('st', '');
-  return fetchHtml(url.toString(), { timeoutMs: options.timeoutMs ?? 6000 });
+  return fetchHtml(url.toString(), { signal: options.signal, timeoutMs: options.timeoutMs ?? 6000 });
 }
 
 async function fetchEfoxSearchPosts(keyword, options = {}) {
@@ -353,7 +353,7 @@ async function fetchEfoxSearchPosts(keyword, options = {}) {
   url.searchParams.set('subtype', 'post');
   url.searchParams.set('per_page', String(postLimit));
 
-  const data = await fetchJson(url.toString(), { timeoutMs: options.timeoutMs ?? 8000 });
+  const data = await fetchJson(url.toString(), { signal: options.signal, timeoutMs: options.timeoutMs ?? 8000 });
   return (Array.isArray(data) ? data : [])
     .filter((post) => post?.id)
     .slice(0, postLimit);
@@ -365,7 +365,7 @@ async function fetchEfoxPost(post, options = {}) {
 
   const url = new URL(`https://www.efox.jp/wp-json/wp/v2/posts/${id}`);
   url.searchParams.set('_fields', 'title,link,content,modified,date');
-  return fetchJson(url.toString(), { timeoutMs: options.timeoutMs ?? 8000 });
+  return fetchJson(url.toString(), { signal: options.signal, timeoutMs: options.timeoutMs ?? 8000 });
 }
 
 async function fetchKintyakuAmazonSalesItem(asin, seed = {}, options = {}) {
@@ -401,6 +401,7 @@ async function fetchKintyakuAmazonSalesItems(keyword, options = {}) {
 
       try {
         const data = await fetchJson(url.toString(), {
+          signal: options.signal,
           timeoutMs: options.timeoutMs ?? 8000,
           retries: options.retries ?? 1
         });
