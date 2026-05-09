@@ -39,6 +39,7 @@ const defaultStore = {
     lastSeriesDiscoveryChecked: 0,
     lastSeriesDiscoveryAdded: 0,
     lastSeriesDiscoveryCompleted: 0,
+    lastSeriesDiscoverySkipped: 0,
     lastSeriesDiscoveryErrors: 0
   },
   checkCursor: {
@@ -160,6 +161,9 @@ export function publicBook(book) {
     seriesCompleted: Boolean(book.seriesCompleted),
     seriesCompletedAt: book.seriesCompletedAt || '',
     seriesLastDiscoveredAt: book.seriesLastDiscoveredAt || '',
+    seriesDiscoveryStatus: book.seriesDiscoveryStatus || '',
+    seriesDiscoverySkipReason: book.seriesDiscoverySkipReason || '',
+    seriesDiscoverySkippedAt: book.seriesDiscoverySkippedAt || '',
     seriesDiscoveryError: book.seriesDiscoveryError || '',
     createdAt: book.createdAt,
     updatedAt: book.updatedAt,
@@ -351,6 +355,9 @@ function compactBookForWrite(book) {
     seriesCompleted: book.seriesCompleted ? true : undefined,
     seriesCompletedAt: emptyToUndefined(book.seriesCompletedAt),
     seriesLastDiscoveredAt: emptyToUndefined(book.seriesLastDiscoveredAt),
+    seriesDiscoveryStatus: emptyToUndefined(book.seriesDiscoveryStatus),
+    seriesDiscoverySkipReason: emptyToUndefined(book.seriesDiscoverySkipReason),
+    seriesDiscoverySkippedAt: emptyToUndefined(book.seriesDiscoverySkippedAt),
     seriesDiscoveryError: emptyToUndefined(book.seriesDiscoveryError),
     lastError: emptyToUndefined(book.lastError)
   });

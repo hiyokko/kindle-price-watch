@@ -756,6 +756,9 @@ function groupBooks(books) {
         expectedCount: 0,
         seriesCompleted: false,
         seriesLastDiscoveredAt: '',
+        seriesDiscoveryStatus: '',
+        seriesDiscoverySkipReason: '',
+        seriesDiscoverySkippedAt: '',
         seriesDiscoveryError: '',
         books: []
       });
@@ -770,6 +773,9 @@ function groupBooks(books) {
     group.lastCheckedAt = latestCheckedAt(group.books);
     group.seriesCompleted = group.books.some((book) => book.seriesCompleted);
     group.seriesLastDiscoveredAt = latestSeriesDiscoveredAt(group.books);
+    group.seriesDiscoveryStatus = aggregateSeriesDiscoveryStatus(group.books);
+    group.seriesDiscoverySkipReason = aggregateSeriesDiscoverySkipReason(group.books);
+    group.seriesDiscoverySkippedAt = latestSeriesDiscoverySkippedAt(group.books);
     group.seriesDiscoveryError = latestSeriesDiscoveryError(group.books);
     group.totalMetrics = seriesTotalMetrics(group);
     return group;
@@ -837,6 +843,26 @@ function latestSeriesDiscoveryError(books) {
     if (!latest || time > latest.time) latest = { time, error: book.seriesDiscoveryError };
   }
   return latest?.error || '';
+}
+
+function aggregateSeriesDiscoveryStatus(books) {
+  if (books.some((book) => book.seriesDiscoveryStatus === 'error')) return 'error';
+  if (books.some((book) => book.seriesDiscoveryStatus === 'checked')) return 'checked';
+  if (books.some((book) => book.seriesDiscoveryStatus === 'skipped')) return 'skipped';
+  return '';
+}
+
+function aggregateSeriesDiscoverySkipReason(books) {
+  if (books.some((book) => book.seriesDiscoverySkipReason === 'completed')) return 'completed';
+  return books.find((book) => book.seriesDiscoverySkipReason)?.seriesDiscoverySkipReason || '';
+}
+
+function latestSeriesDiscoverySkippedAt(books) {
+  const times = books
+    .map((book) => (book.seriesDiscoverySkippedAt ? new Date(book.seriesDiscoverySkippedAt).getTime() : 0))
+    .filter((time) => Number.isFinite(time) && time > 0);
+  if (times.length === 0) return '';
+  return new Date(Math.max(...times)).toISOString();
 }
 
 function compareBooksWithinGroup(a, b) {
@@ -944,7 +970,10 @@ function observedSeriesLowest(group) {
 }
 
 function seriesStatusLabel(group) {
-  if (group.seriesCompleted) return '完結';
+  if (group.seriesCompleted || group.seriesDiscoveryStatus === 'skipped') {
+    const reason = group.seriesCompleted || group.seriesDiscoverySkipReason === 'completed' ? '完結' : '対象外';
+    return `新刊探索 実行なし（${reason}）`;
+  }
   const discovered = group.seriesLastDiscoveredAt ? `新刊探索 ${relativeTime(group.seriesLastDiscoveredAt)}` : '新刊探索 未実行';
   return group.seriesDiscoveryError ? `${discovered}（要確認）` : discovered;
 }

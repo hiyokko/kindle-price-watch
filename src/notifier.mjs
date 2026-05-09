@@ -120,7 +120,7 @@ export function buildCronSummaryNotification(summary = {}) {
     summary.seriesDiscovery
       ? {
           name: 'シリーズ探索',
-          value: `確認 ${Number(summary.seriesDiscovery.checked || 0).toLocaleString('ja-JP')} / 新規 ${Number(summary.seriesDiscovery.added || 0).toLocaleString('ja-JP')} / エラー ${Number(summary.seriesDiscovery.errors || 0).toLocaleString('ja-JP')}`,
+          value: `確認 ${Number(summary.seriesDiscovery.checked || 0).toLocaleString('ja-JP')} / 新規 ${Number(summary.seriesDiscovery.added || 0).toLocaleString('ja-JP')} / 実行なし ${Number(summary.seriesDiscovery.skippedNoRun || 0).toLocaleString('ja-JP')} / エラー ${Number(summary.seriesDiscovery.errors || 0).toLocaleString('ja-JP')}`,
           inline: false
         }
       : null

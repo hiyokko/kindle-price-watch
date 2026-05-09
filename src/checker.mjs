@@ -953,6 +953,9 @@ function applySeriesDiscoveryMetadata(book, options = {}) {
   const now = options.now || new Date().toISOString();
   book.seriesLastDiscoveredAt = now;
   book.seriesDiscoveryError = options.error || '';
+  book.seriesDiscoveryStatus = options.error ? 'error' : 'checked';
+  book.seriesDiscoverySkipReason = '';
+  book.seriesDiscoverySkippedAt = '';
   if (options.completed) {
     book.seriesCompleted = true;
     book.seriesCompletedAt = book.seriesCompletedAt || now;
@@ -2486,6 +2489,7 @@ export async function runDueChecks(options = {}) {
           lastSeriesDiscoveryChecked: seriesDiscovery?.checked || 0,
           lastSeriesDiscoveryAdded: seriesDiscovery?.added || 0,
           lastSeriesDiscoveryCompleted: seriesDiscovery?.completed || 0,
+          lastSeriesDiscoverySkipped: seriesDiscovery?.skippedNoRun || 0,
           lastSeriesDiscoveryErrors: seriesDiscovery?.errors?.length || 0,
           lastCronError: ''
         }
@@ -2526,7 +2530,7 @@ export async function runDueChecks(options = {}) {
 
 async function discoverSeriesUpdates(store, options = {}) {
   const now = new Date().toISOString();
-  const plan = planSeriesDiscovery(store);
+  const plan = planSeriesDiscovery(store, { now });
   const pacing = seriesDiscoveryPacing();
   const saveReserveMs = Number(options.saveReserveMs || 0);
   const results = [];
@@ -2615,6 +2619,9 @@ async function discoverSeriesUpdates(store, options = {}) {
     checked: results.length + errors.length,
     added,
     completed,
+    skippedNoRun: plan.skippedNoRun,
+    skippedCompleted: plan.skippedCompleted,
+    markedNoRun: plan.markedNoRun,
     stoppedByRuntimeLimit,
     cursor: store.seriesDiscoveryCursor,
     results,
@@ -2790,40 +2797,106 @@ function bookImportQueueKey(input) {
   return `input:${String(input || '').trim()}`;
 }
 
-function planSeriesDiscovery(store) {
+function planSeriesDiscovery(store, options = {}) {
+  const allGroups = seriesDiscoveryGroups(store.books);
+  const completedGroups = allGroups.filter((group) => group.completed);
+  const markedNoRun = markNoRunSeriesDiscoveryGroups(store, completedGroups, {
+    now: options.now,
+    reason: 'completed'
+  });
   const groups = rotateSeriesGroupsAfterCursor(
-    seriesDiscoveryGroups(store.books),
+    allGroups.filter((group) => !group.completed),
     store.seriesDiscoveryCursor?.lastSeriesKey
   );
   const limit = floorNumber(process.env.SERIES_DISCOVERY_BATCH_SIZE, 1, 50);
-  return { groups: groups.slice(0, limit), totalEligible: groups.length };
+  return {
+    groups: groups.slice(0, limit),
+    totalEligible: groups.length,
+    skippedCompleted: completedGroups.length,
+    skippedNoRun: completedGroups.length,
+    markedNoRun
+  };
 }
 
 function seriesDiscoveryGroups(books = []) {
   const groups = new Map();
+  const aliasToGroupKey = new Map();
 
   for (const book of books) {
     if (book.importMode !== 'kindle_series' && !book.seriesKey) continue;
-    const seriesKey = book.seriesKey || book.sourceUrl;
-    const sourceUrl = book.sourceUrl || seriesInputFromSeriesKey(seriesKey);
-    if (!seriesKey || !sourceUrl) continue;
+    const bookSeriesKey = book.seriesKey || '';
+    const sourceUrl = book.sourceUrl || seriesInputFromSeriesKey(bookSeriesKey);
+    const fallbackKey = bookSeriesKey || sourceUrl;
+    if (!fallbackKey || !sourceUrl) continue;
 
-    if (!groups.has(seriesKey)) {
-      groups.set(seriesKey, {
-        seriesKey,
+    const aliases = [bookSeriesKey, sourceUrl].filter(Boolean);
+    const groupKey = aliases.map((alias) => aliasToGroupKey.get(alias)).find(Boolean) || fallbackKey;
+    if (!groups.has(groupKey)) {
+      groups.set(groupKey, {
+        seriesKey: bookSeriesKey || fallbackKey,
         sourceUrl,
         seriesName: book.seriesName || seriesTitleFromBook(book),
         completed: false,
         books: []
       });
     }
+    for (const alias of aliases) {
+      aliasToGroupKey.set(alias, groupKey);
+    }
 
-    const group = groups.get(seriesKey);
+    const group = groups.get(groupKey);
+    if (bookSeriesKey && (!group.seriesKey || group.seriesKey === group.sourceUrl)) group.seriesKey = bookSeriesKey;
+    if (!group.sourceUrl && sourceUrl) group.sourceUrl = sourceUrl;
     group.books.push(book);
     group.completed = group.completed || Boolean(book.seriesCompleted);
   }
 
-  return [...groups.values()].filter((group) => !group.completed);
+  return [...groups.values()];
+}
+
+function markNoRunSeriesDiscoveryGroups(store, groups, options = {}) {
+  const now = options.now || new Date().toISOString();
+  const reason = options.reason || 'not_applicable';
+  if (groups.length === 0) return 0;
+
+  let changedGroups = 0;
+  for (const group of groups) {
+    let groupChanged = false;
+    for (const book of store.books || []) {
+      if (!bookBelongsToSeriesDiscoveryGroup(book, group)) continue;
+      let bookChanged = false;
+      if (book.seriesDiscoveryStatus !== 'skipped') {
+        book.seriesDiscoveryStatus = 'skipped';
+        bookChanged = true;
+      }
+      if (book.seriesDiscoverySkipReason !== reason) {
+        book.seriesDiscoverySkipReason = reason;
+        bookChanged = true;
+      }
+      if (!book.seriesDiscoverySkippedAt) {
+        book.seriesDiscoverySkippedAt = now;
+        bookChanged = true;
+      }
+      if (book.seriesDiscoveryError) {
+        book.seriesDiscoveryError = '';
+        bookChanged = true;
+      }
+      if (bookChanged) {
+        book.updatedAt = now;
+        groupChanged = true;
+      }
+    }
+    if (groupChanged) changedGroups += 1;
+  }
+
+  return changedGroups;
+}
+
+function bookBelongsToSeriesDiscoveryGroup(book, group) {
+  const bookSeriesKey = book.seriesKey || book.sourceUrl || '';
+  if (bookSeriesKey && bookSeriesKey === group.seriesKey) return true;
+  if (book.sourceUrl && book.sourceUrl === group.sourceUrl) return true;
+  return false;
 }
 
 function rotateSeriesGroupsAfterCursor(groups, lastSeriesKey = '') {
@@ -3418,6 +3491,9 @@ function cronSummaryPayload(result, context = {}) {
           checked: result.seriesDiscovery.checked || 0,
           added: result.seriesDiscovery.added || 0,
           completed: result.seriesDiscovery.completed || 0,
+          skippedNoRun: result.seriesDiscovery.skippedNoRun || 0,
+          skippedCompleted: result.seriesDiscovery.skippedCompleted || 0,
+          markedNoRun: result.seriesDiscovery.markedNoRun || 0,
           errors: result.seriesDiscovery.errors?.length || 0
         }
       : null
@@ -3597,6 +3673,9 @@ async function buildBookFromAsin(asin, options = {}) {
     seriesCompleted: Boolean(options.seriesCompleted || seed.seriesCompleted),
     seriesCompletedAt: options.seriesCompleted || seed.seriesCompleted ? now : '',
     seriesLastDiscoveredAt: options.seriesLastDiscoveredAt || '',
+    seriesDiscoveryStatus: '',
+    seriesDiscoverySkipReason: '',
+    seriesDiscoverySkippedAt: '',
     seriesDiscoveryError: '',
     lastCheckedAt: snapshot.currentPrice == null ? null : now,
     createdAt: now,
@@ -4736,10 +4815,11 @@ function hasSeriesDiscoveryWork(seriesDiscovery = null) {
   if (!seriesDiscovery) return false;
   return Boolean(
     seriesDiscovery.checked > 0 ||
-      seriesDiscovery.added > 0 ||
-      seriesDiscovery.completed > 0 ||
-      seriesDiscovery.stoppedByRuntimeLimit ||
-      (Array.isArray(seriesDiscovery.errors) && seriesDiscovery.errors.length > 0)
+    seriesDiscovery.added > 0 ||
+    seriesDiscovery.completed > 0 ||
+    seriesDiscovery.skippedNoRun > 0 ||
+    seriesDiscovery.stoppedByRuntimeLimit ||
+    (Array.isArray(seriesDiscovery.errors) && seriesDiscovery.errors.length > 0)
   );
 }
 
