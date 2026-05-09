@@ -3266,6 +3266,7 @@ function applyCheckResultToStore(store, bookRef, snapshotResult, now, options = 
   book.author = snapshot.author || book.author;
   book.publisher = snapshot.publisher || book.publisher;
   book.imageUrl = snapshot.imageUrl || book.imageUrl;
+  book.imageSource = snapshot.imageUrl ? snapshot.provider || book.imageSource || '' : book.imageSource || '';
   book.amazonUrl = snapshot.amazonUrl || book.amazonUrl;
   book.previousEffectivePrice = previousEffectivePrice;
   book.currentPrice = snapshot.currentPrice;
@@ -4375,7 +4376,7 @@ function planDueChecks(store, settings, now, options = {}) {
   }
 
   const dueBefore = scheduledDueCutoffMs(now, settings);
-  const dueBooks = rotatedBooks.filter((book) => isBookDue(book, dueBefore) && !isCheckRetryCoolingDown(book, now));
+  const dueBooks = rotatedBooks.filter((book) => isAutoCheckCandidate(book, dueBefore) && !isCheckRetryCoolingDown(book, now));
   const orderedDueBooks = orderCheckCandidates(dueBooks, priorityContext, now);
   const selected = selectCheckCandidatesWithSeriesCompletion(orderedDueBooks, rotatedBooks, priorityContext, now, settings.batchSize);
   const dueSelected = selected.filter((book) => isBookDue(book, dueBefore)).length;
@@ -4389,7 +4390,7 @@ function planDueChecks(store, settings, now, options = {}) {
     );
     for (const book of fillerBooks) {
       if (selected.length >= settings.batchSize) break;
-      if (selectedIds.has(book.id) || isBookDue(book, dueBefore)) continue;
+      if (selectedIds.has(book.id) || isAutoCheckCandidate(book, dueBefore)) continue;
       selected.push(book);
       selectedIds.add(book.id);
     }
@@ -4483,6 +4484,7 @@ function orderCheckCandidates(books, context, now) {
 function checkPriorityScore(book, context, now) {
   let score = 0;
   if (!hasTrustedCurrentPrice(book)) score += 100000;
+  if (needsBookImageRefresh(book)) score += 60000;
   if (isDiscardedUnvalidatedSeriesPrice(book)) score += 25000;
   if (!book.lastCheckedAt) score += 12000;
   if (isBookStaleForPriority(book, now)) score += 2500;
@@ -4499,6 +4501,20 @@ function checkPriorityScore(book, context, now) {
 
   if (isBlockingSnapshotError(book.lastError)) score -= 5000;
   return score;
+}
+
+function isAutoCheckCandidate(book, dueBefore) {
+  return isBookDue(book, dueBefore) || needsBookImageRefresh(book);
+}
+
+function needsBookImageRefresh(book) {
+  if (hasBookImage(book)) return false;
+  if (isPermanentSnapshotError(book?.lastError)) return false;
+  return true;
+}
+
+function hasBookImage(book) {
+  return Boolean(book?.imageUrl || book?.imageKey);
 }
 
 function needsSeriesAggregateRefresh(book, freshAfterMs) {
