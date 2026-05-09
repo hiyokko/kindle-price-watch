@@ -2399,6 +2399,7 @@ export async function runDueChecks(options = {}) {
     const pacing = checkPacing();
     const getWebhookUrls = options.notify === false ? null : sharedWebhookUrlLoader();
     const seriesNotificationBaselines = new Map();
+    const seriesFreshAfter = seriesAggregateFreshAfter(startedAt).toISOString();
 
     const results = [];
     let stoppedByRuntimeLimit = false;
@@ -2428,7 +2429,7 @@ export async function runDueChecks(options = {}) {
           getWebhookUrls,
           deferSeriesNotifications: true,
           seriesNotificationBaselines,
-          seriesFreshAfter: cronStartedAt
+          seriesFreshAfter
         });
       } finally {
         runtime.cleanup();
@@ -3980,6 +3981,16 @@ function seriesAggregateSnapshot(store, scope, options = {}) {
   return snapshot;
 }
 
+function seriesAggregateFreshAfter(now = Date.now()) {
+  const timestamp = Number(now);
+  const base = Number.isFinite(timestamp) ? timestamp : Date.now();
+  return new Date(base - seriesAggregateObservationWindowMs());
+}
+
+function seriesAggregateObservationWindowMs() {
+  return floorNumber(process.env.SERIES_TOTAL_OBSERVATION_WINDOW_HOURS, 1, 8) * 60 * 60 * 1000;
+}
+
 function appendSeriesPriceHistoryEntry(store, snapshot, checkedAt) {
   if (!canRecordSeriesAggregateSnapshot(snapshot)) return false;
   const entry = seriesPriceHistoryEntry(snapshot, checkedAt);
@@ -4265,8 +4276,8 @@ function planDueChecks(store, settings, now, options = {}) {
   const dueBefore = scheduledDueCutoffMs(now, settings);
   const dueBooks = rotatedBooks.filter((book) => isBookDue(book, dueBefore) && !isCheckRetryCoolingDown(book, now));
   const orderedDueBooks = orderCheckCandidates(dueBooks, priorityContext, now);
-  const selected = orderedDueBooks.slice(0, settings.batchSize);
-  const dueSelected = selected.length;
+  const selected = selectCheckCandidatesWithSeriesCompletion(orderedDueBooks, rotatedBooks, priorityContext, now, settings.batchSize);
+  const dueSelected = selected.filter((book) => isBookDue(book, dueBefore)).length;
 
   if (dueBooks.length > 0 && selected.length < settings.batchSize) {
     const selectedIds = new Set(selected.map((book) => book.id));
@@ -4286,9 +4297,50 @@ function planDueChecks(store, settings, now, options = {}) {
   return { books: selected, dueSelected };
 }
 
+function selectCheckCandidatesWithSeriesCompletion(orderedBooks, allBooks, context, now, limit) {
+  const selected = [];
+  const selectedIds = new Set();
+
+  for (const book of orderedBooks) {
+    if (selected.length >= limit) break;
+    if (selectedIds.has(book.id)) continue;
+
+    selected.push(book);
+    selectedIds.add(book.id);
+
+    const completionBooks = seriesCompletionBooksForPlan(book, allBooks, context, now, selectedIds);
+    if (completionBooks.length === 0 || completionBooks.length > limit - selected.length) continue;
+
+    for (const completionBook of completionBooks) {
+      selected.push(completionBook);
+      selectedIds.add(completionBook.id);
+    }
+  }
+
+  return selected;
+}
+
+function seriesCompletionBooksForPlan(book, allBooks, context, now, selectedIds) {
+  const scope = notificationSeriesScope(book);
+  if (!scope) return [];
+  const group = context.series.get(scope.key);
+  if (!group || group.aggregateMissing <= 0) return [];
+
+  const candidates = allBooks.filter((candidate) => {
+    if (selectedIds.has(candidate.id)) return false;
+    const candidateScope = notificationSeriesScope(candidate);
+    if (!candidateScope || candidateScope.key !== scope.key) return false;
+    if (isCheckRetryCoolingDown(candidate, now)) return false;
+    return needsSeriesAggregateRefresh(candidate, context.seriesFreshAfterMs);
+  });
+
+  return orderCheckCandidates(candidates, context, now);
+}
+
 function checkPriorityContext(books, now) {
   const series = new Map();
   const rotatedIndex = new Map();
+  const seriesFreshAfterMs = seriesAggregateFreshAfter(now).getTime();
 
   for (const [index, book] of books.entries()) {
     rotatedIndex.set(book.id, index);
@@ -4301,7 +4353,8 @@ function checkPriorityContext(books, now) {
         total: 0,
         priced: 0,
         unpriced: 0,
-        stale: 0
+        stale: 0,
+        aggregateMissing: 0
       });
     }
     const group = series.get(key);
@@ -4312,9 +4365,10 @@ function checkPriorityContext(books, now) {
       group.unpriced += 1;
     }
     if (isBookStaleForPriority(book, now)) group.stale += 1;
+    if (needsSeriesAggregateRefresh(book, seriesFreshAfterMs)) group.aggregateMissing += 1;
   }
 
-  return { series, rotatedIndex };
+  return { series, rotatedIndex, seriesFreshAfterMs };
 }
 
 function orderCheckCandidates(books, context, now) {
@@ -4337,9 +4391,19 @@ function checkPriorityScore(book, context, now) {
   const series = scope ? context.series.get(scope.key) : null;
   if (series?.unpriced > 0) score += 10000 + Math.min(series.unpriced, 1000);
   if (series?.stale > 0) score += 1000 + Math.min(series.stale, 500);
+  if (series?.aggregateMissing > 0) {
+    if (needsSeriesAggregateRefresh(book, context.seriesFreshAfterMs)) score += 8000;
+    score += Math.max(0, 3000 - series.aggregateMissing * 30);
+  }
 
   if (isBlockingSnapshotError(book.lastError)) score -= 5000;
   return score;
+}
+
+function needsSeriesAggregateRefresh(book, freshAfterMs) {
+  if (!hasTrustedCurrentPrice(book)) return true;
+  const checkedAt = timestampMs(book.lastCheckedAt);
+  return checkedAt <= 0 || checkedAt < freshAfterMs;
 }
 
 function hasTrustedCurrentPrice(book) {
