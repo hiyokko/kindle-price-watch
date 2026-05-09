@@ -12,7 +12,8 @@ const defaultStore = {
   settings: {
     notificationThreshold: 10,
     checkIntervalHours: 24,
-    checkExecutionHourJst: 16,
+    checkExecutionHourJst: 15,
+    checkExecutionMinuteJst: 54,
     batchSize: 50,
     notifyOnPriceDrop: true,
     notifyOnBestEver: true,

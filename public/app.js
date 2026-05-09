@@ -26,6 +26,7 @@ const els = {
   thresholdInput: document.getElementById('thresholdInput'),
   intervalInput: document.getElementById('intervalInput'),
   executionHourInput: document.getElementById('executionHourInput'),
+  executionMinuteInput: document.getElementById('executionMinuteInput'),
   batchInput: document.getElementById('batchInput'),
   testNotifyButton: document.getElementById('testNotifyButton'),
   sortInput: document.getElementById('sortInput'),
@@ -93,6 +94,7 @@ els.settingsForm.addEventListener('submit', async (event) => {
     notificationThreshold: Number(els.thresholdInput.value),
     checkIntervalHours: Number(els.intervalInput.value),
     checkExecutionHourJst: Number(els.executionHourInput.value),
+    checkExecutionMinuteJst: Number(els.executionMinuteInput.value),
     batchSize: Number(els.batchInput.value),
     notifyOnPriceDrop: true,
     notifyOnBestEver: true
@@ -229,7 +231,8 @@ async function loadSettings() {
   state.discordWebhookPausedCount = data.discordWebhookPausedCount || 0;
   els.thresholdInput.value = String(data.settings.notificationThreshold);
   els.intervalInput.value = String(data.settings.checkIntervalHours);
-  els.executionHourInput.value = String(data.settings.checkExecutionHourJst ?? 16);
+  els.executionHourInput.value = String(data.settings.checkExecutionHourJst ?? 15);
+  els.executionMinuteInput.value = String(data.settings.checkExecutionMinuteJst ?? 54);
   els.batchInput.value = String(data.settings.batchSize);
   renderSummary();
 }
@@ -240,8 +243,16 @@ function populateExecutionHourOptions() {
   for (let hour = 0; hour < 24; hour += 1) {
     const option = document.createElement('option');
     option.value = String(hour);
-    option.textContent = `${String(hour).padStart(2, '0')}:00`;
+    option.textContent = String(hour).padStart(2, '0');
     els.executionHourInput.append(option);
+  }
+  if (!els.executionMinuteInput) return;
+  els.executionMinuteInput.innerHTML = '';
+  for (let minute = 0; minute < 60; minute += 1) {
+    const option = document.createElement('option');
+    option.value = String(minute);
+    option.textContent = String(minute).padStart(2, '0');
+    els.executionMinuteInput.append(option);
   }
 }
 

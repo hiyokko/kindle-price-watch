@@ -2304,7 +2304,11 @@ export async function runDueChecks(options = {}) {
 
     if (!forceAll && shouldWaitForScheduledExecutionWindow(source, options, startedAt, settings)) {
       const remainingDue = countDueBooks(store.books, startedAt, settings);
-      const nextRunAtMs = nextJstExecutionBoundaryMs(startedAt, settings.checkExecutionHourJst);
+      const nextRunAtMs = nextJstExecutionBoundaryMs(
+        startedAt,
+        settings.checkExecutionHourJst,
+        settings.checkExecutionMinuteJst
+      );
       const result = {
         checked: 0,
         remainingDue,
@@ -2483,8 +2487,12 @@ function shouldRunSeriesDiscovery(source, options = {}, store = {}, settings = {
   const lastCheckedAt = new Date(store.seriesDiscoveryCursor?.checkedAt || 0).getTime();
   if (!Number.isFinite(lastCheckedAt) || lastCheckedAt <= 0) return true;
 
-  const boundary = latestJstExecutionBoundaryMs(now, settings.checkExecutionHourJst);
-  const lastBoundary = latestJstExecutionBoundaryMs(lastCheckedAt, settings.checkExecutionHourJst);
+  const boundary = latestJstExecutionBoundaryMs(now, settings.checkExecutionHourJst, settings.checkExecutionMinuteJst);
+  const lastBoundary = latestJstExecutionBoundaryMs(
+    lastCheckedAt,
+    settings.checkExecutionHourJst,
+    settings.checkExecutionMinuteJst
+  );
   return boundary - lastBoundary >= intervalDays * 24 * 60 * 60 * 1000;
 }
 
@@ -2800,7 +2808,8 @@ export async function saveSettings(settings) {
   const cleaned = {
     notificationThreshold: clampNumber(settings.notificationThreshold, 0, 95, 10),
     checkIntervalHours: normalizeCheckIntervalHours(settings.checkIntervalHours, 24),
-    checkExecutionHourJst: normalizeCheckExecutionHourJst(settings.checkExecutionHourJst, 16),
+    checkExecutionHourJst: normalizeCheckExecutionHourJst(settings.checkExecutionHourJst, 15),
+    checkExecutionMinuteJst: normalizeCheckExecutionMinuteJst(settings.checkExecutionMinuteJst, 54),
     batchSize: floorNumber(settings.batchSize, 1, 50),
     notifyOnPriceDrop: Boolean(settings.notifyOnPriceDrop),
     notifyOnBestEver: Boolean(settings.notifyOnBestEver)
@@ -3578,32 +3587,33 @@ function isBookDue(book, dueBefore) {
 
 function scheduledDueCutoffMs(now, settings = {}) {
   const intervalDays = Math.max(1, Math.round(normalizeCheckIntervalHours(settings.checkIntervalHours, 24) / 24));
-  const boundary = latestJstExecutionBoundaryMs(now, settings.checkExecutionHourJst);
+  const boundary = latestJstExecutionBoundaryMs(now, settings.checkExecutionHourJst, settings.checkExecutionMinuteJst);
   return boundary - (intervalDays - 1) * 24 * 60 * 60 * 1000;
 }
 
 function shouldWaitForScheduledExecutionWindow(source, options = {}, now = Date.now(), settings = {}) {
   if (options.ignoreExecutionWindow === true) return false;
   if (source !== 'cron' && source !== 'scheduler') return false;
-  return now < todayJstExecutionBoundaryMs(now, settings.checkExecutionHourJst);
+  return now < todayJstExecutionBoundaryMs(now, settings.checkExecutionHourJst, settings.checkExecutionMinuteJst);
 }
 
-function latestJstExecutionBoundaryMs(now, hourJst) {
-  const todayBoundary = todayJstExecutionBoundaryMs(now, hourJst);
+function latestJstExecutionBoundaryMs(now, hourJst, minuteJst = 54) {
+  const todayBoundary = todayJstExecutionBoundaryMs(now, hourJst, minuteJst);
   return now >= todayBoundary ? todayBoundary : todayBoundary - 24 * 60 * 60 * 1000;
 }
 
-function nextJstExecutionBoundaryMs(now, hourJst) {
-  const todayBoundary = todayJstExecutionBoundaryMs(now, hourJst);
+function nextJstExecutionBoundaryMs(now, hourJst, minuteJst = 54) {
+  const todayBoundary = todayJstExecutionBoundaryMs(now, hourJst, minuteJst);
   return now < todayBoundary ? todayBoundary : todayBoundary + 24 * 60 * 60 * 1000;
 }
 
-function todayJstExecutionBoundaryMs(now, hourJst) {
+function todayJstExecutionBoundaryMs(now, hourJst, minuteJst = 54) {
   const dayMs = 24 * 60 * 60 * 1000;
   const jstOffsetMs = 9 * 60 * 60 * 1000;
-  const normalizedHour = normalizeCheckExecutionHourJst(hourJst, 16);
+  const normalizedHour = normalizeCheckExecutionHourJst(hourJst, 15);
+  const normalizedMinute = normalizeCheckExecutionMinuteJst(minuteJst, 54);
   const jstDayStartUtc = Math.floor((Number(now) + jstOffsetMs) / dayMs) * dayMs - jstOffsetMs;
-  return jstDayStartUtc + normalizedHour * 60 * 60 * 1000;
+  return jstDayStartUtc + normalizedHour * 60 * 60 * 1000 + normalizedMinute * 60 * 1000;
 }
 
 function shouldStopForRuntimeLimit(startedAt, maxRuntimeMs, completedCount) {
@@ -3762,7 +3772,8 @@ function mergedRuntimeSettings(settings = {}) {
   return {
     notificationThreshold: clampNumber(settings.notificationThreshold, 0, 95, 10),
     checkIntervalHours: normalizeCheckIntervalHours(settings.checkIntervalHours, 24),
-    checkExecutionHourJst: normalizeCheckExecutionHourJst(settings.checkExecutionHourJst, 16),
+    checkExecutionHourJst: normalizeCheckExecutionHourJst(settings.checkExecutionHourJst, 15),
+    checkExecutionMinuteJst: normalizeCheckExecutionMinuteJst(settings.checkExecutionMinuteJst, 54),
     batchSize: floorNumber(settings.batchSize, 1, 50),
     notifyOnPriceDrop: settings.notifyOnPriceDrop !== false,
     notifyOnBestEver: settings.notifyOnBestEver !== false
@@ -3800,11 +3811,18 @@ function normalizeCheckIntervalHours(value, fallback = 24) {
   return allowed.includes(rounded) ? rounded : fallback;
 }
 
-function normalizeCheckExecutionHourJst(value, fallback = 16) {
+function normalizeCheckExecutionHourJst(value, fallback = 15) {
   const number = Number(value);
   if (!Number.isFinite(number)) return fallback;
   const rounded = Math.round(number);
   return rounded >= 0 && rounded <= 23 ? rounded : fallback;
+}
+
+function normalizeCheckExecutionMinuteJst(value, fallback = 54) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  const rounded = Math.round(number);
+  return rounded >= 0 && rounded <= 59 ? rounded : fallback;
 }
 
 function sortBooks(a, b) {

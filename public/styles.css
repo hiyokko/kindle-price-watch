@@ -753,9 +753,21 @@ button:disabled {
   gap: 10px;
 }
 
+.time-selects {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: 6px;
+  align-items: center;
+}
+
+.time-selects span {
+  color: var(--muted);
+  font-weight: 700;
+}
+
 .webhook-row {
   display: grid;
-  grid-template-columns: minmax(120px, 0.4fr) minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(120px, 0.4fr) minmax(0, 1fr) 92px auto;
   gap: 8px;
   align-items: center;
 }
@@ -774,7 +786,11 @@ button:disabled {
 }
 
 .webhook-toggle-button {
-  min-width: 82px;
+  box-sizing: border-box;
+  inline-size: 92px;
+  justify-self: start;
+  text-align: center;
+  white-space: nowrap;
 }
 
 .dialog-actions {
