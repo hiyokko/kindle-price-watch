@@ -24,7 +24,7 @@ Vercelのファイルシステムは永続保存に向かないため、GUIとAP
 Vercel CLIでPrivate Blobストアを作成し、プロジェクトへ接続します。
 
 ```bash
-vercel blob create-store kindle-price-watch-store --access private --yes --environment production --environment preview --environment development
+vercel blob create-store kindle-price-watch-store --access private --yes --environment production
 ```
 
 作成後、`BLOB_READ_WRITE_TOKEN` がVercel環境変数に追加されます。
@@ -46,6 +46,8 @@ CHECK_MAX_RUNTIME_MS=8000
 
 `APP_PASSWORD` を設定すると、画面表示と通常APIにはログインが必要になります。ログイン状態は署名付きHttpOnly Cookieで保持します。
 
+Blobの誤消費を避けるため、`BLOB_READ_WRITE_TOKEN` はProductionだけに設定します。Preview / Development に本番Blobのトークンを入れると、Preview確認や開発用デプロイが本番の `kindle-price-watch/store.json` を読み書きできます。PreviewでBlobを使う場合は、別Blobストアまたは別 `BLOB_STORE_PATH` を使ってください。
+
 ### 3. 既存データの初期投入
 
 ローカルの `data/store.json` を本番Blobへ投入する場合は次を実行します。
@@ -65,6 +67,15 @@ BLOB_READ_WRITE_TOKEN=Vercel BlobのRead Write Token
 ```
 
 Discord Webhookはアプリ画面から保存済みであればBlobから読み込まれます。GitHub Actions側だけで通知先を指定したい場合は、追加で `DISCORD_WEBHOOK_URL` をSecretに登録します。
+
+### 5. デプロイ運用
+
+VercelのGitHub自動デプロイ連携は使わず、GitHubへpushした後にVercel CLIで本番へ明示的にデプロイします。Previewデプロイで本番Blobを触らないようにするためです。
+
+```bash
+git push origin main
+vercel deploy --prod
+```
 
 ## 価格取得について
 
