@@ -80,6 +80,65 @@ export function buildPriceNotification(book, event) {
   };
 }
 
+export function buildCronSummaryNotification(summary = {}) {
+  const startedAt = summary.startedAt ? new Date(summary.startedAt) : null;
+  const finishedAt = summary.finishedAt ? new Date(summary.finishedAt) : new Date();
+  const durationMs = Number(summary.durationMs || 0);
+  const checked = Number(summary.checked || 0);
+  const remainingDue = Number(summary.remainingDue || 0);
+  const resultErrors = Number(summary.resultErrors || 0);
+  const notificationSent = Number(summary.notificationSent || 0);
+  const notificationFailed = Number(summary.notificationFailed || 0);
+  const status = summary.stoppedByRuntimeLimit ? 'ランタイム上限で停止' : '完了';
+  const color = summary.stoppedByRuntimeLimit ? 0xffc857 : resultErrors > 0 ? 0xff9f1c : 0x4ecdc4;
+
+  const fields = [
+    { name: '処理冊数', value: `${checked.toLocaleString('ja-JP')}冊`, inline: true },
+    { name: '実行時間', value: formatDuration(durationMs), inline: true },
+    { name: '残件', value: `${remainingDue.toLocaleString('ja-JP')}冊`, inline: true },
+    resultErrors > 0 ? { name: '取得エラー', value: `${resultErrors.toLocaleString('ja-JP')}冊`, inline: true } : null,
+    notificationSent + notificationFailed > 0
+      ? {
+          name: '価格通知',
+          value: `成功 ${notificationSent.toLocaleString('ja-JP')} / 失敗 ${notificationFailed.toLocaleString('ja-JP')}`,
+          inline: true
+        }
+      : null,
+    summary.importQueue
+      ? {
+          name: '追加キュー',
+          value: `処理 ${Number(summary.importQueue.processed || 0).toLocaleString('ja-JP')} / 追加 ${Number(summary.importQueue.imported || 0).toLocaleString('ja-JP')} / エラー ${Number(summary.importQueue.errors || 0).toLocaleString('ja-JP')}`,
+          inline: false
+        }
+      : null,
+    summary.seriesDiscovery
+      ? {
+          name: 'シリーズ探索',
+          value: `確認 ${Number(summary.seriesDiscovery.checked || 0).toLocaleString('ja-JP')} / 新規 ${Number(summary.seriesDiscovery.added || 0).toLocaleString('ja-JP')} / エラー ${Number(summary.seriesDiscovery.errors || 0).toLocaleString('ja-JP')}`,
+          inline: false
+        }
+      : null
+  ].filter(Boolean);
+
+  return {
+    username: 'Kindle Price Watch',
+    embeds: [
+      {
+        title: `自動実行サマリー: ${status}`,
+        color,
+        fields,
+        footer: {
+          text: `source: ${summary.source || 'cron'}${summary.forced ? ' / forced' : ''}`
+        },
+        timestamp: finishedAt.toISOString(),
+        description: startedAt
+          ? `開始: ${formatDateTime(startedAt)}\n終了: ${formatDateTime(finishedAt)}`
+          : `終了: ${formatDateTime(finishedAt)}`
+      }
+    ]
+  };
+}
+
 function formatPriceLine(book) {
   if (book.currentPrice == null) return '価格を取得できませんでした';
   const base = formatYen(book.currentPrice);
@@ -91,4 +150,25 @@ function formatPriceLine(book) {
 
 function formatYen(value) {
   return `¥${Number(value).toLocaleString('ja-JP')}`;
+}
+
+function formatDuration(ms) {
+  const totalSeconds = Math.max(0, Math.round(Number(ms || 0) / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) return `${hours}時間${minutes}分${seconds}秒`;
+  if (minutes > 0) return `${minutes}分${seconds}秒`;
+  return `${seconds}秒`;
+}
+
+function formatDateTime(date) {
+  return new Intl.DateTimeFormat('ja-JP', {
+    timeZone: 'Asia/Tokyo',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
+  }).format(date);
 }

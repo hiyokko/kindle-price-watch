@@ -18,6 +18,7 @@ import {
 import { readStore, updateStore, publicBook } from './store.mjs';
 import { readWebhookStore, writeWebhookStore } from './webhook-store.mjs';
 import {
+  buildCronSummaryNotification,
   buildPriceNotification,
   getDiscordWebhookUrls,
   parseDiscordWebhookUrls,
@@ -2400,6 +2401,7 @@ export async function runDueChecks(options = {}) {
     }
 
     const remainingDue = countDueBooks(store.books, Date.now(), settings);
+    const finishedAt = new Date().toISOString();
     const result = {
       checked: results.length,
       remainingDue,
@@ -2415,7 +2417,7 @@ export async function runDueChecks(options = {}) {
     const cronFields = source === 'cron' && shouldPersistCronRun(result)
       ? {
           lastCronStartedAt: cronStartedAt,
-          lastCronFinishedAt: new Date().toISOString(),
+          lastCronFinishedAt: finishedAt,
           lastCronChecked: result.checked,
           lastCronRemainingDue: result.remainingDue,
           lastCronStoppedByRuntimeLimit: result.stoppedByRuntimeLimit,
@@ -2436,6 +2438,15 @@ export async function runDueChecks(options = {}) {
         cronFields
       });
     }
+
+    result.summaryNotification = await sendCronSummaryNotification(result, {
+      source,
+      options,
+      startedAt: cronStartedAt,
+      finishedAt,
+      durationMs: new Date(finishedAt).getTime() - startedAt,
+      getWebhookUrls
+    });
 
     if (source === 'cron') {
       result.cronPersisted = Boolean(cronFields);
@@ -3205,6 +3216,54 @@ function checkResultPayload(checkedBook, snapshotResult, events, notifications) 
     error: snapshotResult.ok ? null : snapshotResult.error,
     events,
     notifications
+  };
+}
+
+async function sendCronSummaryNotification(result, context = {}) {
+  if (context.options?.notify === false) return null;
+  if (context.source !== 'cron' && context.source !== 'scheduler') return null;
+  if (result.skipped) return null;
+
+  try {
+    const webhookUrls = typeof context.getWebhookUrls === 'function'
+      ? await context.getWebhookUrls()
+      : await getRuntimeDiscordWebhookUrls();
+    const message = buildCronSummaryNotification(cronSummaryPayload(result, context));
+    return await sendDiscordNotification(message, { webhookUrls });
+  } catch (error) {
+    return { ok: false, error: error.message || String(error) };
+  }
+}
+
+function cronSummaryPayload(result, context = {}) {
+  const notifications = (result.results || []).flatMap((entry) => entry.notifications || []);
+  return {
+    source: context.source || 'cron',
+    startedAt: context.startedAt,
+    finishedAt: context.finishedAt,
+    durationMs: context.durationMs,
+    checked: result.checked,
+    remainingDue: result.remainingDue,
+    stoppedByRuntimeLimit: result.stoppedByRuntimeLimit,
+    forced: result.forced,
+    resultErrors: (result.results || []).filter((entry) => entry?.ok === false || entry?.error).length,
+    notificationSent: notifications.filter((entry) => entry.ok === true).length,
+    notificationFailed: notifications.filter((entry) => entry.ok === false).length,
+    importQueue: result.importQueue
+      ? {
+          processed: result.importQueue.processed || 0,
+          imported: result.importQueue.imported || 0,
+          errors: result.importQueue.errors?.length || 0
+        }
+      : null,
+    seriesDiscovery: result.seriesDiscovery
+      ? {
+          checked: result.seriesDiscovery.checked || 0,
+          added: result.seriesDiscovery.added || 0,
+          completed: result.seriesDiscovery.completed || 0,
+          errors: result.seriesDiscovery.errors?.length || 0
+        }
+      : null
   };
 }
 
