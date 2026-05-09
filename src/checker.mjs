@@ -3229,6 +3229,7 @@ async function sendCronSummaryNotification(result, context = {}) {
   if (context.options?.notify === false) return null;
   if (context.source !== 'cron' && context.source !== 'scheduler') return null;
   if (result.skipped) return null;
+  if (!shouldPersistCronRun(result)) return null;
 
   try {
     const webhookUrls = typeof context.getWebhookUrls === 'function'
@@ -3911,7 +3912,7 @@ function emptyCheckCursor() {
   };
 }
 
-async function recordCronRun(fields) {
+export async function recordCronRun(fields) {
   await updateStore((store) => {
     store.automation = {
       ...(store.automation || {}),

@@ -1,20 +1,21 @@
 import { loadEnv } from '../src/env.mjs';
-import { runDueChecks } from '../src/checker.mjs';
+import { recordCronRun, runDueChecks } from '../src/checker.mjs';
 
 loadEnv();
 validateActionEnvironment();
 
+const scriptStartedAt = new Date().toISOString();
 const hardTimeoutMs = checkHardTimeoutMs();
+let forcedExitRecording = false;
 const watchdog = hardTimeoutMs > 0
   ? setTimeout(() => {
-      console.error(JSON.stringify({
-        error: 'CHECK_HARD_TIMEOUT_MS elapsed',
-        hardTimeoutMs,
-        finishedAt: new Date().toISOString()
-      }));
-      process.exit(124);
+      void recordForcedExit('CHECK_HARD_TIMEOUT_MS elapsed', 124, { hardTimeoutMs });
     }, hardTimeoutMs)
   : null;
+
+process.once('SIGTERM', () => {
+  void recordForcedExit('SIGTERM received', 143);
+});
 
 try {
   const result = await runDueChecks({ notify: true, source: 'cron' });
@@ -47,4 +48,32 @@ function checkHardTimeoutMs() {
   if (Number.isFinite(maxRuntimeMs) && maxRuntimeMs > 0) return Math.round(maxRuntimeMs + 5 * 60 * 1000);
 
   return 0;
+}
+
+async function recordForcedExit(error, exitCode, details = {}) {
+  if (forcedExitRecording) return;
+  forcedExitRecording = true;
+
+  const finishedAt = new Date().toISOString();
+  console.error(JSON.stringify({
+    error,
+    ...details,
+    finishedAt
+  }));
+
+  try {
+    await recordCronRun({
+      lastCronStartedAt: scriptStartedAt,
+      lastCronFinishedAt: finishedAt,
+      lastCronStoppedByRuntimeLimit: true,
+      lastCronError: error
+    });
+  } catch (recordError) {
+    console.error(JSON.stringify({
+      error: 'Failed to record forced cron exit',
+      cause: recordError.message || String(recordError)
+    }));
+  }
+
+  process.exit(exitCode);
 }

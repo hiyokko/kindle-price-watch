@@ -58,7 +58,7 @@ vercel blob put data/store.json --pathname kindle-price-watch/store.json --acces
 
 ### 4. GitHub Actionsで定期実行
 
-Vercel Cronは使わず、`.github/workflows/kindle-price-check.yml` で価格チェックとシリーズ新刊探索をGitHub Actions上で実行します。VercelはWeb GUIとAPI、Vercel Blobはデータ保存先として使います。Vercel上の常駐スケジューラは `AUTO_CHECK_ENABLED=false` のままにしてください。
+Vercel Cronは使わず、`.github/workflows/kindle-price-check.yml` で価格チェックとシリーズ新刊探索をGitHub Actions上で実行します。VercelはWeb GUIとAPI、Vercel Blobはデータ保存先として使います。Vercel上の常駐スケジューラは `AUTO_CHECK_ENABLED=false` のままにしてください。主実行は15:54 JSTで、GitHubの定期実行が遅延・欠落した場合に備えて同日夕方に複数のバックアップ枠を置いています。
 
 GitHubリポジトリの Settings > Secrets and variables > Actions に、少なくとも次を登録します。
 
