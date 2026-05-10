@@ -157,6 +157,7 @@ export function publicBook(book) {
     currentPoints: book.currentPoints,
     effectivePrice: book.effectivePrice,
     listPrice: book.listPrice,
+    discountRate: discountRate(book.effectivePrice, book.listPrice),
     lowestPrice: book.lowestPrice,
     lowestEffectivePrice: book.lowestEffectivePrice,
     previousEffectivePrice: book.previousEffectivePrice,
@@ -173,6 +174,13 @@ export function publicBook(book) {
     lastError: book.lastError,
     provider: book.provider
   };
+}
+
+function discountRate(effectivePrice, listPrice) {
+  const effective = Number(effectivePrice);
+  const list = Number(listPrice);
+  if (!Number.isFinite(effective) || !Number.isFinite(list) || list <= 0) return null;
+  return Math.max(0, Math.round(((list - effective) / list) * 100));
 }
 
 function normalizeBook(book) {

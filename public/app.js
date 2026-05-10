@@ -480,6 +480,7 @@ function createImportQueueNode(entry) {
   const badge = node.querySelector('.badge');
   const current = node.querySelector('.current-price');
   const lowest = node.querySelector('.lowest-price');
+  const discount = node.querySelector('.discount-rate');
   const checked = node.querySelector('.checked-at');
   const error = node.querySelector('.error-text');
   const amazon = node.querySelector('.amazon-link');
@@ -497,6 +498,7 @@ function createImportQueueNode(entry) {
   meta.textContent = entry.input || '';
   current.textContent = '自動実行待ち';
   lowest.textContent = '-';
+  discount.textContent = '-';
   checked.textContent = entry.addedAt ? relativeTime(entry.addedAt) : '未実行';
   error.textContent = '次回のGitHub Actionsで追加・価格取得します';
   error.classList.add('active');
@@ -643,6 +645,7 @@ function createBookNode(book) {
   const badge = node.querySelector('.badge');
   const current = node.querySelector('.current-price');
   const lowest = node.querySelector('.lowest-price');
+  const discount = node.querySelector('.discount-rate');
   const checked = node.querySelector('.checked-at');
   const error = node.querySelector('.error-text');
   const amazon = node.querySelector('.amazon-link');
@@ -666,6 +669,7 @@ function createBookNode(book) {
   meta.textContent = [cleanMeta(book.author), cleanMeta(book.publisher), book.asin].filter(Boolean).join(' / ');
   current.textContent = formatPrice(book);
   lowest.textContent = book.lowestEffectivePrice == null ? '-' : yen(book.lowestEffectivePrice);
+  discount.textContent = discountRateLabel(bookDiscountRate(book));
   checked.textContent = relativeTime(book.lastCheckedAt);
   amazon.href = book.amazonUrl;
 
@@ -884,8 +888,9 @@ function shouldDisplayGroupAsSingle(group) {
 }
 
 function sortedGroups(groups) {
-  if (state.sortMode !== 'total_asc') return [...groups].sort(compareGroupsByQueueOrder);
-  return [...groups].sort(compareGroupsByTotalPrice);
+  if (state.sortMode === 'total_asc') return [...groups].sort(compareGroupsByTotalPrice);
+  if (state.sortMode === 'discount_desc') return [...groups].sort(compareGroupsByDiscountRate);
+  return [...groups].sort(compareGroupsByQueueOrder);
 }
 
 function compareGroupsByQueueOrder(a, b) {
@@ -912,6 +917,22 @@ function compareGroupsByTotalPrice(a, b) {
 function totalPriceSortRank(metrics) {
   if (metrics.pricedCount === 0) return 2;
   return metrics.complete ? 0 : 1;
+}
+
+function compareGroupsByDiscountRate(a, b) {
+  const am = a.totalMetrics || seriesTotalMetrics(a);
+  const bm = b.totalMetrics || seriesTotalMetrics(b);
+  const ar = discountSortRank(am);
+  const br = discountSortRank(bm);
+  if (ar !== br) return ar - br;
+  if (am.discountRate !== bm.discountRate) return (bm.discountRate ?? -1) - (am.discountRate ?? -1);
+  if (am.effectiveTotal !== bm.effectiveTotal) return am.effectiveTotal - bm.effectiveTotal;
+  return String(a.title || '').localeCompare(String(b.title || ''), 'ja');
+}
+
+function discountSortRank(metrics) {
+  if (metrics.discountRate == null) return 2;
+  return metrics.discountComplete ? 0 : 1;
 }
 
 function expectedSeriesCount(books) {
@@ -1085,18 +1106,20 @@ function formatPrice(book) {
 }
 
 function seriesTotalLabel(group) {
-  const { pricedCount, totalPrice, totalPoints, effectiveTotal, missing, unregistered } =
+  const { pricedCount, totalPrice, totalPoints, effectiveTotal, missing, unregistered, discountRate } =
     group.totalMetrics || seriesTotalMetrics(group);
   if (pricedCount === 0) return '合計 未取得';
 
   const points = totalPoints > 0 ? ` / ${totalPoints.toLocaleString('ja-JP')}pt（実質 ${yen(effectiveTotal)}）` : '';
+  const discount = discountRate == null ? '' : ` / 割引 ${discountRateLabel(discountRate)}`;
   const missingText = missing > 0 ? ` / 未取得${missing}冊` : '';
   const unregisteredText = unregistered > 0 ? ` / 未登録${unregistered}冊` : '';
-  return `合計 ${yen(totalPrice)}${points}${missingText}${unregisteredText}`;
+  return `合計 ${yen(totalPrice)}${points}${discount}${missingText}${unregisteredText}`;
 }
 
 function seriesTotalMetrics(group) {
   const pricedBooks = group.books.filter((book) => book.currentPrice != null);
+  const discountBooks = group.books.filter((book) => bookDiscountRate(book) != null);
   const seriesLowest = observedSeriesLowest(group);
   const totalPrice = pricedBooks.reduce((sum, book) => sum + Number(book.currentPrice || 0), 0);
   const totalPoints = pricedBooks.reduce((sum, book) => sum + Number(book.currentPoints || 0), 0);
@@ -1104,14 +1127,23 @@ function seriesTotalMetrics(group) {
     (sum, book) => sum + Number(book.effectivePrice ?? Math.max(0, (book.currentPrice || 0) - (book.currentPoints || 0))),
     0
   );
+  const listTotal = discountBooks.reduce((sum, book) => sum + Number(book.listPrice || 0), 0);
+  const discountEffectiveTotal = discountBooks.reduce((sum, book) => sum + Number(book.effectivePrice || 0), 0);
   const missing = group.books.length - pricedBooks.length;
   const unregistered = Math.max(0, (group.expectedCount || group.books.length) - group.books.length);
+  const discountRate = listTotal > 0 ? calculateDiscountRate(discountEffectiveTotal, listTotal) : null;
+  const discountComplete = discountBooks.length > 0 && discountBooks.length === group.books.length && missing === 0 && unregistered === 0;
 
   return {
     pricedCount: pricedBooks.length,
     totalPrice,
     totalPoints,
     effectiveTotal,
+    listTotal,
+    discountEffectiveTotal,
+    discountRate,
+    discountPricedCount: discountBooks.length,
+    discountComplete,
     lowestEffectiveTotal: seriesLowest,
     lowestPricedCount: seriesLowest == null ? 0 : group.books.length,
     missing,
@@ -1176,6 +1208,22 @@ function dateLabel(date) {
   return `${date.getMonth() + 1}/${date.getDate()}`;
 }
 
+function calculateDiscountRate(effectivePrice, listPrice) {
+  const effective = Number(effectivePrice);
+  const list = Number(listPrice);
+  if (!Number.isFinite(effective) || !Number.isFinite(list) || list <= 0) return null;
+  return Math.max(0, Math.round(((list - effective) / list) * 100));
+}
+
+function bookDiscountRate(book) {
+  if (book?.discountRate != null) return Number(book.discountRate);
+  return calculateDiscountRate(book?.effectivePrice, book?.listPrice);
+}
+
+function discountRateLabel(value) {
+  return value == null ? '-' : `${Number(value).toLocaleString('ja-JP')}%`;
+}
+
 function isBelowList(book) {
   return book.effectivePrice != null && book.listPrice != null && book.effectivePrice < book.listPrice;
 }
@@ -1221,7 +1269,7 @@ function isBlockingBookError(error) {
 function readSavedSortMode() {
   try {
     const value = localStorage.getItem('kw_sort_mode');
-    return value === 'total_asc' ? value : 'default';
+    return ['total_asc', 'discount_desc'].includes(value) ? value : 'default';
   } catch {
     return 'default';
   }
@@ -1229,7 +1277,7 @@ function readSavedSortMode() {
 
 function saveSortMode(value) {
   try {
-    localStorage.setItem('kw_sort_mode', value === 'total_asc' ? value : 'default');
+    localStorage.setItem('kw_sort_mode', ['total_asc', 'discount_desc'].includes(value) ? value : 'default');
   } catch {
     // Sorting still works for the current session if storage is unavailable.
   }
