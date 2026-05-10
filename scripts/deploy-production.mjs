@@ -113,6 +113,12 @@ async function vercelDeployCommands() {
     });
   }
 
+  commands.push({
+    label: 'vercel',
+    command: 'vercel',
+    args: ['deploy', '--prod']
+  });
+
   const bundledNpm = '/private/tmp/npm-cli/package/bin/npm-cli.js';
   if (await exists(bundledNpm)) {
     commands.push({
@@ -123,11 +129,6 @@ async function vercelDeployCommands() {
   }
 
   commands.push(
-    {
-      label: 'vercel',
-      command: 'vercel',
-      args: ['deploy', '--prod']
-    },
     {
       label: 'npm exec vercel@latest',
       command: 'npm',
