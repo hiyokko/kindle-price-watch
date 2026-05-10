@@ -1634,6 +1634,7 @@ function suspiciousSnapshotReason(book, snapshot) {
     points: snapshot.currentPoints,
     effectivePrice: snapshot.effectivePrice,
     listPrice: snapshot.listPrice ?? book.listPrice,
+    provider: snapshot.provider,
     referencePrices: [
       book.currentPrice,
       book.effectivePrice,
@@ -1697,7 +1698,16 @@ function repairSuspiciousPriceState(book, store, options = {}) {
     changed = true;
   }
 
-  if (options.clearCurrent && (suspiciousStoredCurrentPriceReason(book) || hasUnvalidatedSeriesPrice(book))) {
+  const currentSnapshotBeforeRepair = {
+    currentPrice: book.currentPrice,
+    currentPoints: book.currentPoints,
+    effectivePrice: book.effectivePrice,
+    provider: book.provider
+  };
+  const shouldClearCurrent =
+    options.clearCurrent && (suspiciousStoredCurrentPriceReason(book) || hasUnvalidatedSeriesPrice(book));
+
+  if (shouldClearCurrent) {
     book.currentPrice = null;
     book.currentPoints = 0;
     book.effectivePrice = null;
@@ -1731,7 +1741,14 @@ function repairSuspiciousPriceState(book, store, options = {}) {
 
   const beforeNotificationCount = store.notifications.length;
   store.notifications = store.notifications.filter(
-    (entry) => entry.bookId !== book.id || !isSuspiciousNotificationEntry(entry, book)
+    (entry) =>
+      entry.bookId !== book.id ||
+      !(
+        isSuspiciousNotificationEntry(entry, book) ||
+        (currentCleared &&
+          nullableNumber(entry.effectivePrice) != null &&
+          nullableNumber(entry.effectivePrice) === nullableNumber(currentSnapshotBeforeRepair.effectivePrice))
+      )
   );
   const removedNotifications = beforeNotificationCount - store.notifications.length;
   if (removedNotifications > 0) changed = true;
@@ -2001,6 +2018,7 @@ function suspiciousStoredCurrentPriceReason(book) {
     points: book.currentPoints,
     effectivePrice: book.effectivePrice,
     listPrice,
+    provider: book.provider,
     referencePrices: [
       listPrice,
       book.previousEffectivePrice,
@@ -2018,6 +2036,7 @@ function isSuspiciousHistoryEntry(entry, book) {
       points: entry.points,
       effectivePrice: entry.effectivePrice,
       listPrice,
+      provider,
       referencePrices: [book.currentPrice, book.effectivePrice, listPrice]
     })
   );
@@ -2031,6 +2050,7 @@ function isSuspiciousNotificationEntry(entry, book) {
       points: 0,
       effectivePrice: entry.effectivePrice,
       listPrice,
+      provider: book.provider,
       referencePrices: [book.currentPrice, book.effectivePrice, listPrice]
     })
   );
@@ -2045,6 +2065,7 @@ function hasSuspiciousStoredPriceFloor(book) {
       points: 0,
       effectivePrice: book.lowestEffectivePrice,
       listPrice: lowestListPrice,
+      provider: book.provider,
       referencePrices: [book.currentPrice, book.effectivePrice, lowestListPrice]
     }) ||
       suspiciousPriceReason({
@@ -2052,6 +2073,7 @@ function hasSuspiciousStoredPriceFloor(book) {
         points: 0,
         effectivePrice: book.lowestEffectivePrice,
         listPrice: lowestEffectiveListPrice,
+        provider: book.provider,
         referencePrices: [book.currentPrice, book.effectivePrice, lowestEffectiveListPrice]
       })
   );
@@ -2079,7 +2101,7 @@ function isSeriesDerivedPriceProvider(provider) {
   return normalized.includes('_series') || normalized === 'amazon_series_bulk' || normalized === 'amazon_series_reader';
 }
 
-function suspiciousPriceReason({ price, points = 0, effectivePrice = null, listPrice = null, referencePrices = [] }) {
+function suspiciousPriceReason({ price, points = 0, effectivePrice = null, listPrice = null, provider = '', referencePrices = [] }) {
   const current = Number(price);
   if (!Number.isFinite(current) || current <= 0) return '';
 
@@ -2088,6 +2110,9 @@ function suspiciousPriceReason({ price, points = 0, effectivePrice = null, listP
 
   const list = Number(listPrice);
   if (Number.isFinite(list) && list > 0 && current > list * 1.15) return '価格が定価を大きく超えています';
+  if (isLikelyPercentContaminatedStoredPrice({ price: current, points: pointValue, listPrice: list, provider })) {
+    return '価格が割引率またはポイント率に見えます';
+  }
 
   const reference = Math.max(
     ...referencePrices
@@ -2107,6 +2132,21 @@ function suspiciousPriceReason({ price, points = 0, effectivePrice = null, listP
   }
 
   return '';
+}
+
+function isLikelyPercentContaminatedStoredPrice({ price, points = 0, listPrice = null, provider = '' }) {
+  if (String(provider || '').toLowerCase() !== 'amazon_html') return false;
+  const current = Number(price);
+  const pointValue = Number(points || 0);
+  if (!Number.isFinite(current) || current <= 0 || !Number.isFinite(pointValue) || pointValue <= 0) return false;
+
+  const pointRatio = pointValue / current;
+  if (current <= 10) return true;
+  if (current <= 20 && pointRatio >= 0.3) return true;
+  if (current <= 50 && pointRatio >= 0.5) return true;
+
+  const list = Number(listPrice);
+  return Number.isFinite(list) && list >= 1000 && current <= 100 && current <= list * 0.05 && pointRatio >= 0.2;
 }
 
 function recomputeBookPriceFloors(book, store) {

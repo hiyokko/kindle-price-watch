@@ -3033,6 +3033,13 @@ function correctImplausibleKindlePrice({ currentPrice, currentPoints, listPrice,
   }
 
   const inferred = inferDiscountedKindlePrice(html, listPrice);
+  if (isLikelyPercentContaminatedKindlePrice({ currentPrice, currentPoints, listPrice, html })) {
+    return {
+      currentPrice: inferred,
+      currentPoints: inferred == null ? 0 : sanitizePoints(extractPointsNearPrice(html, inferred) ?? 0, inferred)
+    };
+  }
+
   if (
     currentPrice != null &&
     inferred != null &&
@@ -3158,6 +3165,23 @@ function isSuspiciousDiscountLikePrice(currentPrice, currentPoints, listPrice, p
 
 function isSuspiciousAboveListPrice(currentPrice, listPrice) {
   return currentPrice != null && listPrice != null && currentPrice > listPrice * 1.15;
+}
+
+function isLikelyPercentContaminatedKindlePrice({ currentPrice, currentPoints, listPrice, html }) {
+  const price = Number(currentPrice);
+  const points = Number(currentPoints || 0);
+  const list = Number(listPrice);
+  if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(points) || points <= 0) return false;
+
+  const pointRatio = points / price;
+  const priceLooksLikeDiscountPercent = isDiscountPercentValue(html, price);
+  const deepDiscountAgainstList =
+    Number.isFinite(list) && list >= 1000 && price <= 100 && price <= list * 0.05 && pointRatio >= 0.2;
+
+  if (price <= 10) return true;
+  if (price <= 20 && pointRatio >= 0.3) return true;
+  if (price <= 50 && pointRatio >= 0.5) return true;
+  return priceLooksLikeDiscountPercent && deepDiscountAgainstList;
 }
 
 function extractBulkOfferUnitPrice(html, expectedCount = 0) {
