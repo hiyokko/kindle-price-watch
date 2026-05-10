@@ -160,6 +160,17 @@ function suspiciousStoredPrice(book) {
   if (Number.isFinite(points) && points > price) return true;
 
   const listPrice = Number(book.listPrice);
+  if (
+    Number.isFinite(points) &&
+    points > 0 &&
+    Number.isFinite(listPrice) &&
+    listPrice >= 1000 &&
+    price <= listPrice * 0.15 &&
+    points / price >= 0.2
+  ) {
+    return true;
+  }
+
   return Number.isFinite(listPrice) && listPrice > 0 && price > listPrice * 1.15;
 }
 

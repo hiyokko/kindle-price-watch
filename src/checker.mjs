@@ -2028,6 +2028,8 @@ function suspiciousStoredCurrentPriceReason(book) {
 }
 
 function isSuspiciousHistoryEntry(entry, book) {
+  if (isStaleDiscountInferredHistoryEntry(entry, book)) return true;
+
   const provider = entry.provider || book.provider;
   const listPrice = trustedListPriceFor(entry.price, entry.listPrice ?? book.listPrice, provider);
   return Boolean(
@@ -2040,6 +2042,24 @@ function isSuspiciousHistoryEntry(entry, book) {
       referencePrices: [book.currentPrice, book.effectivePrice, listPrice]
     })
   );
+}
+
+function isStaleDiscountInferredHistoryEntry(entry, book) {
+  const provider = String(entry?.provider || book?.provider || '').toLowerCase();
+  if (provider !== 'amazon_html') return false;
+
+  const historyPrice = Number(entry?.price);
+  const currentPrice = Number(book?.currentPrice);
+  const points = Number(entry?.points || 0);
+  const listPrice = Number(entry?.listPrice ?? book?.listPrice);
+  if (!Number.isFinite(historyPrice) || historyPrice <= 0) return false;
+  if (!Number.isFinite(currentPrice) || currentPrice <= 0) return false;
+  if (!Number.isFinite(points) || points <= 0) return false;
+  if (!Number.isFinite(listPrice) || listPrice < 1000) return false;
+
+  const looksLikeDeepDiscount = historyPrice <= listPrice * 0.15 && points / historyPrice >= 0.2;
+  const wasReplacedByHigherExplicitPrice = currentPrice >= historyPrice * 2;
+  return looksLikeDeepDiscount && wasReplacedByHigherExplicitPrice;
 }
 
 function isSuspiciousNotificationEntry(entry, book) {

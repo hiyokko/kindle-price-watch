@@ -52,6 +52,35 @@ test('Amazon HTML parser accepts genuinely small explicit yen prices', () => {
   assert.equal(snapshot.effectivePrice, 3);
 });
 
+test('Amazon HTML parser keeps series bundle discounts out of single-volume price', () => {
+  const snapshot = extractAmazonHtmlSnapshotFromHtml(`
+    <html>
+      <head><meta property="og:title" content="王様ランキング(1) (BLIC)"></head>
+      <body>
+        <span id="productTitle">王様ランキング(1) (BLIC)</span>
+        <div id="tmm-grid-swatch-KINDLE">
+          Kindle版
+          <span class="a-price" data-a-color="price">
+            <span class="a-offscreen">￥644</span>
+            <span class="a-price-whole">644</span>
+          </span>
+          <span>88ポイント</span>
+        </div>
+        <div id="series-bundle-offer">
+          <span>シリーズまとめ買い</span>
+          <span class="a-price a-text-price"><span class="a-offscreen">￥2,178</span></span>
+          <span>90%OFF</span>
+        </div>
+      </body>
+    </html>
+  `, 'B08GC7TB1F', 'https://www.amazon.co.jp/dp/B08GC7TB1F');
+
+  assert.equal(snapshot.currentPrice, 644);
+  assert.equal(snapshot.currentPoints, 88);
+  assert.equal(snapshot.effectivePrice, 556);
+  assert.equal(snapshot.listPrice, null);
+});
+
 function productHtml({ title, currentPrice, listPrice, promo }) {
   return `
     <html>

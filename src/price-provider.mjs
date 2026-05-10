@@ -3536,12 +3536,22 @@ function extractListPrice(html, currentPrice) {
   const candidates = [];
   for (const scope of listPriceEvidenceScopes(html, currentPrice)) {
     for (const match of scope.matchAll(strikePattern)) {
+      if (isSeriesBundleListPriceContext(scope, match.index ?? 0)) continue;
       const price = parsePrice(match[1]);
       if (price != null) candidates.push(price);
     }
   }
   const higher = candidates.filter((price) => currentPrice == null || price > currentPrice);
   return higher.sort((a, b) => a - b)[0] ?? null;
+}
+
+function isSeriesBundleListPriceContext(text, index, radius = 900) {
+  const context = cleanText(
+    String(text || '').slice(Math.max(0, index - radius), Math.min(String(text || '').length, index + radius))
+  );
+  return /(?:series-bundle|bundle|bulk|hulkbuy|collection|まとめ買い|全巻|セット|シリーズ.{0,24}(?:まとめ|一括|全巻|セット|購入)|(?:まとめ|一括|全巻|セット).{0,24}シリーズ)/i.test(
+    context
+  );
 }
 
 function listPriceEvidenceScopes(html, currentPrice) {
