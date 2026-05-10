@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node server.mjs",
     "dev": "node server.mjs",
-    "check": "node scripts/check-once.mjs"
+    "check": "node scripts/check-once.mjs",
+    "deploy:production": "node scripts/deploy-production.mjs"
   },
   "dependencies": {
     "@vercel/blob": "^2.0.0"

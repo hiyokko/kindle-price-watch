@@ -72,11 +72,15 @@ Discord Webhookはアプリ画面から保存済みであればBlobから読み�
 
 ### 5. デプロイ運用
 
-VercelのGitHub自動デプロイ連携は使わず、GitHubへpushした後にVercel CLIで本番へ明示的にデプロイします。Previewデプロイで本番Blobを触らないようにするためです。
+VercelのGitHub自動デプロイ連携は使わず、GitHubへpushした後にVercel CLIで本番へ明示的にデプロイします。Previewデプロイで本番Blobを触らないことと、非公開GitHubリポジトリのGitメタデータをVercelデプロイに渡さないことが目的です。Vercel Project SettingsではGit連携の自動デプロイ作成を無効にしておきます。
+
+`vercel deploy --prod` をこのリポジトリ直下で直接実行しないでください。`.git` がある状態でデプロイすると、VercelがGitHub commit authorを使ったデプロイとして扱い、非公開リポジトリやVercelチーム権限との不一致で失敗することがあります。
+
+本番デプロイは次を使います。`node scripts/deploy-production.mjs` は一時ディレクトリへ `.git`、`node_modules`、ローカル `.env*`、ローカル `data/*.json` を除外してコピーし、そのGit情報を持たないディレクトリからVercelへアップロードします。npmが使える環境では `npm run deploy:production` でも同じ処理を実行できます。
 
 ```bash
 git push origin main
-vercel deploy --prod
+node scripts/deploy-production.mjs
 ```
 
 ## 価格取得について
