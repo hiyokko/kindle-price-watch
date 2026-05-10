@@ -1,11 +1,13 @@
 import { loadEnv } from '../src/env.mjs';
-import { recordCronRun, runDueChecks } from '../src/checker.mjs';
+import { recordCronRun, resolveCronScheduleIntent, runDueChecks } from '../src/checker.mjs';
 
 loadEnv();
 validateActionEnvironment();
 
 const scriptStartedAt = new Date().toISOString();
 const hardTimeoutMs = checkHardTimeoutMs();
+const scheduleCron = process.env.CHECK_SCHEDULE_CRON || '';
+const isBackupRun = readBooleanEnv('CHECK_BACKUP_RUN', false);
 let forcedExitRecording = false;
 const watchdog = hardTimeoutMs > 0
   ? setTimeout(() => {
@@ -21,7 +23,8 @@ try {
   const result = await runDueChecks({
     notify: true,
     source: 'cron',
-    backup: readBooleanEnv('CHECK_BACKUP_RUN', false)
+    backup: isBackupRun,
+    scheduleCron
   });
   console.log(JSON.stringify(result, null, 2));
 } finally {
@@ -65,6 +68,7 @@ async function recordForcedExit(error, exitCode, details = {}) {
   forcedExitRecording = true;
 
   const finishedAt = new Date().toISOString();
+  const scheduleIntent = resolveCronScheduleIntent(scheduleCron, Date.now());
   console.error(JSON.stringify({
     error,
     ...details,
@@ -75,6 +79,13 @@ async function recordForcedExit(error, exitCode, details = {}) {
     await recordCronRun({
       lastCronStartedAt: scriptStartedAt,
       lastCronFinishedAt: finishedAt,
+      ...(scheduleIntent
+        ? {
+            lastCronExecutionBoundaryAt: scheduleIntent.executionBoundaryAt,
+            lastCronSchedule: scheduleIntent.scheduleCron
+          }
+        : {}),
+      lastCronBackup: isBackupRun,
       lastCronStoppedByRuntimeLimit: true,
       lastCronError: error
     });

@@ -2617,6 +2617,8 @@ async function mapWithConcurrency(items, concurrency, task) {
 export async function runDueChecks(options = {}) {
   const source = options.source || 'manual';
   const cronStartedAt = new Date().toISOString();
+  let scheduleIntent = null;
+  let isBackupRun = false;
 
   try {
     const startedAt = Date.now();
@@ -2624,10 +2626,32 @@ export async function runDueChecks(options = {}) {
     const saveReserveMs = runtimeSaveReserveMs();
     let store = await readStoreWithPriceRepairs();
     let settings = mergedRuntimeSettings(store.settings);
+    scheduleIntent = resolveCronScheduleIntent(options.scheduleCron || process.env.CHECK_SCHEDULE_CRON, startedAt, settings);
     const forceAll = options.force === true || readEnvBoolean('FORCE_CHECK_ALL', false);
-    const isBackupRun = source === 'cron' && options.backup === true;
+    isBackupRun = source === 'cron' && (options.backup === true || scheduleIntent?.backup === true);
+    const scheduleNow = scheduleIntent?.executionBoundaryMs || startedAt;
 
-    if (!forceAll && shouldWaitForScheduledExecutionWindow(source, options, startedAt, settings)) {
+    if (!forceAll && source === 'cron' && scheduleIntent?.stale) {
+      return {
+        checked: 0,
+        remainingDue: countDueBooks(store.books, startedAt, settings),
+        cursor: store.checkCursor,
+        overlapped: 0,
+        stoppedByRuntimeLimit: false,
+        forced: false,
+        backup: isBackupRun,
+        skipped: true,
+        skipReason: 'stale_schedule',
+        scheduledCron: scheduleIntent.scheduleCron,
+        scheduledNominalAt: scheduleIntent.nominalAt,
+        executionBoundaryAt: scheduleIntent.executionBoundaryAt,
+        nextExecutionBoundaryAt: scheduleIntent.nextExecutionBoundaryAt,
+        seriesDiscovery: null,
+        results: []
+      };
+    }
+
+    if (!forceAll && shouldWaitForScheduledExecutionWindow(source, { ...options, scheduleIntent }, startedAt, settings)) {
       const remainingDue = countDueBooks(store.books, startedAt, settings);
       const nextRunAtMs = nextJstExecutionBoundaryMs(startedAt, settings);
       const result = {
@@ -2647,7 +2671,33 @@ export async function runDueChecks(options = {}) {
       return result;
     }
 
-    if (!forceAll && isBackupRun) {
+    if (!forceAll && source === 'cron' && scheduleIntent) {
+      const completionSkip = cronWindowCompletionState(store.automation, scheduleIntent.executionBoundaryMs, settings);
+      if (completionSkip.shouldSkip) {
+        return {
+          checked: 0,
+          remainingDue: countDueBooks(store.books, scheduleIntent.executionBoundaryMs, settings),
+          cursor: store.checkCursor,
+          overlapped: 0,
+          stoppedByRuntimeLimit: false,
+          forced: false,
+          backup: isBackupRun,
+          skipped: true,
+          skipReason: isBackupRun ? 'primary_cron_completed' : 'cron_window_completed',
+          skipDetail: completionSkip.skipDetail,
+          scheduledCron: scheduleIntent.scheduleCron,
+          scheduledNominalAt: scheduleIntent.nominalAt,
+          executionBoundaryAt: completionSkip.executionBoundaryAt,
+          lastCronExecutionBoundaryAt: completionSkip.lastCronExecutionBoundaryAt,
+          lastCronStartedAt: completionSkip.lastCronStartedAt,
+          lastCronFinishedAt: completionSkip.lastCronFinishedAt,
+          lastCronStoppedByRuntimeLimit: completionSkip.lastCronStoppedByRuntimeLimit,
+          lastCronError: completionSkip.lastCronError,
+          seriesDiscovery: null,
+          results: []
+        };
+      }
+    } else if (!forceAll && isBackupRun) {
       const backupSkip = backupCronSkipState(store.automation, startedAt, settings);
       if (backupSkip.shouldSkip) {
         return {
@@ -2662,6 +2712,7 @@ export async function runDueChecks(options = {}) {
           skipReason: 'primary_cron_completed',
           skipDetail: backupSkip.skipDetail,
           executionBoundaryAt: backupSkip.executionBoundaryAt,
+          lastCronExecutionBoundaryAt: backupSkip.lastCronExecutionBoundaryAt,
           lastCronStartedAt: backupSkip.lastCronStartedAt,
           lastCronFinishedAt: backupSkip.lastCronFinishedAt,
           lastCronStoppedByRuntimeLimit: backupSkip.lastCronStoppedByRuntimeLimit,
@@ -2679,11 +2730,14 @@ export async function runDueChecks(options = {}) {
       ? await discoverSeriesUpdates(store, { startedAt, maxRuntimeMs, saveReserveMs })
       : null;
     settings = mergedRuntimeSettings(store.settings);
-    const plan = planDueChecks(store, settings, startedAt, { forceAll });
+    const plan = planDueChecks(store, settings, startedAt, {
+      forceAll,
+      dueCutoffMs: scheduleIntent?.executionBoundaryMs
+    });
     const pacing = checkPacing();
     const getWebhookUrls = options.notify === false ? null : sharedWebhookUrlLoader();
     const seriesNotificationBaselines = new Map();
-    const seriesFreshAfter = seriesAggregateFreshAfter(startedAt, settings).toISOString();
+    const seriesFreshAfter = seriesAggregateFreshAfter(scheduleNow, settings).toISOString();
 
     const results = [];
     let stoppedByRuntimeLimit = false;
@@ -2738,7 +2792,7 @@ export async function runDueChecks(options = {}) {
       ...options,
       getWebhookUrls
     });
-    const remainingDue = countDueBooks(store.books, Date.now(), settings);
+    const remainingDue = countDueBooks(store.books, scheduleNow, settings);
     const finishedAt = new Date().toISOString();
     const result = {
       checked: results.length,
@@ -2748,6 +2802,9 @@ export async function runDueChecks(options = {}) {
       stoppedByRuntimeLimit,
       forced: forceAll,
       backup: isBackupRun,
+      scheduledCron: scheduleIntent?.scheduleCron || '',
+      scheduledNominalAt: scheduleIntent?.nominalAt || '',
+      executionBoundaryAt: scheduleIntent?.executionBoundaryAt || '',
       importQueue,
       seriesDiscovery,
       seriesNotifications,
@@ -2758,6 +2815,13 @@ export async function runDueChecks(options = {}) {
       ? {
           lastCronStartedAt: cronStartedAt,
           lastCronFinishedAt: finishedAt,
+          ...(scheduleIntent
+            ? {
+                lastCronExecutionBoundaryAt: scheduleIntent.executionBoundaryAt,
+                lastCronSchedule: scheduleIntent.scheduleCron
+              }
+            : {}),
+          lastCronBackup: isBackupRun,
           lastCronChecked: result.checked,
           lastCronRemainingDue: result.remainingDue,
           lastCronStoppedByRuntimeLimit: result.stoppedByRuntimeLimit,
@@ -2799,6 +2863,14 @@ export async function runDueChecks(options = {}) {
       await recordCronRun({
         lastCronStartedAt: cronStartedAt,
         lastCronFinishedAt: new Date().toISOString(),
+        ...(scheduleIntent
+          ? {
+              lastCronExecutionBoundaryAt: scheduleIntent.executionBoundaryAt,
+              lastCronSchedule: scheduleIntent.scheduleCron
+            }
+          : {}),
+        lastCronBackup: isBackupRun,
+        lastCronStoppedByRuntimeLimit: false,
         lastCronError: error.message || String(error)
       });
     }
@@ -4702,7 +4774,9 @@ function planDueChecks(store, settings, now, options = {}) {
     return { books: selected, dueSelected: selected.length };
   }
 
-  const dueBefore = scheduledDueCutoffMs(now, settings);
+  const dueBefore = Number.isFinite(options.dueCutoffMs)
+    ? options.dueCutoffMs
+    : scheduledDueCutoffMs(now, settings);
   const dueBooks = rotatedBooks.filter((book) => isAutoCheckCandidate(book, dueBefore) && !isCheckRetryCoolingDown(book, now));
   const orderedDueBooks = orderCheckCandidates(dueBooks, priorityContext, now);
   const selected = selectCheckCandidatesWithSeriesCompletion(orderedDueBooks, rotatedBooks, priorityContext, now, settings.batchSize);
@@ -4908,11 +4982,57 @@ function scheduledDueCutoffMs(now, settings = {}) {
 function shouldWaitForScheduledExecutionWindow(source, options = {}, now = Date.now(), settings = {}) {
   if (options.ignoreExecutionWindow === true) return false;
   if (source !== 'cron' && source !== 'scheduler') return false;
+  if (options.scheduleIntent) return false;
   const firstBoundary = todayJstExecutionBoundaryMs(now, scheduledExecutionTimes(settings)[0]);
   if (now < firstBoundary) return true;
 
   const latestBoundary = latestJstExecutionBoundaryMs(now, settings);
   return now - latestBoundary > scheduledExecutionGraceMs();
+}
+
+const DAILY_CRON_EXECUTION_WINDOWS = new Map([
+  ['54 18 * * *', { targetIndex: 0, backup: false }],
+  ['7 19 * * *', { targetIndex: 0, backup: true }],
+  ['37 19 * * *', { targetIndex: 0, backup: true }],
+  ['17 20 * * *', { targetIndex: 0, backup: true }],
+  ['54 6 * * *', { targetIndex: 1, backup: false }],
+  ['7 7 * * *', { targetIndex: 1, backup: true }],
+  ['37 7 * * *', { targetIndex: 1, backup: true }],
+  ['17 8 * * *', { targetIndex: 1, backup: true }]
+]);
+
+export function resolveCronScheduleIntent(scheduleCron, now = Date.now(), settings = {}) {
+  const normalized = normalizeScheduleCron(scheduleCron);
+  if (!normalized) return null;
+
+  const definition = DAILY_CRON_EXECUTION_WINDOWS.get(normalized);
+  if (!definition) return null;
+
+  const parsed = parseDailyUtcCron(normalized);
+  if (!parsed) return null;
+
+  const nowMs = Number(now);
+  if (!Number.isFinite(nowMs)) return null;
+
+  const times = scheduledExecutionTimes(settings);
+  const target = times[definition.targetIndex];
+  if (!target) return null;
+
+  const nominalMs = latestDailyUtcCronOccurrenceMs(nowMs, parsed.hour, parsed.minute);
+  const nominalJstDayStartMs = jstDayStartUtcMs(nominalMs);
+  const executionBoundaryMs = nominalJstDayStartMs + target.hour * 60 * 60 * 1000 + target.minute * 60 * 1000;
+  const nextExecutionBoundaryMs = nextJstExecutionBoundaryAfterMs(executionBoundaryMs, settings);
+
+  return {
+    scheduleCron: normalized,
+    backup: definition.backup,
+    nominalAt: new Date(nominalMs).toISOString(),
+    executionBoundaryMs,
+    executionBoundaryAt: new Date(executionBoundaryMs).toISOString(),
+    nextExecutionBoundaryMs,
+    nextExecutionBoundaryAt: new Date(nextExecutionBoundaryMs).toISOString(),
+    stale: nowMs >= nextExecutionBoundaryMs
+  };
 }
 
 function latestJstExecutionBoundaryMs(now, settings = {}) {
@@ -4928,9 +5048,7 @@ function nextJstExecutionBoundaryMs(now, settings = {}) {
 }
 
 function todayJstExecutionBoundaryMs(now, time) {
-  const dayMs = 24 * 60 * 60 * 1000;
-  const jstOffsetMs = 9 * 60 * 60 * 1000;
-  const jstDayStartUtc = Math.floor((Number(now) + jstOffsetMs) / dayMs) * dayMs - jstOffsetMs;
+  const jstDayStartUtc = jstDayStartUtcMs(Number(now));
   return jstDayStartUtc + time.hour * 60 * 60 * 1000 + time.minute * 60 * 1000;
 }
 
@@ -4945,12 +5063,37 @@ function scheduledExecutionGraceMs() {
   return floorNumber(process.env.CHECK_EXECUTION_GRACE_MINUTES, 1, 180) * 60 * 1000;
 }
 
-function backupCronSkipState(automation = {}, now = Date.now(), settings = {}) {
-  const executionBoundaryMs = latestJstExecutionBoundaryMs(now, settings);
+function backupCronSkipState(automation = {}, now = Date.now(), settings = {}, executionBoundaryMs = null) {
+  const boundaryMs = Number.isFinite(executionBoundaryMs)
+    ? executionBoundaryMs
+    : latestJstExecutionBoundaryMs(now, settings);
+  return cronWindowCompletionState(automation, boundaryMs, settings);
+}
+
+export function cronWindowCompletionState(automation = {}, executionBoundaryMs, settings = {}) {
+  const boundaryMs = Number(executionBoundaryMs);
+  if (!Number.isFinite(boundaryMs)) {
+    return {
+      shouldSkip: false,
+      skipDetail: '',
+      executionBoundaryAt: '',
+      lastCronExecutionBoundaryAt: automation?.lastCronExecutionBoundaryAt || '',
+      lastCronStartedAt: automation?.lastCronStartedAt || '',
+      lastCronFinishedAt: automation?.lastCronFinishedAt || '',
+      lastCronStoppedByRuntimeLimit: Boolean(automation?.lastCronStoppedByRuntimeLimit),
+      lastCronError: String(automation?.lastCronError || '').trim()
+    };
+  }
+
   const lastFinishedMs = timestampMs(automation?.lastCronFinishedAt);
+  const lastBoundaryMs = timestampMs(automation?.lastCronExecutionBoundaryAt);
   const lastCronError = String(automation?.lastCronError || '').trim();
   const lastCronStoppedByRuntimeLimit = Boolean(automation?.lastCronStoppedByRuntimeLimit);
-  const hasSameWindowCompletion = lastFinishedMs >= executionBoundaryMs;
+  const nextBoundaryMs = nextJstExecutionBoundaryAfterMs(boundaryMs, settings);
+  const hasExplicitSameWindow = lastBoundaryMs === boundaryMs;
+  const hasLegacySameWindow =
+    !lastBoundaryMs && lastFinishedMs >= boundaryMs && lastFinishedMs < nextBoundaryMs;
+  const hasSameWindowCompletion = (hasExplicitSameWindow || hasLegacySameWindow) && lastFinishedMs >= boundaryMs;
   const hasSuccessfulCompletion = hasSameWindowCompletion && !lastCronError;
   const hasSavedRuntimeLimitCompletion =
     hasSameWindowCompletion && lastCronStoppedByRuntimeLimit && !lastCronError;
@@ -4959,12 +5102,51 @@ function backupCronSkipState(automation = {}, now = Date.now(), settings = {}) {
   return {
     shouldSkip,
     skipDetail: hasSavedRuntimeLimitCompletion ? 'saved_runtime_limit' : hasSuccessfulCompletion ? 'successful_completion' : '',
-    executionBoundaryAt: new Date(executionBoundaryMs).toISOString(),
+    executionBoundaryAt: new Date(boundaryMs).toISOString(),
+    lastCronExecutionBoundaryAt: automation?.lastCronExecutionBoundaryAt || '',
     lastCronStartedAt: automation?.lastCronStartedAt || '',
     lastCronFinishedAt: automation?.lastCronFinishedAt || '',
     lastCronStoppedByRuntimeLimit,
     lastCronError
   };
+}
+
+function normalizeScheduleCron(value) {
+  return String(value || '').trim().replace(/\s+/g, ' ');
+}
+
+function parseDailyUtcCron(scheduleCron) {
+  const parts = normalizeScheduleCron(scheduleCron).split(' ');
+  if (parts.length !== 5 || parts[2] !== '*' || parts[3] !== '*' || parts[4] !== '*') return null;
+
+  const minute = Number(parts[0]);
+  const hour = Number(parts[1]);
+  if (!Number.isInteger(minute) || minute < 0 || minute > 59) return null;
+  if (!Number.isInteger(hour) || hour < 0 || hour > 23) return null;
+
+  return { hour, minute };
+}
+
+function latestDailyUtcCronOccurrenceMs(now, hour, minute) {
+  const dayMs = 24 * 60 * 60 * 1000;
+  const nowMs = Number(now);
+  const utcDayStartMs = Math.floor(nowMs / dayMs) * dayMs;
+  const todayMs = utcDayStartMs + hour * 60 * 60 * 1000 + minute * 60 * 1000;
+  return todayMs <= nowMs ? todayMs : todayMs - dayMs;
+}
+
+function nextJstExecutionBoundaryAfterMs(boundaryMs, settings = {}) {
+  const dayMs = 24 * 60 * 60 * 1000;
+  const sameDayBoundaries = scheduledExecutionTimes(settings)
+    .map((time) => todayJstExecutionBoundaryMs(boundaryMs, time))
+    .sort((left, right) => left - right);
+  return sameDayBoundaries.find((candidate) => candidate > boundaryMs) || sameDayBoundaries[0] + dayMs;
+}
+
+function jstDayStartUtcMs(timestamp) {
+  const dayMs = 24 * 60 * 60 * 1000;
+  const jstOffsetMs = 9 * 60 * 60 * 1000;
+  return Math.floor((Number(timestamp) + jstOffsetMs) / dayMs) * dayMs - jstOffsetMs;
 }
 
 function timestampMs(value) {

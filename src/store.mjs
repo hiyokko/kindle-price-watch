@@ -29,6 +29,9 @@ const defaultStore = {
   automation: {
     lastCronStartedAt: '',
     lastCronFinishedAt: '',
+    lastCronExecutionBoundaryAt: '',
+    lastCronSchedule: '',
+    lastCronBackup: false,
     lastCronChecked: 0,
     lastCronRemainingDue: 0,
     lastCronStoppedByRuntimeLimit: false,

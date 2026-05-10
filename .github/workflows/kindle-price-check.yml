@@ -12,9 +12,13 @@ on:
     # Daily at 03:54 and 15:54 JST. GitHub cron uses UTC.
     - cron: "54 18 * * *"
     - cron: "54 6 * * *"
-    # Backup runs at 04:07 and 16:07 JST only proceed when the primary run did not record activity.
+    # Backup retries only proceed when the target execution window did not complete.
     - cron: "7 19 * * *"
+    - cron: "37 19 * * *"
+    - cron: "17 20 * * *"
     - cron: "7 7 * * *"
+    - cron: "37 7 * * *"
+    - cron: "17 8 * * *"
 
 concurrency:
   group: kindle-price-check
@@ -47,7 +51,8 @@ jobs:
       HTTP_AMAZON_FETCH_RETRIES: "1"
       HTTP_FETCH_RETRY_DELAY_MS: "1200"
       FORCE_CHECK_ALL: ${{ github.event_name == 'workflow_dispatch' && inputs.force_all }}
-      CHECK_BACKUP_RUN: ${{ github.event_name == 'schedule' && (github.event.schedule == '7 19 * * *' || github.event.schedule == '7 7 * * *') }}
+      CHECK_SCHEDULE_CRON: ${{ github.event.schedule }}
+      CHECK_BACKUP_RUN: ${{ github.event_name == 'schedule' && (github.event.schedule == '7 19 * * *' || github.event.schedule == '37 19 * * *' || github.event.schedule == '17 20 * * *' || github.event.schedule == '7 7 * * *' || github.event.schedule == '37 7 * * *' || github.event.schedule == '17 8 * * *') }}
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
     steps:
       - name: Checkout
