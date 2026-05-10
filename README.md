@@ -117,6 +117,17 @@ Blob Advanced Operationsを抑えるため、定期実行では本ごとに保�
 
 Fast Origin Transferを抑えるため、Blob読み込みはプロセス内で短時間キャッシュします。`BLOB_STORE_MEMORY_CACHE_MS` でキャッシュ時間を調整できます。また、価格履歴は価格・ポイント・実質価格・定価が変わった時だけ追加し、単巻は `PRICE_HISTORY_MAX_ENTRIES_PER_BOOK` 件、シリーズ合計は `SERIES_PRICE_HISTORY_MAX_ENTRIES_PER_SERIES` 件まで保持します。シリーズ合計履歴では上限外でも観測済み最安のエントリを保持します。`SERIES_TOTAL_OBSERVATION_RUNS` はシリーズ合計として同一観測扱いする直近実行枠数で、未設定時は5回です。
 
+### GitHub Actionsログ確認
+
+GitHub connectorが使えない環境では、GitHub fine-grained PATをmacOS Keychainに保存してActions履歴を確認します。トークンはこのリポジトリだけに限定し、権限は `Actions: Read-only` と `Metadata: Read-only` にします。トークンをコピーした状態で `node scripts/save-github-actions-token.mjs` を実行すると、Keychainの `kindle-price-watch-github-actions` / `hiyokko` に保存し、クリップボードを空にします。以後は以下のコマンドで確認できます。
+
+```bash
+node scripts/github-actions.mjs doctor
+node scripts/github-actions.mjs runs --limit 10
+node scripts/github-actions.mjs jobs <run-id>
+node scripts/github-actions.mjs logs <run-id> --grep 'timeout|SIGTERM|CHECK_HARD_TIMEOUT|error'
+```
+
 定期実行時は、登録済みシリーズのAmazonシリーズページも巡回し、新しい巻が見つかった場合は自動で追加します。明示的に完結が確認できたシリーズには完結フラグと新刊探索の「実行なし」状態を保存し、次回以降の新刊探索から除外します。未探索のシリーズは「未実行」、完結などで今後探索しないシリーズは「実行なし」として画面上でも区別します。`SERIES_DISCOVERY_BATCH_SIZE` を設定すると、1回の実行で探索するシリーズ数を調整できます。`SERIES_DISCOVERY_INTERVAL_HOURS` の既定値は24時間です。
 
 GitHub Actionsの手動実行では、`force_all` を有効にすると24時間以内に確認済みの本も保存した件数まで再確認します。

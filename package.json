@@ -8,6 +8,8 @@
     "dev": "node server.mjs",
     "check": "node scripts/check-once.mjs",
     "test": "node --test",
+    "github:actions": "node scripts/github-actions.mjs",
+    "github:actions:token": "node scripts/save-github-actions-token.mjs",
     "deploy:production": "node scripts/deploy-production.mjs"
   },
   "dependencies": {
