@@ -2981,7 +2981,6 @@ function extractPrices(html) {
   const value = decodeJsonEscapes(decodeHtml(html));
   const pricePatterns = [
     /(?:￥|¥)\s*([0-9][0-9,]*)/g,
-    /\bJPY\s*([0-9][0-9,]*)/gi,
     /<span[^>]+class=["'][^"']*a-price-whole[^"']*["'][^>]*>\s*([0-9,]+)\s*<\/span>/gi,
     /["'](?:displayPrice|priceString|formattedPrice|buyingPrice)["']\s*:\s*["'][^"']*(?:￥|¥|JPY)\s*([0-9][0-9,]*)/gi
   ];
@@ -2993,15 +2992,27 @@ function extractPrices(html) {
     }
   }
 
+  for (const price of extractContextualJpyPrices(value)) prices.add(price);
   for (const price of extractStructuredJpyPrices(value)) prices.add(price);
 
   return [...prices].filter((price) => price >= 0).sort((a, b) => a - b);
 }
 
+function extractContextualJpyPrices(value) {
+  const prices = [];
+  const text = String(value || '');
+  for (const match of text.matchAll(/\bJPY\s*([0-9][0-9,]*)/gi)) {
+    if (!isLikelyPriceContext(text, match.index ?? 0, 120)) continue;
+    const price = parsePrice(match[1]);
+    if (price != null) prices.push(price);
+  }
+  return prices;
+}
+
 function extractStructuredJpyPrices(value) {
   const prices = [];
   const text = String(value || '');
-  const amountKeys = '(?:priceAmount|amountToPay|amount|value)';
+  const amountKeys = '(?:priceAmount|amountToPay|displayedPrice\\.value|buyingPrice|salePrice|ourPrice|listPrice|basisPrice|currentPrice|price)';
   const currencyKeys = '(?:currencyCode|currency)';
   const patterns = [
     new RegExp(`["']${amountKeys}["']\\s*:\\s*["']?([0-9][0-9,]{1,8})(?:\\.0+)?["']?[\\s\\S]{0,160}?["']${currencyKeys}["']\\s*:\\s*["']JPY["']`, 'gi'),
@@ -3015,16 +3026,68 @@ function extractStructuredJpyPrices(value) {
     }
   }
 
+  const genericPatterns = [
+    new RegExp(`["'](?:amount|value)["']\\s*:\\s*["']?([0-9][0-9,]{1,8})(?:\\.0+)?["']?[\\s\\S]{0,160}?["']${currencyKeys}["']\\s*:\\s*["']JPY["']`, 'gi'),
+    new RegExp(`["']${currencyKeys}["']\\s*:\\s*["']JPY["'][\\s\\S]{0,160}?["'](?:amount|value)["']\\s*:\\s*["']?([0-9][0-9,]{1,8})(?:\\.0+)?["']?`, 'gi')
+  ];
+
+  for (const pattern of genericPatterns) {
+    for (const match of text.matchAll(pattern)) {
+      if (!isLikelyPriceContext(text, match.index ?? 0, 260)) continue;
+      const price = parsePrice(match[1]);
+      if (price != null) prices.push(price);
+    }
+  }
+
   return prices;
 }
 
 function chooseLikelyKindlePrice(prices, html = '') {
   if (!prices.length) return null;
+  const explicitPrices = extractExplicitKindlePriceCandidates(html);
+  const explicitWithPoints = explicitPrices.find((price) => extractPointsNearPrice(html, price) != null);
+  if (explicitWithPoints != null) return explicitWithPoints;
+  if (explicitPrices.length) return explicitPrices[0];
+
   const priceWithPoints = prices.find((price) => extractPointsNearPrice(html, price) != null);
   if (priceWithPoints != null) return priceWithPoints;
   const explicitlyDisplayed = prices.find((price) => hasExplicitPriceDisplay(html, price));
   if (explicitlyDisplayed != null) return explicitlyDisplayed;
   return prices[0];
+}
+
+function extractExplicitKindlePriceCandidates(html) {
+  const candidates = new Set();
+  for (const scope of priceEvidenceScopes(html)) {
+    const value = decodeJsonEscapes(decodeHtml(scope));
+    const patterns = [
+      /(?:￥|¥)\s*([0-9][0-9,]*)/g,
+      /([0-9][0-9,]*)\s*円/g,
+      /\bJPY\s*([0-9][0-9,]*)/gi,
+      /<span[^>]+class=["'][^"']*a-price-whole[^"']*["'][^>]*>\s*([0-9,]+)\s*<\/span>/gi
+    ];
+
+    for (const pattern of patterns) {
+      for (const match of value.matchAll(pattern)) {
+        const price = parsePrice(match[1]);
+        if (price != null) candidates.add(price);
+      }
+    }
+  }
+
+  return [...candidates].sort((a, b) => a - b);
+}
+
+function isLikelyPriceContext(text, index, radius = 180) {
+  const context = String(text || '').slice(Math.max(0, index - radius), index + radius);
+  if (isDiscountOrRewardContext(context)) return false;
+  return /price|Price|価格|値段|金額|amountToPay|displayPrice|displayedPrice|buyingPrice|priceToPay|salePrice|ourPrice|listPrice|basisPrice|currentPrice|a-price|ebook-price-value|CoP-ActualPrice/i.test(context);
+}
+
+function isDiscountOrRewardContext(context) {
+  return /discount|percentage|percent|saving|savings|coupon|promotion|promo|points?|reward|割引|値引|還元|ポイント|%|％/i.test(
+    String(context || '')
+  );
 }
 
 function correctImplausibleKindlePrice({ currentPrice, currentPoints, listPrice, prices, html }) {
@@ -3125,7 +3188,7 @@ function hasExplicitPriceDisplay(html, price) {
   if (price == null || !Number.isFinite(Number(price))) return false;
   const rawPrice = escapeRegExp(String(Math.round(Number(price))));
   const commaPrice = escapeRegExp(Number(price).toLocaleString('ja-JP'));
-  const pattern = new RegExp(`(?:￥|¥)\\s*(?:${rawPrice}|${commaPrice})(?!\\s*%)`);
+  const pattern = new RegExp(`(?:(?:￥|¥|JPY)\\s*(?:${rawPrice}|${commaPrice})|(?:${rawPrice}|${commaPrice})\\s*円)(?!\\s*(?:%|％))`, 'i');
   return priceEvidenceScopes(html).some((scope) => pattern.test(decodeJsonEscapes(decodeHtml(scope))));
 }
 
@@ -3172,15 +3235,13 @@ function isLikelyPercentContaminatedKindlePrice({ currentPrice, currentPoints, l
   const points = Number(currentPoints || 0);
   const list = Number(listPrice);
   if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(points) || points <= 0) return false;
+  if (hasExplicitPriceDisplay(html, price)) return false;
 
   const pointRatio = points / price;
   const priceLooksLikeDiscountPercent = isDiscountPercentValue(html, price);
   const deepDiscountAgainstList =
     Number.isFinite(list) && list >= 1000 && price <= 100 && price <= list * 0.05 && pointRatio >= 0.2;
 
-  if (price <= 10) return true;
-  if (price <= 20 && pointRatio >= 0.3) return true;
-  if (price <= 50 && pointRatio >= 0.5) return true;
   return priceLooksLikeDiscountPercent && deepDiscountAgainstList;
 }
 

@@ -2140,12 +2140,8 @@ function isLikelyPercentContaminatedStoredPrice({ price, points = 0, listPrice =
   const pointValue = Number(points || 0);
   if (!Number.isFinite(current) || current <= 0 || !Number.isFinite(pointValue) || pointValue <= 0) return false;
 
-  const pointRatio = pointValue / current;
-  if (current <= 10) return true;
-  if (current <= 20 && pointRatio >= 0.3) return true;
-  if (current <= 50 && pointRatio >= 0.5) return true;
-
   const list = Number(listPrice);
+  const pointRatio = pointValue / current;
   return Number.isFinite(list) && list >= 1000 && current <= 100 && current <= list * 0.05 && pointRatio >= 0.2;
 }
 
