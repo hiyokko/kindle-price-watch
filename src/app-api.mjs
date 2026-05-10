@@ -1,6 +1,4 @@
 import {
-  addBooksFromInput,
-  addBooksFromInputs,
   addSeriesImports,
   checkBookById,
   deleteAllBooks,
@@ -35,13 +33,10 @@ export async function addBooksPayload(body = {}) {
 
   const inputs = Array.isArray(body.urls) ? body.urls : Array.isArray(body.inputs) ? body.inputs : null;
   if (inputs) {
-    return addBooksFromInputs(inputs, {
-      skipExternalFallback: body.skipExternalFallback === true,
-      skipBackfill: body.skipBackfill === true
-    });
+    return enqueueBookImportQueue(inputs);
   }
 
-  return addBooksFromInput(body.url || body.asin || '');
+  return enqueueBookImportQueue(body.input || body.url || body.asin || '');
 }
 
 export async function deleteBooksPayload(body = {}) {

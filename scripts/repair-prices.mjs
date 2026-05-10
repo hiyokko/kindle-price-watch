@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { loadEnv } from '../src/env.mjs';
-import { checkBookById } from '../src/checker.mjs';
+import { repairBookPricesByAsins } from '../src/checker.mjs';
 import { readStore } from '../src/store.mjs';
 
 loadEnvFile('.env.production.local');
@@ -19,56 +19,35 @@ if (options.dryRun) {
   process.exit(0);
 }
 
-const results = [];
-let cursor = 0;
-const concurrency = Math.min(options.concurrency, Math.max(books.length, 1));
+if (books.length === 0) {
+  console.log(JSON.stringify({
+    dryRun: false,
+    selected: 0,
+    checked: 0,
+    updated: 0,
+    failed: 0,
+    results: []
+  }, null, 2));
+  process.exit(0);
+}
 
-await Promise.all(
-  Array.from({ length: concurrency }, async () => {
-    for (;;) {
-      const index = cursor;
-      cursor += 1;
-      const book = books[index];
-      if (!book) return;
-
-      try {
-        const result = await checkBookById(book.id, { notify: false, updateCursor: false });
-        results.push({
-          ok: result.ok,
-          asin: book.asin,
-          title: book.title,
-          before: {
-            price: book.currentPrice,
-            points: book.currentPoints,
-            effectivePrice: book.effectivePrice,
-            lowestPrice: book.lowestPrice,
-            lowestEffectivePrice: book.lowestEffectivePrice,
-            provider: book.provider
-          },
-          after: result.book
-            ? {
-                price: result.book.currentPrice,
-                points: result.book.currentPoints,
-                effectivePrice: result.book.effectivePrice,
-                lowestPrice: result.book.lowestPrice,
-                lowestEffectivePrice: result.book.lowestEffectivePrice,
-                provider: result.book.provider,
-                lastError: result.book.lastError
-              }
-            : null,
-          error: result.error || ''
-        });
-      } catch (error) {
-        results.push({
-          ok: false,
-          asin: book.asin,
-          title: book.title,
-          error: error.message || String(error)
-        });
-      }
-    }
-  })
-);
+const beforeByAsin = new Map(books.map((book) => [book.asin, summaryBook(book)]));
+const repair = await repairBookPricesByAsins(books.map((book) => book.asin), {
+  notify: false,
+  concurrency: options.concurrency,
+  maxAsins: Math.max(books.length, 30)
+});
+const results = repair.results.map((result) => {
+  const before = beforeByAsin.get(result.asin);
+  return {
+    ok: result.ok,
+    asin: result.asin,
+    title: before?.title || result.book?.title || '',
+    before: before ? priceSummary(before) : null,
+    after: result.book ? priceSummary(result.book) : null,
+    error: result.error || ''
+  };
+});
 
 console.log(JSON.stringify({
   dryRun: false,
@@ -198,6 +177,18 @@ function summaryBook(book) {
     lowestPrice: book.lowestPrice,
     lowestEffectivePrice: book.lowestEffectivePrice,
     listPrice: book.listPrice,
+    provider: book.provider,
+    lastError: book.lastError
+  };
+}
+
+function priceSummary(book) {
+  return {
+    price: book.currentPrice,
+    points: book.currentPoints,
+    effectivePrice: book.effectivePrice,
+    lowestPrice: book.lowestPrice,
+    lowestEffectivePrice: book.lowestEffectivePrice,
     provider: book.provider,
     lastError: book.lastError
   };
