@@ -680,7 +680,7 @@ async function refreshExistingSingleBookFromInput(id, input) {
     book.currentPrice = snapshot.currentPrice;
     book.currentPoints = snapshot.currentPoints;
     book.effectivePrice = snapshot.effectivePrice;
-    book.listPrice = snapshot.listPrice ?? book.listPrice;
+    book.listPrice = mergedSnapshotListPrice(snapshot, book.listPrice);
     book.lowestPrice =
       snapshot.currentPrice == null
         ? book.lowestPrice
@@ -2087,6 +2087,11 @@ function clearUnreliableStoredListPrice(book) {
 
 function trustedListPriceFor(currentPrice, listPrice, provider) {
   return shouldIgnoreListPriceForProvider(currentPrice, listPrice, provider) ? null : listPrice ?? null;
+}
+
+function mergedSnapshotListPrice(snapshot, existingListPrice) {
+  if (snapshot?.listPrice != null) return snapshot.listPrice;
+  return String(snapshot?.provider || '').toLowerCase() === 'amazon_html' ? null : existingListPrice;
 }
 
 function shouldIgnoreListPriceForProvider(currentPrice, listPrice, provider) {
@@ -3671,7 +3676,7 @@ function applyCheckResultToStore(store, bookRef, snapshotResult, now, options = 
   book.currentPrice = snapshot.currentPrice;
   book.currentPoints = snapshot.currentPoints;
   book.effectivePrice = snapshot.effectivePrice;
-  book.listPrice = snapshot.listPrice ?? book.listPrice;
+  book.listPrice = mergedSnapshotListPrice(snapshot, book.listPrice);
   book.provider = snapshot.provider;
   book.lastCheckedAt = now;
   book.updatedAt = now;

@@ -1883,7 +1883,7 @@ function compactFetchErrors(errors) {
   return [...new Set([...unique.slice(0, readerError ? 2 : 3), searchError, readerError, kintyakuError, listasinError].filter(Boolean))].join(' / ');
 }
 
-function extractAmazonHtmlSnapshotFromHtml(html, asin, url, provider) {
+export function extractAmazonHtmlSnapshotFromHtml(html, asin, url, provider = 'amazon_html') {
   assertKindleBookProductPage(html);
   const base = extractAmazonHtmlSnapshotBase(html, asin, url, provider);
   const kindleOffer = extractKindlePurchaseOffer(html, asin);
@@ -2980,18 +2980,21 @@ function extractPrices(html) {
   const prices = new Set();
   const value = decodeJsonEscapes(decodeHtml(html));
   const pricePatterns = [
-    /(?:￥|¥)\s*([0-9][0-9,]*)/g,
-    /<span[^>]+class=["'][^"']*a-price-whole[^"']*["'][^>]*>\s*([0-9,]+)\s*<\/span>/gi,
-    /["'](?:displayPrice|priceString|formattedPrice|buyingPrice)["']\s*:\s*["'][^"']*(?:￥|¥|JPY)\s*([0-9][0-9,]*)/gi
+    { pattern: /(?:￥|¥)\s*([0-9][0-9,]*)/g, contextual: true },
+    { pattern: /<span[^>]+class=["'][^"']*a-price-whole[^"']*["'][^>]*>\s*([0-9,]+)\s*<\/span>/gi, contextual: false },
+    { pattern: /["'](?:displayPrice|priceString|formattedPrice|buyingPrice)["']\s*:\s*["'][^"']*(?:￥|¥|JPY)\s*([0-9][0-9,]*)/gi, contextual: false }
   ];
 
-  for (const pattern of pricePatterns) {
+  for (const { pattern, contextual } of pricePatterns) {
     for (const match of value.matchAll(pattern)) {
+      if (contextual && !isLikelyPriceContext(value, match.index ?? 0, 160)) continue;
+      if (isStruckListPriceContext(value, match.index ?? 0)) continue;
       const price = parsePrice(match[1]);
       if (price != null) prices.add(price);
     }
   }
 
+  for (const candidate of extractAOffscreenPriceCandidates(value)) prices.add(candidate.price);
   for (const price of extractContextualJpyPrices(value)) prices.add(price);
   for (const price of extractStructuredJpyPrices(value)) prices.add(price);
 
@@ -3060,6 +3063,10 @@ function extractExplicitKindlePriceCandidates(html) {
   const candidates = new Set();
   for (const scope of priceEvidenceScopes(html)) {
     const value = decodeJsonEscapes(decodeHtml(scope));
+    for (const candidate of extractAOffscreenPriceCandidates(value)) {
+      candidates.add(candidate.price);
+    }
+
     const patterns = [
       /(?:￥|¥)\s*([0-9][0-9,]*)/g,
       /([0-9][0-9,]*)\s*円/g,
@@ -3069,6 +3076,10 @@ function extractExplicitKindlePriceCandidates(html) {
 
     for (const pattern of patterns) {
       for (const match of value.matchAll(pattern)) {
+        if (isStruckListPriceContext(value, match.index ?? 0)) continue;
+        if (isDiscountOrRewardContextAround(value, match.index ?? 0) && !isDirectPurchasePriceContext(value, match.index ?? 0)) {
+          continue;
+        }
         const price = parsePrice(match[1]);
         if (price != null) candidates.add(price);
       }
@@ -3076,6 +3087,28 @@ function extractExplicitKindlePriceCandidates(html) {
   }
 
   return [...candidates].sort((a, b) => a - b);
+}
+
+function extractAOffscreenPriceCandidates(html) {
+  const candidates = [];
+  const value = String(html || '');
+  const pattern = /<span\b[^>]*class=["'][^"']*\ba-offscreen\b[^"']*["'][^>]*>([\s\S]*?)<\/span>/gi;
+
+  for (const match of value.matchAll(pattern)) {
+    const index = match.index ?? 0;
+    const context = value.slice(Math.max(0, index - 700), Math.min(value.length, index + 700));
+    if (isStruckListPriceContext(value, index)) continue;
+    if (!isLikelyPriceContext(value, index, 220) && !/a-price|data-a-color=["']price|priceToPay|corePrice|apex|kindle/i.test(context)) {
+      continue;
+    }
+
+    const text = cleanText(match[1]);
+    if (isDiscountOrRewardContext(text)) continue;
+    const price = parsePrice(text);
+    if (price != null) candidates.push({ price, index });
+  }
+
+  return candidates;
 }
 
 function isLikelyPriceContext(text, index, radius = 180) {
@@ -3088,6 +3121,22 @@ function isDiscountOrRewardContext(context) {
   return /discount|percentage|percent|saving|savings|coupon|promotion|promo|points?|reward|割引|値引|還元|ポイント|%|％/i.test(
     String(context || '')
   );
+}
+
+function isDiscountOrRewardContextAround(text, index, radius = 140) {
+  const value = String(text || '');
+  return isDiscountOrRewardContext(value.slice(Math.max(0, index - radius), Math.min(value.length, index + radius)));
+}
+
+function isDirectPurchasePriceContext(text, index, radius = 80) {
+  const value = cleanText(String(text || '').slice(Math.max(0, index - radius), Math.min(String(text || '').length, index + radius)))
+    .replace(/\s+/g, '');
+  return /(?:￥|¥)?[0-9,]+(?:円)?(?:\([0-9,]+pt\)|（[0-9,]+pt）|[0-9,]+ポイント)?で購入/i.test(value);
+}
+
+function isStruckListPriceContext(text, index, radius = 260) {
+  const context = String(text || '').slice(Math.max(0, index - radius), index + 80);
+  return /a-text-price|basisPrice|listPrice|wasPrice|savingsBasis|参考価格|通常価格|過去価格|定価/i.test(context);
 }
 
 function correctImplausibleKindlePrice({ currentPrice, currentPoints, listPrice, prices, html }) {
@@ -3138,10 +3187,10 @@ function inferDiscountedKindlePrice(html, listPrice) {
 
 function shouldPreferInferredDiscountPrice({ currentPrice, inferredPrice, listPrice, html, explicitOffer = false }) {
   if (inferredPrice == null || explicitOffer) return false;
-  if (currentPrice == null) return true;
   if (!Number.isFinite(Number(listPrice)) || Number(listPrice) <= 0) return false;
+  if (hasExplicitPriceDisplay(html, inferredPrice)) return true;
+  if (currentPrice == null) return false;
   if (hasExplicitPriceDisplay(html, currentPrice) && Number(currentPrice) < Number(listPrice)) return false;
-  if (Number(currentPrice) >= Number(listPrice)) return true;
   return isDiscountPercentValue(html, currentPrice) && !hasExplicitPriceDisplay(html, currentPrice);
 }
 
@@ -3485,12 +3534,23 @@ function parseOptionalPoints(value) {
 function extractListPrice(html, currentPrice) {
   const strikePattern = /<span[^>]+class=["'][^"']*a-text-price[^"']*["'][^>]*>[\s\S]*?(?:￥|¥)\s*([0-9][0-9,]*)/gi;
   const candidates = [];
-  for (const match of html.matchAll(strikePattern)) {
-    const price = parsePrice(match[1]);
-    if (price != null) candidates.push(price);
+  for (const scope of listPriceEvidenceScopes(html, currentPrice)) {
+    for (const match of scope.matchAll(strikePattern)) {
+      const price = parsePrice(match[1]);
+      if (price != null) candidates.push(price);
+    }
   }
-  const higher = candidates.filter((price) => currentPrice == null || price >= currentPrice);
+  const higher = candidates.filter((price) => currentPrice == null || price > currentPrice);
   return higher.sort((a, b) => a - b)[0] ?? null;
+}
+
+function listPriceEvidenceScopes(html, currentPrice) {
+  const value = String(html || '');
+  return [
+    extractKindleSwatch(value),
+    extractFragmentAroundPattern(value, /corePriceDisplay|corePrice_feature|apex_desktop|priceToPay|ebook-price-value|kindleExtraMessage|oneClick|one-click|buybox|CoP-ActualPrice/i, 1800, 4200),
+    extractFragmentAroundPrice(value, currentPrice)
+  ].filter(Boolean);
 }
 
 function extractPoints(html, currentPrice = null) {
