@@ -5247,7 +5247,25 @@ function normalizeCheckExecutionMinuteJst(value, fallback = 54) {
 }
 
 function sortBooks(a, b) {
-  const aTime = a.lastCheckedAt ? new Date(a.lastCheckedAt).getTime() : 0;
-  const bTime = b.lastCheckedAt ? new Date(b.lastCheckedAt).getTime() : 0;
-  return aTime - bTime;
+  const aCheckedAt = checkedSortTime(a);
+  const bCheckedAt = checkedSortTime(b);
+  if (aCheckedAt == null && bCheckedAt != null) return -1;
+  if (aCheckedAt != null && bCheckedAt == null) return 1;
+  if (aCheckedAt != null && bCheckedAt != null && aCheckedAt !== bCheckedAt) {
+    return aCheckedAt - bCheckedAt;
+  }
+  const aTime = registrationSortTime(a);
+  const bTime = registrationSortTime(b);
+  if (aTime !== bTime) return aTime - bTime;
+  return 0;
+}
+
+function checkedSortTime(book) {
+  const time = new Date(book.lastCheckedAt || 0).getTime();
+  return Number.isFinite(time) && time > 0 ? time : null;
+}
+
+function registrationSortTime(book) {
+  const time = new Date(book.createdAt || book.updatedAt || book.lastCheckedAt || 0).getTime();
+  return Number.isFinite(time) ? time : 0;
 }

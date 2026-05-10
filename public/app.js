@@ -827,6 +827,7 @@ function groupBooks(books) {
     if (!groups.has(key)) {
       groups.set(key, {
         key,
+        order: groups.size,
         seriesKey: book.seriesKey || '',
         sourceUrl: book.sourceUrl || '',
         isSeries,
@@ -856,6 +857,8 @@ function groupBooks(books) {
     group.seriesDiscoverySkippedAt = latestSeriesDiscoverySkippedAt(group.books);
     group.seriesDiscoveryError = latestSeriesDiscoveryError(group.books);
     group.totalMetrics = seriesTotalMetrics(group);
+    group.sortCheckedAt = groupCheckedSortTime(group.books);
+    group.sortRegisteredAt = groupRegistrationSortTime(group.books);
     if (shouldDisplayGroupAsSingle(group)) {
       const book = group.books[0];
       group.key = `single:${book.id}`;
@@ -881,8 +884,18 @@ function shouldDisplayGroupAsSingle(group) {
 }
 
 function sortedGroups(groups) {
-  if (state.sortMode !== 'total_asc') return groups;
+  if (state.sortMode !== 'total_asc') return [...groups].sort(compareGroupsByQueueOrder);
   return [...groups].sort(compareGroupsByTotalPrice);
+}
+
+function compareGroupsByQueueOrder(a, b) {
+  if (a.sortCheckedAt == null && b.sortCheckedAt != null) return -1;
+  if (a.sortCheckedAt != null && b.sortCheckedAt == null) return 1;
+  if (a.sortCheckedAt != null && b.sortCheckedAt != null && a.sortCheckedAt !== b.sortCheckedAt) {
+    return a.sortCheckedAt - b.sortCheckedAt;
+  }
+  if (a.sortRegisteredAt !== b.sortRegisteredAt) return a.sortRegisteredAt - b.sortRegisteredAt;
+  return (a.order || 0) - (b.order || 0);
 }
 
 function compareGroupsByTotalPrice(a, b) {
@@ -914,6 +927,22 @@ function latestCheckedAt(books) {
     .filter((time) => Number.isFinite(time) && time > 0);
   if (times.length === 0) return '';
   return new Date(Math.max(...times)).toISOString();
+}
+
+function groupCheckedSortTime(books) {
+  const times = books
+    .map((book) => (book.lastCheckedAt ? new Date(book.lastCheckedAt).getTime() : 0))
+    .filter((time) => Number.isFinite(time) && time > 0);
+  if (times.length < books.length) return null;
+  return Math.min(...times);
+}
+
+function groupRegistrationSortTime(books) {
+  const times = books
+    .map((book) => new Date(book.createdAt || book.updatedAt || book.lastCheckedAt || 0).getTime())
+    .filter((time) => Number.isFinite(time) && time > 0);
+  if (times.length === 0) return 0;
+  return Math.min(...times);
 }
 
 function latestSeriesDiscoveredAt(books) {
