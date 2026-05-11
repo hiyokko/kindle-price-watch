@@ -33,12 +33,26 @@ if (books.length === 0) {
 
 const beforeByAsin = new Map(books.map((book) => [book.asin, summaryBook(book)]));
 const progress = progressReporter(books.length, options);
-const repair = await repairBookPricesByAsins(books.map((book) => book.asin), {
-  notify: false,
-  concurrency: options.concurrency,
-  maxAsins: Math.max(books.length, 30),
-  onProgress: progress
-});
+let repair;
+try {
+  repair = await repairBookPricesByAsins(books.map((book) => book.asin), {
+    notify: false,
+    concurrency: options.concurrency,
+    maxAsins: Math.max(books.length, 30),
+    onProgress: progress,
+    abortFailureRate: options.abortFailureRate,
+    abortFailureMinimum: options.abortFailureMinimum
+  });
+} catch (error) {
+  console.error(JSON.stringify({
+    ok: false,
+    selected: books.length,
+    error: error.message,
+    code: error.code || '',
+    abortSummary: error.abortSummary || null
+  }, null, 2));
+  process.exit(1);
+}
 const results = repair.results.map((result) => {
   const before = beforeByAsin.get(result.asin);
   return {
@@ -86,6 +100,8 @@ function parseArgs(args) {
     legacy: false,
     progress: false,
     summaryOnly: false,
+    abortFailureRate: null,
+    abortFailureMinimum: 10,
     limit: 500,
     concurrency: 1,
     asins: [],
@@ -100,6 +116,11 @@ function parseArgs(args) {
     else if (arg === '--legacy') options.legacy = true;
     else if (arg === '--progress') options.progress = true;
     else if (arg === '--summary-only') options.summaryOnly = true;
+    else if (arg === '--no-abort-failure-rate') options.abortFailureRate = null;
+    else if (arg.startsWith('--abort-failure-rate=')) options.abortFailureRate = fraction(arg.slice(21), options.abortFailureRate);
+    else if (arg === '--abort-failure-rate') options.abortFailureRate = fraction(args[++index], options.abortFailureRate);
+    else if (arg.startsWith('--abort-failure-minimum=')) options.abortFailureMinimum = positiveInteger(arg.slice(24), options.abortFailureMinimum);
+    else if (arg === '--abort-failure-minimum') options.abortFailureMinimum = positiveInteger(args[++index], options.abortFailureMinimum);
     else if (arg.startsWith('--limit=')) options.limit = positiveInteger(arg.slice(8), options.limit);
     else if (arg === '--limit') options.limit = positiveInteger(args[++index], options.limit);
     else if (arg.startsWith('--concurrency=')) options.concurrency = positiveInteger(arg.slice(14), options.concurrency);
@@ -115,6 +136,7 @@ function parseArgs(args) {
   options.series = options.series.map((value) => value.trim()).filter(Boolean);
   options.asins = options.asins.map((value) => value.trim().toUpperCase()).filter(Boolean);
   options.providers = options.providers.map((value) => value.trim()).filter(Boolean);
+  if (options.all && options.abortFailureRate == null) options.abortFailureRate = 0.25;
   return options;
 }
 
@@ -191,6 +213,12 @@ function suspiciousStoredFloor(book) {
 function positiveInteger(value, fallback) {
   const number = Number(value);
   return Number.isFinite(number) && number > 0 ? Math.round(number) : fallback;
+}
+
+function fraction(value, fallback) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0 || number >= 1) return fallback;
+  return number;
 }
 
 function summaryBook(book) {

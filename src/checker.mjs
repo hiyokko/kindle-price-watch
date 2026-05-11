@@ -2607,6 +2607,11 @@ export async function repairBookPricesByAsins(asins, options = {}) {
   const currentStore = await readStore();
   const booksByAsin = new Map((currentStore.books || []).map((book) => [book.asin, book]));
   const seriesCandidateCache = options.seriesCandidateCache || new Map();
+  const failureBudget = repairFailureBudget(options);
+  const fetchStats = {
+    processed: 0,
+    failed: 0
+  };
   const snapshotTargets = [];
   const missing = [];
 
@@ -2644,6 +2649,10 @@ export async function repairBookPricesByAsins(asins, options = {}) {
           error: snapshotResult.ok ? '' : snapshotResult.error || ''
         });
       }
+      fetchStats.processed += 1;
+      if (!snapshotResult.ok) fetchStats.failed += 1;
+      const abortError = repairFailureBudgetAbortError(fetchStats, failureBudget);
+      if (abortError) throw abortError;
       return {
         asin: target.asin,
         bookId: target.bookId,
@@ -2651,6 +2660,9 @@ export async function repairBookPricesByAsins(asins, options = {}) {
       };
     }
   );
+
+  const abortError = repairFailureBudgetAbortError(fetchStats, failureBudget);
+  if (abortError) throw abortError;
 
   const summary = {
     mode: 'price_repair',
@@ -2698,6 +2710,43 @@ export async function repairBookPricesByAsins(asins, options = {}) {
   });
 
   return summary;
+}
+
+function repairFailureBudget(options = {}) {
+  const rate = normalizeFailureRate(options.abortFailureRate);
+  if (!rate) return null;
+  return {
+    rate,
+    minimum: floorNumber(options.abortFailureMinimum, 1, 10)
+  };
+}
+
+function normalizeFailureRate(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0 || number >= 1) return null;
+  return number;
+}
+
+function repairFailureBudgetAbortError(stats, budget) {
+  if (!budget) return null;
+  if (!stats || stats.processed < budget.minimum) return null;
+
+  const failureRate = stats.failed / stats.processed;
+  if (failureRate <= budget.rate) return null;
+
+  const error = new Error(
+    `価格修復を中断しました: 失敗率${Math.round(failureRate * 100)}%が上限${Math.round(budget.rate * 100)}%を超えています`
+  );
+  error.status = 503;
+  error.code = 'REPAIR_FAILURE_RATE_EXCEEDED';
+  error.abortSummary = {
+    processed: stats.processed,
+    failed: stats.failed,
+    failureRate,
+    maxFailureRate: budget.rate,
+    minimum: budget.minimum
+  };
+  return error;
 }
 
 async function settleSnapshotWithDeadline(asin, book, timeoutMs, options = {}) {
