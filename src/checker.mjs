@@ -36,6 +36,7 @@ const UNVALIDATED_SERIES_PRICE_PROVIDERS = new Set([
 ]);
 const SINGLE_EPISODE_SERIES_PRICE_MAX = 250;
 const SUSPICIOUS_BULK_SERIES_COUNT_MIN = 20;
+const AMAZON_HTML_TINY_PRICE_MAX = 5;
 
 export async function listBooks() {
   const store = await readStoreWithPriceRepairs();
@@ -2126,7 +2127,7 @@ function isSeriesDerivedPriceProvider(provider) {
   return normalized.includes('_series') || normalized === 'amazon_series_bulk' || normalized === 'amazon_series_reader';
 }
 
-function suspiciousPriceReason({ price, points = 0, effectivePrice = null, listPrice = null, provider = '', referencePrices = [] }) {
+export function suspiciousPriceReason({ price, points = 0, effectivePrice = null, listPrice = null, provider = '', referencePrices = [] }) {
   const current = Number(price);
   const pointValue = Number(points || 0);
   const reference = Math.max(
@@ -2164,9 +2165,9 @@ function suspiciousPriceReason({ price, points = 0, effectivePrice = null, listP
 
 function isLikelyAmazonHtmlTinyContamination({ price, provider = '', reference = 0 }) {
   const current = Number(price);
-  if (!Number.isFinite(current) || current < 0 || current > 5) return false;
+  if (!Number.isFinite(current) || current < 0 || current > AMAZON_HTML_TINY_PRICE_MAX) return false;
   if (!isAmazonHtmlLikePriceProvider(provider)) return false;
-  return Number.isFinite(reference) && reference >= 100;
+  return true;
 }
 
 function isAmazonHtmlLikePriceProvider(provider) {
