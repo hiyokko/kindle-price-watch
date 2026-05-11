@@ -1379,8 +1379,11 @@ async function fetchFromAmazonHtml(asin, inputUrl = '', options = {}) {
   if (!amazonBlocked && shouldUseAmazonReaderFallback()) {
     try {
       const snapshot = await fetchFromAmazonReader(asin, inputUrl, options);
-      if (snapshot.currentPrice != null) return lastSnapshot ? mergeSnapshotLike(lastSnapshot, snapshot) : snapshot;
-      lastSnapshot = lastSnapshot ? mergeSnapshotLike(lastSnapshot, snapshot) : snapshot;
+      if (snapshot.currentPrice != null && !shouldDeferAmazonReaderPrice(snapshot, options)) {
+        return lastSnapshot ? mergeSnapshotLike(lastSnapshot, snapshot) : snapshot;
+      }
+      const metadataSnapshot = shouldDeferAmazonReaderPrice(snapshot, options) ? snapshotWithoutPrice(snapshot) : snapshot;
+      lastSnapshot = lastSnapshot ? mergeSnapshotLike(lastSnapshot, metadataSnapshot) : metadataSnapshot;
     } catch (error) {
       if (isPermanentKindleProductError(error)) throw error;
       errors.push(`reader: ${error.message}`);
@@ -2035,6 +2038,34 @@ function mergeSnapshotLike(base, overlay) {
     listPrice: shouldUseOverlayPricing ? overlay.listPrice : base.listPrice ?? overlay.listPrice,
     provider: shouldUseOverlayPricing ? overlay.provider : base.provider
   };
+}
+
+function snapshotWithoutPrice(snapshot = {}) {
+  return {
+    ...snapshot,
+    currentPrice: null,
+    currentPoints: 0,
+    effectivePrice: null
+  };
+}
+
+export function shouldDeferAmazonReaderPrice(snapshot = {}, options = {}) {
+  if (String(snapshot.provider || '').toLowerCase() !== 'amazon_reader') return false;
+  const price = Number(snapshot.currentPrice);
+  if (!Number.isFinite(price) || price < 0) return false;
+  if (price <= 5) return true;
+
+  const references = [
+    snapshot.listPrice,
+    options.listPrice,
+    options.currentPrice,
+    options.effectivePrice,
+    options.previousEffectivePrice
+  ]
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value) && value >= 100);
+  const reference = references.length ? Math.max(...references) : 0;
+  return reference > 0 && price <= reference * 0.7;
 }
 
 function bestSnapshotTitle(primary, fallback) {

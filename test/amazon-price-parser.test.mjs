@@ -5,7 +5,8 @@ import {
   extractAmazonHtmlSnapshotFromHtml,
   extractKindleSeriesItemsFromHtml,
   extractMangaZenkanCompletionEvidenceFromHtml,
-  extractSeriesCompletionStatusFromHtml
+  extractSeriesCompletionStatusFromHtml,
+  shouldDeferAmazonReaderPrice
 } from '../src/price-provider.mjs';
 
 test('Amazon HTML parser keeps explicit Kindle price separate from discount and points', () => {
@@ -198,6 +199,38 @@ test('Amazon HTML parser marks explicit free Kindle prices', () => {
   assert.equal(snapshot.currentPoints, 0);
   assert.equal(snapshot.effectivePrice, 0);
   assert.equal(snapshot.explicitFreeKindlePrice, true);
+});
+
+test('Amazon reader fallback defers steep uncorroborated prices', () => {
+  assert.equal(
+    shouldDeferAmazonReaderPrice(
+      {
+        currentPrice: 200,
+        currentPoints: 2,
+        listPrice: null,
+        provider: 'amazon_reader'
+      },
+      {
+        listPrice: 440
+      }
+    ),
+    true
+  );
+
+  assert.equal(
+    shouldDeferAmazonReaderPrice(
+      {
+        currentPrice: 396,
+        currentPoints: 4,
+        listPrice: null,
+        provider: 'amazon_reader'
+      },
+      {
+        listPrice: 440
+      }
+    ),
+    false
+  );
 });
 
 test('Amazon HTML parser ignores paper and used offers when Kindle swatch is present', () => {
