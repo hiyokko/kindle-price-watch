@@ -2185,6 +2185,9 @@ export function suspiciousPriceReason({
   })) {
     return current === 0 ? 'Amazon HTML価格が不自然に0円です' : 'Amazon HTML価格が不自然に小さすぎます';
   }
+  if (isLikelyLowConfidenceReaderPrice({ price: current, provider, reference })) {
+    return 'Amazon reader価格が基準価格に対して低すぎます';
+  }
   if (current <= 0) return '';
 
   if (Number.isFinite(pointValue) && pointValue > current) return 'ポイントが価格を超えています';
@@ -2226,6 +2229,15 @@ function isLikelyAmazonHtmlTinyContamination({
 
 function isAmazonHtmlLikePriceProvider(provider) {
   return ['amazon_html', 'amazon_search'].includes(String(provider || '').toLowerCase());
+}
+
+function isLikelyLowConfidenceReaderPrice({ price, provider = '', reference = 0 }) {
+  if (String(provider || '').toLowerCase() !== 'amazon_reader') return false;
+  const current = Number(price);
+  const baseline = Number(reference);
+  if (!Number.isFinite(current) || current <= 5) return false;
+  if (!Number.isFinite(baseline) || baseline < 100) return false;
+  return current <= baseline * 0.7;
 }
 
 function isLikelyPercentContaminatedStoredPrice({ price, points = 0, listPrice = null, provider = '' }) {

@@ -67,6 +67,30 @@ test('price validation accepts explicitly free Kindle prices', () => {
   );
 });
 
+test('price validation rejects steep uncorroborated Amazon reader prices', () => {
+  assert.match(
+    suspiciousPriceReason({
+      price: 200,
+      points: 2,
+      effectivePrice: 198,
+      provider: 'amazon_reader',
+      referencePrices: [440]
+    }),
+    /reader価格/
+  );
+
+  assert.equal(
+    suspiciousPriceReason({
+      price: 396,
+      points: 4,
+      effectivePrice: 392,
+      provider: 'amazon_reader',
+      referencePrices: [440]
+    }),
+    ''
+  );
+});
+
 test('series snapshots prefer validated series page prices for checked series books', () => {
   const snapshot = seriesSnapshotFromKindleSeriesForBook({
     items: [
