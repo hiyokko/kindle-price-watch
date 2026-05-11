@@ -40,6 +40,7 @@ try {
     concurrency: options.concurrency,
     maxAsins: Math.max(books.length, 30),
     onProgress: progress,
+    timeoutMs: options.timeoutMs,
     abortFailureRate: options.abortFailureRate,
     abortFailureMinimum: options.abortFailureMinimum
   });
@@ -102,6 +103,7 @@ function parseArgs(args) {
     summaryOnly: false,
     abortFailureRate: null,
     abortFailureMinimum: 10,
+    timeoutMs: null,
     limit: 500,
     concurrency: 1,
     asins: [],
@@ -121,6 +123,8 @@ function parseArgs(args) {
     else if (arg === '--abort-failure-rate') options.abortFailureRate = fraction(args[++index], options.abortFailureRate);
     else if (arg.startsWith('--abort-failure-minimum=')) options.abortFailureMinimum = positiveInteger(arg.slice(24), options.abortFailureMinimum);
     else if (arg === '--abort-failure-minimum') options.abortFailureMinimum = positiveInteger(args[++index], options.abortFailureMinimum);
+    else if (arg.startsWith('--timeout-ms=')) options.timeoutMs = positiveInteger(arg.slice(13), options.timeoutMs);
+    else if (arg === '--timeout-ms') options.timeoutMs = positiveInteger(args[++index], options.timeoutMs);
     else if (arg.startsWith('--limit=')) options.limit = positiveInteger(arg.slice(8), options.limit);
     else if (arg === '--limit') options.limit = positiveInteger(args[++index], options.limit);
     else if (arg.startsWith('--concurrency=')) options.concurrency = positiveInteger(arg.slice(14), options.concurrency);
@@ -137,6 +141,7 @@ function parseArgs(args) {
   options.asins = options.asins.map((value) => value.trim().toUpperCase()).filter(Boolean);
   options.providers = options.providers.map((value) => value.trim()).filter(Boolean);
   if (options.all && options.abortFailureRate == null) options.abortFailureRate = 0.25;
+  if (options.all && options.timeoutMs == null) options.timeoutMs = 120000;
   return options;
 }
 
