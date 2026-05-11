@@ -1446,13 +1446,18 @@ async function fetchFromListasin(asin, seed = {}, options = {}) {
 
 function snapshotSeedFromOptions(asin, options = {}, lastSnapshot = null) {
   const normalizedAsin = String(asin || '').toUpperCase();
+  const optionSourceUrl = String(options.sourceUrl || '');
+  const optionAmazonUrl =
+    options.amazonUrl ||
+    (extractAsin(optionSourceUrl) === normalizedAsin ? optionSourceUrl : '') ||
+    amazonUrlForAsin(normalizedAsin);
   return {
     asin: normalizedAsin,
     title: bestSnapshotTitle(lastSnapshot?.title, options.title),
     author: lastSnapshot?.author || options.author || '',
     publisher: lastSnapshot?.publisher || options.publisher || '',
     imageUrl: lastSnapshot?.imageUrl || options.imageUrl || '',
-    amazonUrl: lastSnapshot?.amazonUrl || options.amazonUrl || options.sourceUrl || amazonUrlForAsin(normalizedAsin),
+    amazonUrl: lastSnapshot?.amazonUrl || optionAmazonUrl,
     seriesName: options.seriesName || '',
     volume: options.volume || ''
   };

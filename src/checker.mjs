@@ -4170,7 +4170,7 @@ async function settleSnapshot(asin, book = {}, options = {}) {
         ...book,
         signal: options.signal,
         timeoutMs: options.timeoutMs,
-        url: options.url || book.sourceUrl || book.amazonUrl || ''
+        url: options.url || snapshotInputUrlForBook(book)
       });
     if (snapshot.currentPrice == null) return { ok: false, snapshot, error: '価格を取得できませんでした' };
     const suspiciousReason = suspiciousSnapshotReason(book, snapshot);
@@ -4185,6 +4185,14 @@ async function settleSnapshot(asin, book = {}, options = {}) {
   } catch (error) {
     return { ok: false, error: error.message };
   }
+}
+
+export function snapshotInputUrlForBook(book = {}) {
+  const normalizedAsin = String(book.asin || '').toUpperCase();
+  const candidates = [book.amazonUrl, book.sourceUrl]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean);
+  return candidates.find((url) => extractAsin(url) === normalizedAsin) || '';
 }
 
 async function fetchSeriesPriceSnapshotForBook(asin, book = {}, options = {}) {

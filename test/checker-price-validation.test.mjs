@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   needsDiscountExpiryRecheck,
   seriesSnapshotFromKindleSeriesForBook,
+  snapshotInputUrlForBook,
   suspiciousPriceReason
 } from '../src/checker.mjs';
 
@@ -86,6 +87,26 @@ test('price validation rejects steep uncorroborated Amazon reader prices', () =>
       effectivePrice: 392,
       provider: 'amazon_reader',
       referencePrices: [440]
+    }),
+    ''
+  );
+});
+
+test('single-book fallback uses the individual product URL before the series URL', () => {
+  assert.equal(
+    snapshotInputUrlForBook({
+      asin: 'B00E3RA01K',
+      amazonUrl: 'https://www.amazon.co.jp/gp/product/B00E3RA01K?binding=kindle_edition&ref=dbs_dp_rwt_sb_pc_tkin',
+      sourceUrl: 'https://www.amazon.co.jp/dp/B074CK141Z'
+    }),
+    'https://www.amazon.co.jp/gp/product/B00E3RA01K?binding=kindle_edition&ref=dbs_dp_rwt_sb_pc_tkin'
+  );
+
+  assert.equal(
+    snapshotInputUrlForBook({
+      asin: 'B00E3RA01K',
+      amazonUrl: 'https://www.amazon.co.jp/dp/B074CK141Z',
+      sourceUrl: 'https://www.amazon.co.jp/dp/B074CK141Z'
     }),
     ''
   );
