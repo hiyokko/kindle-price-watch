@@ -39,6 +39,7 @@ const SUSPICIOUS_BULK_SERIES_COUNT_MIN = 20;
 const AMAZON_HTML_TINY_PRICE_MAX = 5;
 const DISCOUNT_RECHECK_DEFAULT_HOURS = 24;
 const DISCOUNT_RECHECK_RATIO = 0.7;
+const PRICE_INTEGRITY_SERIES_OUTLIER_RATIO = 0.55;
 
 export async function listBooks() {
   const store = await readStoreWithPriceRepairs();
@@ -2917,6 +2918,17 @@ export async function runDueChecks(options = {}) {
       }
     }
 
+    const priceIntegrityAudit = shouldRunPriceIntegrityAudit(source, options)
+      ? await runPriceIntegrityAudit(store, results, {
+          ...options,
+          startedAt,
+          maxRuntimeMs,
+          saveReserveMs,
+          now: new Date().toISOString(),
+          seriesCandidateCache
+        })
+      : null;
+
     const seriesNotifications = await sendDeferredSeriesNotifications(store, seriesNotificationBaselines, {
       ...options,
       getWebhookUrls
@@ -2936,6 +2948,7 @@ export async function runDueChecks(options = {}) {
       executionBoundaryAt: scheduleIntent?.executionBoundaryAt || '',
       importQueue,
       seriesDiscovery,
+      priceIntegrityAudit,
       seriesNotifications,
       results
     };
@@ -2962,6 +2975,10 @@ export async function runDueChecks(options = {}) {
           lastSeriesDiscoveryCompleted: seriesDiscovery?.completed || 0,
           lastSeriesDiscoverySkipped: seriesDiscovery?.skippedNoRun || 0,
           lastSeriesDiscoveryErrors: seriesDiscovery?.errors?.length || 0,
+          lastPriceIntegrityAuditChecked: priceIntegrityAudit?.checked || 0,
+          lastPriceIntegrityAuditSuspicious: priceIntegrityAudit?.suspicious || 0,
+          lastPriceIntegrityAuditRepaired: priceIntegrityAudit?.repaired || 0,
+          lastPriceIntegrityAuditUnresolved: priceIntegrityAudit?.unresolved || 0,
           lastCronError: ''
         }
       : null;
@@ -3005,6 +3022,175 @@ export async function runDueChecks(options = {}) {
     }
     throw error;
   }
+}
+
+function shouldRunPriceIntegrityAudit(source, options = {}) {
+  if (options.priceIntegrityAudit === false) return false;
+  if (options.priceIntegrityAudit === true) return true;
+  if (readEnvBoolean('PRICE_INTEGRITY_AUDIT_ENABLED', true) === false) return false;
+  return source === 'cron' || source === 'scheduler';
+}
+
+async function runPriceIntegrityAudit(store, results = [], options = {}) {
+  const now = options.now || new Date().toISOString();
+  const targetBooks = priceIntegrityAuditTargets(store, results);
+  const summary = {
+    checked: targetBooks.length,
+    suspicious: 0,
+    warnings: 0,
+    rechecked: 0,
+    repaired: 0,
+    unresolved: 0,
+    skipped: 0,
+    changed: false,
+    findings: []
+  };
+  if (targetBooks.length === 0) return summary;
+
+  const recheckLimit = floorNumber(process.env.PRICE_INTEGRITY_AUDIT_RECHECK_LIMIT, 0, 8);
+  for (const book of targetBooks) {
+    const issue = priceIntegrityIssueForBook(book, store);
+    if (!issue) continue;
+
+    summary[issue.severity === 'warning' ? 'warnings' : 'suspicious'] += 1;
+    const finding = priceIntegrityFinding(book, issue);
+    summary.findings.push(finding);
+
+    if (issue.severity === 'warning') {
+      continue;
+    }
+
+    const before = priceStateForComparison(book);
+    const repair = repairSuspiciousPriceState(book, store, {
+      clearCurrent: true,
+      restoreMissingCurrent: true,
+      clearStaleDiscountedCurrent: true
+    });
+    if (repair.changed) summary.changed = true;
+
+    if (
+      summary.rechecked < recheckLimit &&
+      !shouldStopForRuntimeLimit(options.startedAt, options.maxRuntimeMs, summary.rechecked, options.saveReserveMs)
+    ) {
+      summary.rechecked += 1;
+      const runtime = runtimeAbortOptions(options.startedAt, options.maxRuntimeMs, {
+        reserveMs: options.saveReserveMs,
+        capMs: priceIntegrityAuditSnapshotTimeoutMs()
+      });
+      let snapshotResult;
+      try {
+        snapshotResult = await settleSnapshot(book.asin, book, {
+          signal: runtime.signal,
+          timeoutMs: priceIntegrityAuditSnapshotTimeoutMs(),
+          seriesCandidateCache: options.seriesCandidateCache
+        });
+      } finally {
+        runtime.cleanup();
+      }
+      const applied = applyCheckResultToStore(store, { id: book.id, asin: book.asin }, snapshotResult, now, {
+        updateCursor: false,
+        recordNotifications: false
+      });
+      if (applied.checkedBook) Object.assign(book, store.books.find((item) => item.id === book.id) || book);
+    } else {
+      summary.skipped += 1;
+    }
+
+    const after = priceStateForComparison(book);
+    const afterIssue = priceIntegrityIssueForBook(book, store);
+    if (JSON.stringify(before) !== JSON.stringify(after)) summary.changed = true;
+    if (afterIssue) {
+      summary.unresolved += 1;
+      finding.unresolved = true;
+      finding.afterReason = afterIssue.reason;
+    } else {
+      summary.repaired += 1;
+    }
+  }
+
+  summary.findings = summary.findings.slice(0, 10);
+  return summary;
+}
+
+function priceIntegrityAuditTargets(store, results = []) {
+  const ids = new Set(
+    (results || [])
+      .map((entry) => entry?.book?.id)
+      .filter(Boolean)
+  );
+  return (store.books || []).filter((book) => ids.has(book.id));
+}
+
+export function priceIntegrityIssueForBook(book, store) {
+  const strictReason = suspiciousStoredCurrentPriceReason(book);
+  if (strictReason) {
+    return {
+      severity: 'suspicious',
+      reason: strictReason
+    };
+  }
+
+  const outlierReason = seriesPriceOutlierReason(book, store);
+  if (outlierReason) {
+    return {
+      severity: 'warning',
+      reason: outlierReason
+    };
+  }
+
+  return null;
+}
+
+function priceIntegrityFinding(book, issue) {
+  return {
+    asin: book.asin,
+    title: book.title || '',
+    seriesName: book.seriesName || '',
+    volume: book.volume || '',
+    price: book.currentPrice ?? null,
+    points: book.currentPoints ?? 0,
+    effectivePrice: book.effectivePrice ?? null,
+    provider: book.provider || '',
+    severity: issue.severity,
+    reason: issue.reason
+  };
+}
+
+function seriesPriceOutlierReason(book, store) {
+  const current = nullableNumber(book.effectivePrice ?? book.currentPrice);
+  if (current == null || current <= 0) return '';
+  if (!book.seriesKey && !book.sourceUrl) return '';
+
+  const peerPrices = seriesPeerEffectivePrices(book, store);
+  if (peerPrices.length < 3) return '';
+  const median = medianNumber(peerPrices);
+  if (!Number.isFinite(median) || median <= 0) return '';
+  if (current > median * PRICE_INTEGRITY_SERIES_OUTLIER_RATIO) return '';
+  if (trustedSeriesOutlierProvider(book.provider)) return '';
+  return `シリーズ中央値 ${Math.round(median).toLocaleString('ja-JP')}円に対して低すぎます`;
+}
+
+function seriesPeerEffectivePrices(book, store) {
+  return (store.books || [])
+    .filter((item) => item.id !== book.id)
+    .filter((item) => isSamePriceIntegritySeries(book, item))
+    .map((item) => nullableNumber(item.effectivePrice ?? item.currentPrice))
+    .filter((value) => value != null && value > 0);
+}
+
+function isSamePriceIntegritySeries(left, right) {
+  if (!left || !right) return false;
+  if (left.seriesKey && right.seriesKey && left.seriesKey === right.seriesKey) return true;
+  return Boolean(left.sourceUrl && right.sourceUrl && left.sourceUrl === right.sourceUrl);
+}
+
+function trustedSeriesOutlierProvider(provider) {
+  const normalized = String(provider || '').toLowerCase();
+  return ['amazon_series_child', 'amazon_html', 'keepa'].includes(normalized);
+}
+
+function priceIntegrityAuditSnapshotTimeoutMs() {
+  return floorNumber(process.env.PRICE_INTEGRITY_AUDIT_SNAPSHOT_TIMEOUT_MS, 1000, 20000);
 }
 
 async function discoverSeriesUpdates(store, options = {}) {
@@ -4142,6 +4328,17 @@ function cronSummaryPayload(result, context = {}) {
           skippedCompleted: result.seriesDiscovery.skippedCompleted || 0,
           markedNoRun: result.seriesDiscovery.markedNoRun || 0,
           errors: result.seriesDiscovery.errors?.length || 0
+        }
+      : null,
+    priceIntegrityAudit: result.priceIntegrityAudit
+      ? {
+          checked: result.priceIntegrityAudit.checked || 0,
+          suspicious: result.priceIntegrityAudit.suspicious || 0,
+          warnings: result.priceIntegrityAudit.warnings || 0,
+          rechecked: result.priceIntegrityAudit.rechecked || 0,
+          repaired: result.priceIntegrityAudit.repaired || 0,
+          unresolved: result.priceIntegrityAudit.unresolved || 0,
+          skipped: result.priceIntegrityAudit.skipped || 0
         }
       : null
   };

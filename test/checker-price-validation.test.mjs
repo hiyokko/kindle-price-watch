@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   needsDiscountExpiryRecheck,
+  priceIntegrityIssueForBook,
   seriesSnapshotFromKindleSeriesForBook,
   snapshotInputUrlForBook,
   suspiciousPriceReason
@@ -110,6 +111,54 @@ test('single-book fallback uses the individual product URL before the series URL
     }),
     ''
   );
+});
+
+test('price integrity audit flags suspicious checked prices', () => {
+  const book = {
+    id: 'book-1',
+    asin: 'B00TEST001',
+    title: '監査テスト 1',
+    currentPrice: 2,
+    currentPoints: 0,
+    effectivePrice: 2,
+    listPrice: 440,
+    provider: 'amazon_html'
+  };
+
+  const issue = priceIntegrityIssueForBook(book, { books: [book] });
+  assert.equal(issue.severity, 'suspicious');
+  assert.match(issue.reason, /小さすぎます/);
+});
+
+test('price integrity audit warns on low-confidence series outliers', () => {
+  const store = {
+    books: [
+      {
+        id: 'book-1',
+        asin: 'B00TEST001',
+        title: '監査シリーズ 1',
+        seriesKey: 'series:asin:B00SERIES1',
+        currentPrice: 200,
+        currentPoints: 0,
+        effectivePrice: 200,
+        provider: 'listasin'
+      },
+      ...[2, 3, 4].map((volume) => ({
+        id: `book-${volume}`,
+        asin: `B00TEST00${volume}`,
+        title: `監査シリーズ ${volume}`,
+        seriesKey: 'series:asin:B00SERIES1',
+        currentPrice: 396,
+        currentPoints: 4,
+        effectivePrice: 392,
+        provider: 'amazon_series_child'
+      }))
+    ]
+  };
+
+  const issue = priceIntegrityIssueForBook(store.books[0], store);
+  assert.equal(issue.severity, 'warning');
+  assert.match(issue.reason, /シリーズ中央値/);
 });
 
 test('series snapshots prefer validated series page prices for checked series books', () => {

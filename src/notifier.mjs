@@ -123,6 +123,13 @@ export function buildCronSummaryNotification(summary = {}) {
           value: `確認 ${Number(summary.seriesDiscovery.checked || 0).toLocaleString('ja-JP')} / 新規 ${Number(summary.seriesDiscovery.added || 0).toLocaleString('ja-JP')} / 実行なし ${Number(summary.seriesDiscovery.skippedNoRun || 0).toLocaleString('ja-JP')} / エラー ${Number(summary.seriesDiscovery.errors || 0).toLocaleString('ja-JP')}`,
           inline: false
         }
+      : null,
+    summary.priceIntegrityAudit
+      ? {
+          name: '価格監査',
+          value: `確認 ${Number(summary.priceIntegrityAudit.checked || 0).toLocaleString('ja-JP')} / 異常 ${Number(summary.priceIntegrityAudit.suspicious || 0).toLocaleString('ja-JP')} / 警告 ${Number(summary.priceIntegrityAudit.warnings || 0).toLocaleString('ja-JP')} / 修復 ${Number(summary.priceIntegrityAudit.repaired || 0).toLocaleString('ja-JP')} / 未解決 ${Number(summary.priceIntegrityAudit.unresolved || 0).toLocaleString('ja-JP')}`,
+          inline: false
+        }
       : null
   ].filter(Boolean);
 
