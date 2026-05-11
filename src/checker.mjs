@@ -3434,7 +3434,7 @@ function seriesInputFromSeriesKey(seriesKey = '') {
 
 function seriesDiscoveryInput(sourceUrl = '', seriesKey = '') {
   const asin = extractAsin(sourceUrl) || String(seriesKey || '').match(/^series:asin:([A-Z0-9]{10})$/i)?.[1];
-  return asin ? kindleSeriesUrlForAsin(asin.toUpperCase()) : sourceUrl;
+  return asin ? kindleSeriesFetchUrlForAsin(asin.toUpperCase()) : sourceUrl;
 }
 
 function seriesTitleFromBook(book) {
@@ -4332,6 +4332,10 @@ function seriesSourceUrlFor(input, series = {}) {
 }
 
 function kindleSeriesUrlForAsin(asin) {
+  return amazonUrlForAsin(asin);
+}
+
+function kindleSeriesFetchUrlForAsin(asin) {
   const url = new URL(amazonUrlForAsin(asin));
   url.searchParams.set('binding', 'kindle_edition');
   url.searchParams.set('ref_', 'dbs_s_ks_series_rwt_tkin');
