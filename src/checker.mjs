@@ -726,7 +726,7 @@ async function fetchSeriesCandidates(input, options = {}) {
   const candidates = [];
 
   try {
-    const series = await fetchKindleSeriesItems(input, options);
+    const series = await fetchKindleSeriesCandidate(input, options);
     if (series.items.length > 1) candidates.push(series);
   } catch {
     // Fall back below.
@@ -795,6 +795,27 @@ async function fetchSeriesCandidates(input, options = {}) {
     : await resolveSeriesCandidateDiffs(merged, usableCandidates);
   if (!isIncompleteSeriesCandidate(resolved)) return resolved;
   return options.allowIncomplete && resolved.items.length > 1 ? resolved : null;
+}
+
+async function fetchKindleSeriesCandidate(input, options = {}) {
+  const cache = options.seriesCandidateCache;
+  if (!cache || typeof cache.get !== 'function' || typeof cache.set !== 'function') {
+    return fetchKindleSeriesItems(input, options);
+  }
+
+  const key = seriesCandidateCacheKey(input, options);
+  if (cache.has(key)) return cache.get(key);
+
+  const promise = fetchKindleSeriesItems(input, options);
+  cache.set(key, promise);
+  return promise;
+}
+
+function seriesCandidateCacheKey(input, options = {}) {
+  return [
+    options.requireCollectionPage ? 'collection' : 'series',
+    String(input || '').trim()
+  ].join(':');
 }
 
 function filterSuspiciousSeriesCandidates(candidates) {
@@ -2665,6 +2686,7 @@ export async function runDueChecks(options = {}) {
     const startedAt = Date.now();
     const maxRuntimeMs = floorNumber(process.env.CHECK_MAX_RUNTIME_MS, 0, 0);
     const saveReserveMs = runtimeSaveReserveMs();
+    const seriesCandidateCache = options.seriesCandidateCache || new Map();
     let store = await readStoreWithPriceRepairs();
     let settings = mergedRuntimeSettings(store.settings);
     scheduleIntent = resolveCronScheduleIntent(options.scheduleCron || process.env.CHECK_SCHEDULE_CRON, startedAt, settings);
@@ -2765,10 +2787,10 @@ export async function runDueChecks(options = {}) {
     }
 
     const importQueue = shouldRunBookImportQueue(source, options)
-      ? await processBookImportQueueInStore(store, { startedAt, maxRuntimeMs, saveReserveMs, now: cronStartedAt })
+      ? await processBookImportQueueInStore(store, { startedAt, maxRuntimeMs, saveReserveMs, now: cronStartedAt, seriesCandidateCache })
       : null;
     let seriesDiscovery = shouldRunSeriesDiscovery(source, options, store, settings, startedAt)
-      ? await discoverSeriesUpdates(store, { startedAt, maxRuntimeMs, saveReserveMs })
+      ? await discoverSeriesUpdates(store, { startedAt, maxRuntimeMs, saveReserveMs, seriesCandidateCache })
       : null;
     const discoveredSeriesKeys = seriesDiscoveryKeys(seriesDiscovery);
     const discoverCheckedSeries = shouldRunCheckedBookSeriesDiscovery(source, options);
@@ -2810,7 +2832,8 @@ export async function runDueChecks(options = {}) {
           getWebhookUrls,
           deferSeriesNotifications: true,
           seriesNotificationBaselines,
-          seriesFreshAfter
+          seriesFreshAfter,
+          seriesCandidateCache
         });
       } finally {
         runtime.cleanup();
@@ -2823,7 +2846,8 @@ export async function runDueChecks(options = {}) {
           startedAt,
           maxRuntimeMs,
           saveReserveMs,
-          seenKeys: discoveredSeriesKeys
+          seenKeys: discoveredSeriesKeys,
+          seriesCandidateCache
         });
         if (checkedSeriesDiscovery) {
           seriesDiscovery = mergeSeriesDiscoverySummaries(seriesDiscovery, checkedSeriesDiscovery);
@@ -3006,7 +3030,8 @@ async function runSeriesDiscoveryPlan(store, plan, options = {}) {
       try {
         result = await addSeriesBooksFromInputInStore(store, seriesDiscoveryInput(group.sourceUrl, group.seriesKey), {
           now,
-          signal: runtime.signal
+          signal: runtime.signal,
+          seriesCandidateCache: options.seriesCandidateCache
         });
       } finally {
         runtime.cleanup();
@@ -3162,7 +3187,11 @@ async function processBookImportQueueInStore(store, options = {}) {
       });
       let result;
       try {
-        result = await addBooksFromInputInStore(store, input, { now, signal: runtime.signal });
+        result = await addBooksFromInputInStore(store, input, {
+          now,
+          signal: runtime.signal,
+          seriesCandidateCache: options.seriesCandidateCache
+        });
       } finally {
         runtime.cleanup();
       }
@@ -4088,12 +4117,15 @@ function sharedWebhookUrlLoader() {
 
 async function settleSnapshot(asin, book = {}, options = {}) {
   try {
-    const snapshot = await fetchBookSnapshot(asin, {
-      ...book,
-      signal: options.signal,
-      timeoutMs: options.timeoutMs,
-      url: options.url || book.sourceUrl || book.amazonUrl || ''
-    });
+    const seriesSnapshot = await fetchSeriesPriceSnapshotForBook(asin, book, options);
+    const snapshot =
+      seriesSnapshot ||
+      await fetchBookSnapshot(asin, {
+        ...book,
+        signal: options.signal,
+        timeoutMs: options.timeoutMs,
+        url: options.url || book.sourceUrl || book.amazonUrl || ''
+      });
     if (snapshot.currentPrice == null) return { ok: false, snapshot, error: '価格を取得できませんでした' };
     const suspiciousReason = suspiciousSnapshotReason(book, snapshot);
     if (suspiciousReason) {
@@ -4107,6 +4139,56 @@ async function settleSnapshot(asin, book = {}, options = {}) {
   } catch (error) {
     return { ok: false, error: error.message };
   }
+}
+
+async function fetchSeriesPriceSnapshotForBook(asin, book = {}, options = {}) {
+  if (!shouldUseSeriesPriceSnapshot(book, options)) return null;
+
+  const input = seriesDiscoveryInput(book.sourceUrl, book.seriesKey);
+  if (!input) return null;
+
+  try {
+    const series = await fetchKindleSeriesCandidate(input, {
+      ...options,
+      allowIncomplete: true
+    });
+    return seriesSnapshotFromKindleSeriesForBook(series, asin, book);
+  } catch {
+    return null;
+  }
+}
+
+function shouldUseSeriesPriceSnapshot(book = {}, options = {}) {
+  if (options.seriesPriceFirst === false) return false;
+  if (String(process.env.SERIES_PRICE_CHECK_FIRST || 'true').toLowerCase() === 'false') return false;
+  if (book.importMode !== 'kindle_series' && !book.seriesKey) return false;
+  return Boolean(book.sourceUrl || book.seriesKey);
+}
+
+export function seriesSnapshotFromKindleSeriesForBook(series, asin, book = {}) {
+  const normalizedAsin = String(asin || '').toUpperCase();
+  const item = (series?.items || []).find((candidate) => candidate?.asin === normalizedAsin);
+  if (!item || item.currentPrice == null) return null;
+  if (isUnvalidatedSeriesPriceProvider(item.provider)) return null;
+  if (isUnverifiedFreeSeriesPriceProvider(item.provider, item.currentPrice)) return null;
+
+  const provider = item.provider || series?.provider || 'amazon_series_child';
+  const currentPrice = Number(item.currentPrice);
+  const currentPoints = Number(item.currentPoints || 0);
+  const effectivePrice = item.effectivePrice ?? effectivePriceFromSeed(item);
+  return {
+    asin: normalizedAsin,
+    title: item.title || book.title || `ASIN ${normalizedAsin}`,
+    author: item.author || book.author || '',
+    publisher: item.publisher || book.publisher || '',
+    imageUrl: item.imageUrl || book.imageUrl || '',
+    amazonUrl: item.amazonUrl || book.amazonUrl || amazonUrlForAsin(normalizedAsin),
+    currentPrice,
+    currentPoints,
+    effectivePrice,
+    listPrice: trustedListPriceFor(currentPrice, item.listPrice ?? book.listPrice, provider),
+    provider
+  };
 }
 
 async function settleSnapshotWithUrl(asin, url, book = {}) {
