@@ -2625,15 +2625,27 @@ export async function repairBookPricesByAsins(asins, options = {}) {
   const snapshotResults = await mapWithConcurrency(
     snapshotTargets,
     repairPriceFetchConcurrency(options),
-    async (target) => ({
-      asin: target.asin,
-      bookId: target.bookId,
-      snapshotResult: await settleSnapshotWithDeadline(
+    async (target) => {
+      const snapshotResult = await settleSnapshotWithDeadline(
         target.asin,
         target.book,
         repairPriceSnapshotTimeoutMs(options)
-      )
-    })
+      );
+      if (typeof options.onProgress === 'function') {
+        options.onProgress({
+          phase: 'fetched',
+          asin: target.asin,
+          bookId: target.bookId,
+          ok: Boolean(snapshotResult.ok),
+          error: snapshotResult.ok ? '' : snapshotResult.error || ''
+        });
+      }
+      return {
+        asin: target.asin,
+        bookId: target.bookId,
+        snapshotResult
+      };
+    }
   );
 
   const summary = {

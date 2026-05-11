@@ -14,7 +14,7 @@ if (options.dryRun) {
   console.log(JSON.stringify({
     dryRun: true,
     selected: books.length,
-    books: books.map(summaryBook)
+    books: options.summaryOnly ? undefined : books.map(summaryBook)
   }, null, 2));
   process.exit(0);
 }
@@ -32,10 +32,12 @@ if (books.length === 0) {
 }
 
 const beforeByAsin = new Map(books.map((book) => [book.asin, summaryBook(book)]));
+const progress = progressReporter(books.length, options);
 const repair = await repairBookPricesByAsins(books.map((book) => book.asin), {
   notify: false,
   concurrency: options.concurrency,
-  maxAsins: Math.max(books.length, 30)
+  maxAsins: Math.max(books.length, 30),
+  onProgress: progress
 });
 const results = repair.results.map((result) => {
   const before = beforeByAsin.get(result.asin);
@@ -55,7 +57,7 @@ console.log(JSON.stringify({
   checked: results.length,
   updated: results.filter((result) => priceChanged(result)).length,
   failed: results.filter((result) => !result.ok).length,
-  results: results.sort((a, b) => String(a.title).localeCompare(String(b.title), 'ja'))
+  results: options.summaryOnly ? undefined : results.sort((a, b) => String(a.title).localeCompare(String(b.title), 'ja'))
 }, null, 2));
 
 function loadEnvFile(file) {
@@ -82,6 +84,8 @@ function parseArgs(args) {
     all: false,
     dryRun: false,
     legacy: false,
+    progress: false,
+    summaryOnly: false,
     limit: 500,
     concurrency: 1,
     asins: [],
@@ -94,6 +98,8 @@ function parseArgs(args) {
     if (arg === '--all') options.all = true;
     else if (arg === '--dry-run') options.dryRun = true;
     else if (arg === '--legacy') options.legacy = true;
+    else if (arg === '--progress') options.progress = true;
+    else if (arg === '--summary-only') options.summaryOnly = true;
     else if (arg.startsWith('--limit=')) options.limit = positiveInteger(arg.slice(8), options.limit);
     else if (arg === '--limit') options.limit = positiveInteger(args[++index], options.limit);
     else if (arg.startsWith('--concurrency=')) options.concurrency = positiveInteger(arg.slice(14), options.concurrency);
@@ -226,4 +232,34 @@ function priceChanged(result) {
     result.before.lowestEffectivePrice !== result.after.lowestEffectivePrice ||
     result.before.provider !== result.after.provider
   );
+}
+
+function progressReporter(total, options) {
+  if (!options.progress) return null;
+  let done = 0;
+  let failed = 0;
+  let nextReportAt = Date.now();
+  const start = Date.now();
+
+  return (event) => {
+    done += 1;
+    if (!event.ok) failed += 1;
+    const now = Date.now();
+    const shouldReport = done === total || done === 1 || done % 10 === 0 || now >= nextReportAt;
+    if (!shouldReport) return;
+    nextReportAt = now + 30_000;
+    const percent = total > 0 ? Math.round((done / total) * 1000) / 10 : 100;
+    const elapsedSec = Math.round((now - start) / 1000);
+    const rate = elapsedSec > 0 ? done / elapsedSec : 0;
+    const etaSec = rate > 0 ? Math.round((total - done) / rate) : null;
+    console.error(JSON.stringify({
+      progress: true,
+      done,
+      total,
+      percent,
+      failed,
+      elapsedSec,
+      etaSec
+    }));
+  };
 }
