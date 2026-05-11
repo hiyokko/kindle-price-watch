@@ -91,6 +91,26 @@ test('snapshot validation does not reject explicit Amazon HTML prices against st
   );
 });
 
+test('snapshot validation does not reject series prices against stale stored list price', () => {
+  assert.equal(
+    suspiciousSnapshotReason(
+      {
+        listPrice: 572,
+        currentPrice: 330,
+        effectivePrice: 213
+      },
+      {
+        currentPrice: 660,
+        currentPoints: 117,
+        effectivePrice: 543,
+        listPrice: null,
+        provider: 'amazon_series_child'
+      }
+    ),
+    ''
+  );
+});
+
 test('price validation rejects steep uncorroborated Amazon reader prices', () => {
   assert.match(
     suspiciousPriceReason({

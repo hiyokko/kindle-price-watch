@@ -1676,7 +1676,7 @@ export function suspiciousSnapshotReason(book, snapshot) {
 function snapshotValidationListPrice(book = {}, snapshot = {}) {
   if (snapshot.listPrice != null) return snapshot.listPrice;
   if (String(snapshot.provider || '').toLowerCase() === 'amazon_html' && snapshot.explicitPriceDisplay) return null;
-  return book.listPrice;
+  return trustedListPriceFor(snapshot.currentPrice, book.listPrice, snapshot.provider);
 }
 
 function isSuspiciousSnapshotError(error) {
