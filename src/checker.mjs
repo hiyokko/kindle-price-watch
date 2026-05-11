@@ -2643,7 +2643,8 @@ export async function repairBookPricesByAsins(asins, options = {}) {
         target.book,
         repairPriceSnapshotTimeoutMs(options),
         {
-          seriesCandidateCache
+          seriesCandidateCache,
+          seriesPriceFirst: options.seriesPriceFirst
         }
       );
       if (typeof options.onProgress === 'function') {

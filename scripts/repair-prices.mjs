@@ -41,6 +41,7 @@ try {
     maxAsins: Math.max(books.length, 30),
     onProgress: progress,
     timeoutMs: options.timeoutMs,
+    seriesPriceFirst: options.seriesPriceFirst,
     abortFailureRate: options.abortFailureRate,
     abortFailureMinimum: options.abortFailureMinimum
   });
@@ -104,6 +105,7 @@ function parseArgs(args) {
     abortFailureRate: null,
     abortFailureMinimum: 10,
     timeoutMs: null,
+    seriesPriceFirst: true,
     limit: 500,
     concurrency: 1,
     asins: [],
@@ -118,6 +120,7 @@ function parseArgs(args) {
     else if (arg === '--legacy') options.legacy = true;
     else if (arg === '--progress') options.progress = true;
     else if (arg === '--summary-only') options.summaryOnly = true;
+    else if (arg === '--no-series-price-first') options.seriesPriceFirst = false;
     else if (arg === '--no-abort-failure-rate') options.abortFailureRate = null;
     else if (arg.startsWith('--abort-failure-rate=')) options.abortFailureRate = fraction(arg.slice(21), options.abortFailureRate);
     else if (arg === '--abort-failure-rate') options.abortFailureRate = fraction(args[++index], options.abortFailureRate);
