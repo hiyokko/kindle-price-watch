@@ -658,7 +658,8 @@ async function refreshExistingSingleBookFromInput(id, input) {
       }
       const repair = repairSuspiciousPriceState(book, store, {
         clearCurrent: true,
-        restoreMissingCurrent: true
+        restoreMissingCurrent: true,
+        clearStaleDiscountedCurrent: isSuspiciousSnapshotError(snapshotResult?.error)
       });
       if (repair.changed) updated = true;
       if (isPermanentSnapshotError(snapshotResult?.error)) {
@@ -1729,7 +1730,12 @@ function repairSuspiciousPriceState(book, store, options = {}) {
     provider: book.provider
   };
   const shouldClearCurrent =
-    options.clearCurrent && (suspiciousStoredCurrentPriceReason(book) || hasUnvalidatedSeriesPrice(book));
+    options.clearCurrent &&
+    (
+      suspiciousStoredCurrentPriceReason(book) ||
+      hasUnvalidatedSeriesPrice(book) ||
+      ((options.clearStaleDiscountedCurrent || isSuspiciousSnapshotError(book.lastError)) && needsDiscountExpiryRecheck(book))
+    );
 
   if (shouldClearCurrent) {
     book.currentPrice = null;
@@ -3844,7 +3850,8 @@ function applyCheckResultToStore(store, bookRef, snapshotResult, now, options = 
     }
     const repair = repairSuspiciousPriceState(book, store, {
       clearCurrent: true,
-      restoreMissingCurrent: true
+      restoreMissingCurrent: true,
+      clearStaleDiscountedCurrent: isSuspiciousSnapshotError(snapshotResult.error)
     });
     if (isPermanentSnapshotError(snapshotResult.error)) {
       book.lastCheckedAt = now;

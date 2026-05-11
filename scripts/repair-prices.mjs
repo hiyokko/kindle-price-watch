@@ -113,12 +113,19 @@ function parseArgs(args) {
 }
 
 function selectBooks(books, options) {
+  const hasExplicitFilters = Boolean(
+    options.asins.length ||
+    options.series.length ||
+    options.providers.length ||
+    options.legacy
+  );
   const selected = books.filter((book) => {
     if (options.all) return true;
     if (options.asins.includes(String(book.asin || '').toUpperCase())) return true;
     if (options.legacy && book.provider === 'legacy_provider_removed') return true;
     if (options.providers.includes(book.provider)) return true;
     if (options.series.some((name) => String(book.seriesName || book.title || '').includes(name))) return true;
+    if (hasExplicitFilters) return false;
     return isRepairCandidate(book);
   });
   return selected.slice(0, options.limit);
