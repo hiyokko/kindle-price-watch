@@ -3607,7 +3607,7 @@ function correctImplausibleKindlePrice({ currentPrice, currentPoints, listPrice,
     return { currentPrice: null, currentPoints: 0 };
   }
 
-  if (isImplicitTinyKindlePrice(currentPrice, html)) {
+  if (isImplicitTinyOrFreeKindlePrice(currentPrice, html)) {
     return { currentPrice: null, currentPoints: 0 };
   }
 
@@ -3646,9 +3646,9 @@ function correctImplausibleKindlePrice({ currentPrice, currentPoints, listPrice,
   };
 }
 
-function isImplicitTinyKindlePrice(currentPrice, html = '') {
+function isImplicitTinyOrFreeKindlePrice(currentPrice, html = '') {
   const current = Number(currentPrice);
-  if (!Number.isFinite(current) || current <= 0 || current > 5) return false;
+  if (!Number.isFinite(current) || current < 0 || current > 5) return false;
   if (hasExplicitPriceDisplay(html, current) || hasExplicitFreeKindlePrice(html)) return false;
   return true;
 }

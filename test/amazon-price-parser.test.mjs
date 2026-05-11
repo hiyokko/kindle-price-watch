@@ -133,6 +133,27 @@ test('Amazon HTML parser ignores implicit tiny a-price whole values', () => {
   assert.equal(snapshot.effectivePrice, null);
 });
 
+test('Amazon HTML parser ignores implicit zero a-price whole values', () => {
+  const snapshot = extractAmazonHtmlSnapshotFromHtml(`
+    <html>
+      <head><meta property="og:title" content="Implicit zero price"></head>
+      <body>
+        <span id="productTitle">Implicit zero price</span>
+        <div id="tmm-grid-swatch-KINDLE">
+          Kindle版
+          <span class="a-price" data-a-color="price">
+            <span class="a-price-whole">0</span>
+          </span>
+        </div>
+      </body>
+    </html>
+  `, 'B00TEST007', 'https://www.amazon.co.jp/dp/B00TEST007');
+
+  assert.equal(snapshot.currentPrice, null);
+  assert.equal(snapshot.currentPoints, 0);
+  assert.equal(snapshot.effectivePrice, null);
+});
+
 test('Amazon HTML parser accepts explicit tiny Kindle yen prices', () => {
   const snapshot = extractAmazonHtmlSnapshotFromHtml(`
     <html>
