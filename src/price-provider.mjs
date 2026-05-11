@@ -71,6 +71,7 @@ export async function fetchKindleSeriesItems(input, options = {}) {
   try {
     const { url, html } = await fetchAmazonSeriesHtml(input, options);
     let items = extractKindleSeriesItemsFromHtml(html);
+    items = await enrichKindleSeriesItemsFromChildListPages(items, html, url, options);
 
     if (options.requireCollectionPage && !isKindleCollectionPage(html, sourceAsin, items)) {
       items = [];
@@ -218,6 +219,124 @@ async function fetchAmazonSeriesHtml(input, options = {}) {
   }
 
   throw lastError || new Error('Amazonシリーズページを取得できませんでした');
+}
+
+async function enrichKindleSeriesItemsFromChildListPages(items, html, sourceUrl, options = {}) {
+  if (options.fetchSeriesChildPages === false) return items;
+
+  const pagination = extractSeriesAsinListPagination(html, sourceUrl);
+  if (!pagination) return items;
+
+  const childItems = extractChildAsinListItems(html);
+  if (childItems.length >= pagination.totalItems) return items;
+
+  const maxItems = readPositiveInteger(process.env.AMAZON_SERIES_SHOW_ALL_LIMIT, 250);
+  if (pagination.totalItems > maxItems) return mergeSeriesItemsWithChildItems(items, childItems);
+
+  try {
+    const allChildItems = await fetchAmazonSeriesAllChildItems(pagination, sourceUrl, options);
+    return mergeSeriesItemsWithChildItems(items, allChildItems.length > childItems.length ? allChildItems : childItems);
+  } catch {
+    return mergeSeriesItemsWithChildItems(items, childItems);
+  }
+}
+
+async function fetchAmazonSeriesAllChildItems(pagination, sourceUrl, options = {}) {
+  const url = amazonSeriesAsinListAjaxUrl(pagination, sourceUrl);
+  const html = await fetchAmazonSeriesAjaxHtml(url, sourceUrl, options);
+  return extractChildAsinListItems(html);
+}
+
+function extractSeriesAsinListPagination(html, sourceUrl = '') {
+  const value = String(html || '');
+  const tag = value.match(/<div\b[^>]*id=["']seriesAsinListPagination["'][^>]*>/i)?.[0] || '';
+  if (!tag) return null;
+
+  const asin = (extractAttribute(tag, 'data-asin') || extractAsin(sourceUrl) || '').toUpperCase();
+  const totalItems = readPositiveInteger(extractAttribute(tag, 'data-number_of_items'), 0);
+  const pageSize = readPositiveInteger(extractAttribute(tag, 'data-page_size'), 0);
+  const requestId = extractSeriesMainPageRequestId(value);
+  if (!isProbablyBookAsin(asin) || totalItems <= 0 || pageSize <= 0 || !requestId) return null;
+
+  return {
+    asin,
+    binding: extractAttribute(tag, 'data-binding') || 'kindle_edition',
+    currentPage: readPositiveInteger(extractAttribute(tag, 'data-current_page'), 1),
+    pageSize,
+    qid: extractAttribute(tag, 'data-qid'),
+    requestId,
+    sr: extractAttribute(tag, 'data-sr'),
+    totalItems
+  };
+}
+
+function extractSeriesMainPageRequestId(html) {
+  const value = String(html || '');
+  const state = value.match(/<script\b[^>]*data-a-state=["'][^"']*SeriesMainPageRequestId[^"']*["'][^>]*>([\s\S]*?)<\/script>/i);
+  if (state) {
+    const body = decodeHtml(state[1]);
+    try {
+      const parsed = JSON.parse(body);
+      if (parsed?.requestId) return String(parsed.requestId);
+    } catch {
+      const requestId = body.match(/["']requestId["']\s*:\s*["']([^"']+)["']/i)?.[1];
+      if (requestId) return requestId;
+    }
+  }
+
+  return value.match(/SeriesMainPageRequestId[\s\S]{0,400}?["']requestId["']\s*:\s*["']([^"']+)["']/i)?.[1] || '';
+}
+
+function amazonSeriesAsinListAjaxUrl(pagination, sourceUrl = '') {
+  const origin = amazonOrigin(sourceUrl);
+  const url = new URL('/kindle-dbs/productPage/ajax/seriesAsinList', origin);
+  url.searchParams.set('asin', pagination.asin);
+  url.searchParams.set('pageNumber', '1');
+  url.searchParams.set('pageSize', String(pagination.totalItems));
+  url.searchParams.set('relatedRequestId', pagination.requestId);
+  url.searchParams.set('binding', pagination.binding || 'kindle_edition');
+  url.searchParams.set('ref_', 'series_dp_batch_load_all');
+  if (pagination.qid) url.searchParams.set('qid', pagination.qid);
+  if (pagination.sr) url.searchParams.set('sr', pagination.sr);
+  return url.toString();
+}
+
+function amazonOrigin(sourceUrl = '') {
+  try {
+    const url = new URL(String(sourceUrl || ''));
+    if (/amazon\./i.test(url.hostname)) return `${url.protocol}//${url.hostname}`;
+  } catch {
+    // Fall back to the configured Amazon host.
+  }
+  const host = process.env.AMAZON_HOST || 'www.amazon.co.jp';
+  return `https://${host}`;
+}
+
+async function fetchAmazonSeriesAjaxHtml(url, refererUrl, options = {}) {
+  return fetchHtml(url, {
+    ...options,
+    headers: amazonAjaxRequestHeaders(url, refererUrl),
+    proxyTemplate: process.env.AMAZON_HTML_PROXY_URL_TEMPLATE,
+    rejectRobotCheck: true,
+    retries: options.retries ?? process.env.HTTP_AMAZON_FETCH_RETRIES ?? 1,
+    retryDelayMs: options.retryDelayMs ?? process.env.HTTP_FETCH_RETRY_DELAY_MS ?? 1000,
+    throttleUrl: refererUrl || url
+  });
+}
+
+function amazonAjaxRequestHeaders(url, refererUrl = '') {
+  const headers = {
+    ...amazonRequestHeaders(refererUrl || url),
+    Accept: 'text/html,*/*',
+    'Sec-Fetch-Dest': 'empty',
+    'Sec-Fetch-Mode': 'cors',
+    'Sec-Fetch-Site': 'same-origin',
+    'X-Requested-With': 'XMLHttpRequest'
+  };
+  delete headers['Sec-Fetch-User'];
+  delete headers['Upgrade-Insecure-Requests'];
+  if (refererUrl) headers.Referer = refererUrl;
+  return headers;
 }
 
 function kindleSeriesCandidateUrls(input) {
@@ -2613,12 +2732,15 @@ function isSeriesTitleHref(href) {
 }
 
 function extractChildAsinListItems(html) {
-  const listStart = html.indexOf('id="series-childAsin-list"');
-  if (listStart === -1) return [];
+  const value = String(html || '');
+  const listMatch = value.match(/<[^>]+id=["']series-childAsin-list["'][^>]*>/i);
+  const hasChildItems = /id=["']series-childAsin-item_\d+["']/i.test(value);
+  if (!listMatch && !hasChildItems) return [];
 
   const listEndMarker = '<!-- sp:end-feature:host-btf -->';
-  const listEnd = html.indexOf(listEndMarker, listStart);
-  const listHtml = html.slice(listStart, listEnd === -1 ? Math.min(html.length, listStart + 220000) : listEnd);
+  const listStart = listMatch?.index ?? 0;
+  const listEnd = value.indexOf(listEndMarker, listStart);
+  const listHtml = value.slice(listStart, listEnd === -1 ? value.length : listEnd);
   const itemStarts = [...listHtml.matchAll(/<div\b[^>]+id=["']series-childAsin-item_\d+["'][^>]*>/gi)].map((match) => match.index);
   const items = [];
 
@@ -2645,6 +2767,43 @@ function extractChildAsinListItems(html) {
   }
 
   return dedupeSeriesItems(items);
+}
+
+function mergeSeriesItemsWithChildItems(items = [], childItems = []) {
+  if (!childItems.length) return items;
+
+  const childByAsin = new Map(childItems.map((item) => [item.asin, item]));
+  const seen = new Set();
+  const result = [];
+
+  for (const item of items) {
+    const asin = String(item?.asin || '').toUpperCase();
+    const childItem = childByAsin.get(asin);
+    const merged = childItem ? mergeSeriesItemWithChildItem(item, childItem) : item;
+    if (!merged?.asin || seen.has(merged.asin)) continue;
+    seen.add(merged.asin);
+    result.push(merged);
+  }
+
+  for (const childItem of childItems) {
+    if (!childItem?.asin || seen.has(childItem.asin)) continue;
+    seen.add(childItem.asin);
+    result.push(childItem);
+  }
+
+  return result;
+}
+
+function mergeSeriesItemWithChildItem(item, childItem) {
+  const merged = {
+    ...item,
+    title: betterText(childItem.title, item.title),
+    imageUrl: childItem.imageUrl || item.imageUrl || '',
+    imageSource: childItem.imageUrl ? childItem.imageSource || 'amazon_series_child' : item.imageSource || '',
+    amazonUrl: childItem.amazonUrl || item.amazonUrl,
+    volume: item.volume || childItem.volume
+  };
+  return withPreferredSeriesPricing(merged, childItem, item);
 }
 
 function extractLargestBulkOfferItems(html, options = {}) {
@@ -2747,7 +2906,7 @@ function mergeBulkSeriesItem(bulkItem, childItem) {
     amazonUrl: childItem.amazonUrl || bulkItem.amazonUrl,
     volume: childItem.volume || bulkItem.volume
   };
-  return withPreferredSeriesPricing(merged, bulkItem, childItem);
+  return withPreferredSeriesPricing(merged, childItem, bulkItem);
 }
 
 function withPreferredSeriesPricing(base, primary = {}, fallback = {}) {

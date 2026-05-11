@@ -232,6 +232,81 @@ test('Amazon series parser reads child-list Kindle price and points', () => {
   assert.equal(items[0].provider, 'amazon_series_child');
 });
 
+test('Amazon series parser uses visible child-list points before bulk prices', () => {
+  const items = extractKindleSeriesItemsFromHtml(`
+    <html>
+      <body>
+        <div id="series-childAsin-list">
+          <div id="series-childAsin-item_1" class="series-childAsin-item">
+            <a class="itemImageLink" title="長編シリーズ 1" href="/gp/product/B08F4WVC97?storeType=ebooks">
+              <img alt="長編シリーズ 1" src="https://m.media-amazon.com/images/I/51one._SY300_.jpg">
+            </a>
+            <span class="a-size-large a-color-price">￥616</span>
+            <span class="itemPoints">6pt</span>
+          </div>
+          <div id="series-childAsin-item_2" class="series-childAsin-item">
+            <a class="itemImageLink" title="長編シリーズ 2" href="/gp/product/B08TM181FR?storeType=ebooks">
+              <img alt="長編シリーズ 2" src="https://m.media-amazon.com/images/I/51two._SY300_.jpg">
+            </a>
+            <span class="a-size-large a-color-price">￥616</span>
+            <span class="itemPoints">6pt</span>
+          </div>
+        </div>
+        <form>
+          <input name="items[0].action.asin" value="B08F4WVC97">
+          <input name="items[0].action.displayedPrice.value" value="616.00">
+          <input name="items[0].action.displayedPrice.currency" value="JPY">
+          <input name="items[1].action.asin" value="B08TM181FR">
+          <input name="items[1].action.displayedPrice.value" value="616.00">
+          <input name="items[1].action.displayedPrice.currency" value="JPY">
+          <input name="items[2].action.asin" value="B09FQ2RX86">
+          <input name="items[2].action.displayedPrice.value" value="616.00">
+          <input name="items[2].action.displayedPrice.currency" value="JPY">
+        </form>
+      </body>
+    </html>
+  `);
+
+  assert.equal(items.length, 3);
+  assert.equal(items[0].currentPrice, 616);
+  assert.equal(items[0].currentPoints, 6);
+  assert.equal(items[0].effectivePrice, 610);
+  assert.equal(items[0].provider, 'amazon_series_child');
+  assert.equal(items[2].currentPrice, 616);
+  assert.equal(items[2].currentPoints, 0);
+  assert.equal(items[2].provider, 'amazon_series_bulk');
+});
+
+test('Amazon series parser reads paginated child-list fragments', () => {
+  const items = extractKindleSeriesItemsFromHtml(`
+    <div id="series-childAsin-batch_2" class="series-childAsin-batch">
+      <div id="series-childAsin-item_11" class="series-childAsin-item">
+        <a class="itemImageLink" title="長編シリーズ 11" href="/gp/product/B00DMUL9UK?storeType=ebooks">
+          <img alt="長編シリーズ 11" src="https://m.media-amazon.com/images/I/51eleven._SY300_.jpg">
+        </a>
+        <span class="a-size-large a-color-price">￥616</span>
+        <span class="itemPoints">6pt</span>
+      </div>
+      ${' '.repeat(230000)}
+      <div id="series-childAsin-item_12" class="series-childAsin-item">
+        <a class="itemImageLink" title="長編シリーズ 12" href="/gp/product/B00DMUL9WI?storeType=ebooks">
+          <img alt="長編シリーズ 12" src="https://m.media-amazon.com/images/I/51twelve._SY300_.jpg">
+        </a>
+        <span class="a-size-large a-color-price">￥616</span>
+        <span class="itemPoints">6pt</span>
+      </div>
+    </div>
+  `);
+
+  assert.equal(items.length, 2);
+  assert.equal(items[0].asin, 'B00DMUL9UK');
+  assert.equal(items[0].currentPrice, 616);
+  assert.equal(items[0].currentPoints, 6);
+  assert.equal(items[1].asin, 'B00DMUL9WI');
+  assert.equal(items[1].currentPrice, 616);
+  assert.equal(items[1].currentPoints, 6);
+});
+
 function productHtml({ title, currentPrice, listPrice, promo }) {
   return `
     <html>
