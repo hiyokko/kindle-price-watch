@@ -736,7 +736,7 @@ function externalSeriesBaseName(title) {
     .trim();
 }
 
-function extractKindleSeriesItemsFromHtml(html) {
+export function extractKindleSeriesItemsFromHtml(html) {
   const ordered = new Map();
   const value = String(html || '');
   const seriesName = extractSeriesName(value);
@@ -2633,12 +2633,14 @@ function extractChildAsinListItems(html) {
     if (!asin || !isProbablyBookAsin(asin)) continue;
 
     const imageUrl = extractItemImage(fragment);
+    const pricing = extractSeriesChildItemPricing(fragment);
     items.push({
       asin,
       title: extractChildItemTitle(fragment, asin),
       imageUrl,
       imageSource: imageUrl ? 'amazon_series_child' : '',
-      amazonUrl: amazonUrlForAsin(asin)
+      amazonUrl: amazonUrlForAsin(asin),
+      ...pricing
     });
   }
 
@@ -2737,13 +2739,32 @@ function countPricedItems(items) {
 
 function mergeBulkSeriesItem(bulkItem, childItem) {
   if (!childItem) return bulkItem;
-  return {
+  const merged = {
     ...bulkItem,
     title: betterText(childItem.title, bulkItem.title),
     imageUrl: childItem.imageUrl || bulkItem.imageUrl || '',
     imageSource: childItem.imageUrl ? childItem.imageSource || 'amazon_series_child' : bulkItem.imageSource || '',
     amazonUrl: childItem.amazonUrl || bulkItem.amazonUrl,
     volume: childItem.volume || bulkItem.volume
+  };
+  return withPreferredSeriesPricing(merged, bulkItem, childItem);
+}
+
+function withPreferredSeriesPricing(base, primary = {}, fallback = {}) {
+  const priced = primary.currentPrice != null ? primary : fallback.currentPrice != null ? fallback : null;
+  if (!priced) return base;
+
+  const currentPrice = Number(priced.currentPrice);
+  if (!Number.isFinite(currentPrice) || currentPrice < 0) return base;
+
+  const currentPoints = sanitizePoints(priced.currentPoints ?? 0, currentPrice);
+  return {
+    ...base,
+    currentPrice,
+    currentPoints,
+    effectivePrice: Math.max(0, Math.round(currentPrice - currentPoints)),
+    listPrice: priced.listPrice ?? base.listPrice ?? null,
+    provider: priced.provider || base.provider
   };
 }
 
@@ -2809,7 +2830,8 @@ function itemFromFragment(asin, fragment) {
     title: extractItemTitle(fragment, asin),
     imageUrl,
     imageSource: imageUrl ? 'amazon_series_item' : '',
-    amazonUrl: amazonUrlForAsin(asin)
+    amazonUrl: amazonUrlForAsin(asin),
+    ...extractSeriesChildItemPricing(fragment)
   };
 }
 
@@ -2832,13 +2854,15 @@ function extractItemFragment(html, index) {
 
 function mergeSeriesItem(a, b) {
   if (!a) return b;
-  return {
+  const merged = {
     asin: a.asin || b.asin,
     title: betterText(a.title, b.title),
     imageUrl: a.imageUrl || b.imageUrl || '',
     imageSource: a.imageUrl ? a.imageSource || '' : b.imageSource || '',
-    amazonUrl: a.amazonUrl || b.amazonUrl
+    amazonUrl: a.amazonUrl || b.amazonUrl,
+    volume: a.volume || b.volume
   };
+  return withPreferredSeriesPricing(merged, a, b);
 }
 
 function betterText(a, b) {
@@ -2898,6 +2922,51 @@ function extractAnchorText(fragment, asin) {
   const pattern = new RegExp(`<a\\b[^>]+href=["'][^"']*${asin}[^"']*["'][^>]*>([\\s\\S]*?)<\\/a>`, 'i');
   const match = fragment.match(pattern);
   return match ? cleanText(match[1]) : '';
+}
+
+function extractSeriesChildItemPricing(fragment) {
+  const price = extractSeriesChildItemPrice(fragment);
+  if (price == null) return {};
+
+  const points = extractSeriesChildItemPoints(fragment, price);
+  return {
+    currentPrice: price,
+    currentPoints: points,
+    effectivePrice: Math.max(0, Math.round(price - points)),
+    provider: 'amazon_series_child'
+  };
+}
+
+function extractSeriesChildItemPrice(fragment) {
+  const value = String(fragment || '');
+  const scopes = [
+    ...[...value.matchAll(/<span\b[^>]*class=["'][^"']*\ba-color-price\b[^"']*["'][^>]*>([\s\S]*?)<\/span>/gi)].map((match) => match[1]),
+    ...[...value.matchAll(/<span\b[^>]*class=["'][^"']*\ba-price\b[^"']*["'][^>]*>([\s\S]*?)<\/span>/gi)].map((match) => match[1])
+  ];
+
+  for (const scope of scopes) {
+    const text = cleanText(scope);
+    if (!/(?:￥|¥|円)/.test(text)) continue;
+    const price = parsePrice(text);
+    if (price != null) return price;
+  }
+
+  return null;
+}
+
+function extractSeriesChildItemPoints(fragment, currentPrice) {
+  const value = String(fragment || '');
+  const scopes = [
+    ...[...value.matchAll(/<span\b[^>]*class=["'][^"']*\bitemPoints\b[^"']*["'][^>]*>([\s\S]*?)<\/span>/gi)].map((match) => match[1]),
+    ...[...value.matchAll(/獲得ポイント\s*:?\s*<\/?[^>]*>\s*([0-9０-９,，]+)\s*pt/gi)].map((match) => match[1])
+  ];
+
+  for (const scope of scopes) {
+    const points = parseOptionalPoints(scope);
+    if (points != null && points <= currentPrice) return points;
+  }
+
+  return 0;
 }
 
 function extractSeriesName(html) {

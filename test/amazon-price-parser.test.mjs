@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   extractAmazonHtmlSnapshotFromHtml,
+  extractKindleSeriesItemsFromHtml,
   extractMangaZenkanCompletionEvidenceFromHtml,
   extractSeriesCompletionStatusFromHtml
 } from '../src/price-provider.mjs';
@@ -193,6 +194,42 @@ test('MangaZenkan completion parser requires matching title and volume count', (
     ),
     null
   );
+});
+
+test('Amazon series parser reads child-list Kindle price and points', () => {
+  const items = extractKindleSeriesItemsFromHtml(`
+    <html>
+      <head><meta property="og:title" content="闇麻のマミヤ (7 book series)"></head>
+      <body>
+        <div id="series-childAsin-list">
+          <div id="series-childAsin-item_1" class="series-childAsin-item">
+            <a class="itemImageLink" title="闇麻のマミヤ 1" href="/gp/product/B08F4WVC97?storeType=ebooks">
+              <img alt="闇麻のマミヤ 1" src="https://m.media-amazon.com/images/I/51l9gHeEqJL._SY300_.jpg">
+            </a>
+            <a id="itemBookTitle_1" class="itemBookTitle" href="/gp/product/B08F4WVC97?storeType=ebooks"><h3>闇麻のマミヤ 1</h3></a>
+            <span class="a-size-large a-color-price">￥495</span>
+            <span class="itemPointsLabel">獲得ポイント:</span><span class="itemPoints">5pt</span>
+            <span>その他の形式:</span><a>コミック (紙) ￥880</a>
+          </div>
+          <div id="series-childAsin-item_2" class="series-childAsin-item">
+            <a class="itemImageLink" title="闇麻のマミヤ 2" href="/gp/product/B08TM181FR?storeType=ebooks">
+              <img alt="闇麻のマミヤ 2" src="https://m.media-amazon.com/images/I/51second._SY300_.jpg">
+            </a>
+            <a id="itemBookTitle_2" class="itemBookTitle" href="/gp/product/B08TM181FR?storeType=ebooks"><h3>闇麻のマミヤ 2</h3></a>
+            <span class="a-size-large a-color-price">￥495</span>
+            <span class="itemPointsLabel">獲得ポイント:</span><span class="itemPoints">5pt</span>
+          </div>
+        </div>
+      </body>
+    </html>
+  `);
+
+  assert.equal(items.length, 2);
+  assert.equal(items[0].asin, 'B08F4WVC97');
+  assert.equal(items[0].currentPrice, 495);
+  assert.equal(items[0].currentPoints, 5);
+  assert.equal(items[0].effectivePrice, 490);
+  assert.equal(items[0].provider, 'amazon_series_child');
 });
 
 function productHtml({ title, currentPrice, listPrice, promo }) {
