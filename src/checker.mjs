@@ -2606,6 +2606,7 @@ export async function repairBookPricesByAsins(asins, options = {}) {
   const now = options.now || new Date().toISOString();
   const currentStore = await readStore();
   const booksByAsin = new Map((currentStore.books || []).map((book) => [book.asin, book]));
+  const seriesCandidateCache = options.seriesCandidateCache || new Map();
   const snapshotTargets = [];
   const missing = [];
 
@@ -2629,7 +2630,10 @@ export async function repairBookPricesByAsins(asins, options = {}) {
       const snapshotResult = await settleSnapshotWithDeadline(
         target.asin,
         target.book,
-        repairPriceSnapshotTimeoutMs(options)
+        repairPriceSnapshotTimeoutMs(options),
+        {
+          seriesCandidateCache
+        }
       );
       if (typeof options.onProgress === 'function') {
         options.onProgress({
@@ -2696,13 +2700,14 @@ export async function repairBookPricesByAsins(asins, options = {}) {
   return summary;
 }
 
-async function settleSnapshotWithDeadline(asin, book, timeoutMs) {
-  if (!timeoutMs) return settleSnapshot(asin, book);
+async function settleSnapshotWithDeadline(asin, book, timeoutMs, options = {}) {
+  if (!timeoutMs) return settleSnapshot(asin, book, options);
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await settleSnapshot(asin, book, {
+      ...options,
       signal: controller.signal,
       timeoutMs
     });
