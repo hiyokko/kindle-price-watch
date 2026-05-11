@@ -2039,7 +2039,7 @@ function isSuspiciousHistoryEntry(entry, book) {
       effectivePrice: entry.effectivePrice,
       listPrice,
       provider,
-      referencePrices: [book.currentPrice, book.effectivePrice, listPrice]
+      referencePrices: [book.currentPrice, book.effectivePrice, book.previousEffectivePrice, listPrice]
     })
   );
 }
@@ -2128,9 +2128,18 @@ function isSeriesDerivedPriceProvider(provider) {
 
 function suspiciousPriceReason({ price, points = 0, effectivePrice = null, listPrice = null, provider = '', referencePrices = [] }) {
   const current = Number(price);
-  if (!Number.isFinite(current) || current <= 0) return '';
-
   const pointValue = Number(points || 0);
+  const reference = Math.max(
+    ...referencePrices
+      .map((value) => Number(value))
+      .filter((value) => Number.isFinite(value) && value > 0)
+  );
+  if (!Number.isFinite(current)) return '';
+  if (isLikelyAmazonHtmlTinyContamination({ price: current, provider, reference })) {
+    return current === 0 ? 'Amazon HTML価格が不自然に0円です' : 'Amazon HTML価格が不自然に小さすぎます';
+  }
+  if (current <= 0) return '';
+
   if (Number.isFinite(pointValue) && pointValue > current) return 'ポイントが価格を超えています';
 
   const list = Number(listPrice);
@@ -2138,12 +2147,6 @@ function suspiciousPriceReason({ price, points = 0, effectivePrice = null, listP
   if (isLikelyPercentContaminatedStoredPrice({ price: current, points: pointValue, listPrice: list, provider })) {
     return '価格が割引率またはポイント率に見えます';
   }
-
-  const reference = Math.max(
-    ...referencePrices
-      .map((value) => Number(value))
-      .filter((value) => Number.isFinite(value) && value > 0)
-  );
 
   const effective = Number(effectivePrice);
   if (
@@ -2157,6 +2160,17 @@ function suspiciousPriceReason({ price, points = 0, effectivePrice = null, listP
   }
 
   return '';
+}
+
+function isLikelyAmazonHtmlTinyContamination({ price, provider = '', reference = 0 }) {
+  const current = Number(price);
+  if (!Number.isFinite(current) || current < 0 || current > 5) return false;
+  if (!isAmazonHtmlLikePriceProvider(provider)) return false;
+  return Number.isFinite(reference) && reference >= 100;
+}
+
+function isAmazonHtmlLikePriceProvider(provider) {
+  return ['amazon_html', 'amazon_search'].includes(String(provider || '').toLowerCase());
 }
 
 function isLikelyPercentContaminatedStoredPrice({ price, points = 0, listPrice = null, provider = '' }) {

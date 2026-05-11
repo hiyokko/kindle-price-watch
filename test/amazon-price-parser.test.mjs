@@ -81,6 +81,63 @@ test('Amazon HTML parser keeps series bundle discounts out of single-volume pric
   assert.equal(snapshot.listPrice, null);
 });
 
+test('Amazon HTML parser reads the full yen amount instead of the leading digit', () => {
+  const snapshot = extractAmazonHtmlSnapshotFromHtml(`
+    <html>
+      <head><meta property="og:title" content="Kindle full price"></head>
+      <body>
+        <span id="productTitle">Kindle full price</span>
+        <script>{"price":0,"currencyCode":"JPY","amount":1}</script>
+        <div id="tmm-grid-swatch-KINDLE">
+          Kindle版
+          <span class="a-price" data-a-color="price">
+            <span class="a-offscreen">￥537</span>
+            <span class="a-price-whole">537</span>
+          </span>
+          <span>5ポイント</span>
+        </div>
+        <div>その他中古品、新品、コレクター商品が￥35から</div>
+      </body>
+    </html>
+  `, 'B00TEST002', 'https://www.amazon.co.jp/dp/B00TEST002');
+
+  assert.equal(snapshot.currentPrice, 537);
+  assert.equal(snapshot.currentPoints, 5);
+  assert.equal(snapshot.effectivePrice, 532);
+});
+
+test('Amazon HTML parser ignores paper and used offers when Kindle swatch is present', () => {
+  const snapshot = extractAmazonHtmlSnapshotFromHtml(`
+    <html>
+      <head><meta property="og:title" content="ディザインズ（１）"></head>
+      <body>
+        <span id="productTitle">ディザインズ（１）</span>
+        <div id="tmm-grid-swatch-KINDLE">
+          Kindle版（電子書籍）
+          <span class="a-price" data-a-color="price">
+            <span class="a-offscreen">￥792</span>
+            <span class="a-price-whole">792</span>
+          </span>
+          <span>8pt</span>
+          <span>すぐに購読可能</span>
+        </div>
+        <div id="tmm-grid-swatch-PAPERBACK">
+          コミック（紙）
+          <span class="a-price" data-a-color="base">
+            <span class="a-offscreen">￥450</span>
+            <span class="a-price-whole">450</span>
+          </span>
+        </div>
+        <div>その他中古品、新品、コレクター商品が￥35から</div>
+      </body>
+    </html>
+  `, 'B00TEST003', 'https://www.amazon.co.jp/dp/B00TEST003');
+
+  assert.equal(snapshot.currentPrice, 792);
+  assert.equal(snapshot.currentPoints, 8);
+  assert.equal(snapshot.effectivePrice, 784);
+});
+
 function productHtml({ title, currentPrice, listPrice, promo }) {
   return `
     <html>

@@ -133,7 +133,22 @@ function isRepairCandidate(book) {
 
 function suspiciousStoredPrice(book) {
   const price = Number(book.currentPrice);
-  if (!Number.isFinite(price) || price <= 0) return false;
+  if (!Number.isFinite(price)) return false;
+  const reference = Math.max(
+    ...[book.previousEffectivePrice, book.lowestPrice, book.lowestEffectivePrice, book.listPrice]
+      .map((value) => Number(value))
+      .filter((value) => Number.isFinite(value) && value > 0)
+  );
+  if (
+    price >= 0 &&
+    price <= 5 &&
+    ['amazon_html', 'amazon_search'].includes(String(book.provider || '').toLowerCase()) &&
+    Number.isFinite(reference) &&
+    reference >= 100
+  ) {
+    return true;
+  }
+  if (price <= 0) return false;
 
   const points = Number(book.currentPoints || 0);
   if (Number.isFinite(points) && points > price) return true;

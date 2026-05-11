@@ -128,7 +128,7 @@ export async function updateStore(mutator) {
 
   writeQueue = writeQueue.then(async () => {
     const store = await readStore();
-    const next = mergeStore(await mutator(store));
+    const next = mergeStoreMutationResult(await mutator(store));
     const tmpPath = `${storePath}.${Date.now()}.tmp`;
     await fs.writeFile(tmpPath, JSON.stringify(next, null, 2));
     await fs.rename(tmpPath, storePath);
@@ -275,12 +275,29 @@ async function readBlobStore() {
 async function updateBlobStore(mutator) {
   writeQueue = writeQueue.then(async () => {
     const { store } = await readBlobStoreWithMetadata({ force: true });
-    const next = mergeStore(await mutator(store));
+    const next = mergeStoreMutationResult(await mutator(store));
     await writeBlobStore(next);
     return next;
   });
 
   return writeQueue;
+}
+
+function mergeStoreMutationResult(result) {
+  if (!isStoreLike(result)) {
+    throw new Error('updateStore mutator must return the mutated store object');
+  }
+  return mergeStore(result);
+}
+
+function isStoreLike(value) {
+  return (
+    value &&
+    typeof value === 'object' &&
+    Array.isArray(value.books) &&
+    Array.isArray(value.priceHistory) &&
+    Array.isArray(value.notifications)
+  );
 }
 
 async function readBlobStoreWithMetadata(options = {}) {
