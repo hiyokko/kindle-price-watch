@@ -6,6 +6,7 @@ import {
   priceIntegrityIssueForBook,
   seriesSnapshotFromKindleSeriesForBook,
   snapshotInputUrlForBook,
+  suspiciousSnapshotReason,
   suspiciousPriceReason
 } from '../src/checker.mjs';
 
@@ -65,6 +66,27 @@ test('price validation accepts explicitly free Kindle prices', () => {
       provider: 'amazon_html',
       explicitFreeKindlePrice: true
     }),
+    ''
+  );
+});
+
+test('snapshot validation does not reject explicit Amazon HTML prices against stale stored list price', () => {
+  assert.equal(
+    suspiciousSnapshotReason(
+      {
+        listPrice: 572,
+        currentPrice: 330,
+        effectivePrice: 213
+      },
+      {
+        currentPrice: 660,
+        currentPoints: 117,
+        effectivePrice: 543,
+        listPrice: null,
+        provider: 'amazon_html',
+        explicitPriceDisplay: true
+      }
+    ),
     ''
   );
 });

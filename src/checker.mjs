@@ -1654,12 +1654,12 @@ function shouldClearUnvalidatedSourcePrice(book, item) {
   );
 }
 
-function suspiciousSnapshotReason(book, snapshot) {
+export function suspiciousSnapshotReason(book, snapshot) {
   return suspiciousPriceReason({
     price: snapshot.currentPrice,
     points: snapshot.currentPoints,
     effectivePrice: snapshot.effectivePrice,
-    listPrice: snapshot.listPrice ?? book.listPrice,
+    listPrice: snapshotValidationListPrice(book, snapshot),
     provider: snapshot.provider,
     explicitPriceDisplay: snapshot.explicitPriceDisplay,
     explicitFreeKindlePrice: snapshot.explicitFreeKindlePrice,
@@ -1671,6 +1671,12 @@ function suspiciousSnapshotReason(book, snapshot) {
       snapshot.listPrice
     ]
   });
+}
+
+function snapshotValidationListPrice(book = {}, snapshot = {}) {
+  if (snapshot.listPrice != null) return snapshot.listPrice;
+  if (String(snapshot.provider || '').toLowerCase() === 'amazon_html' && snapshot.explicitPriceDisplay) return null;
+  return book.listPrice;
 }
 
 function isSuspiciousSnapshotError(error) {
