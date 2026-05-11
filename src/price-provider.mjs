@@ -2088,12 +2088,16 @@ export function extractAmazonHtmlSnapshotFromHtml(html, asin, url, provider = 'a
   currentPrice = corrected.currentPrice;
   currentPoints = corrected.currentPoints;
   listPrice = extractListPrice(html, currentPrice) ?? listPrice;
+  const explicitPriceDisplay = currentPrice != null && hasExplicitPriceDisplay(html, currentPrice);
+  const explicitFreeKindlePrice = currentPrice === 0 && (explicitPriceDisplay || hasExplicitFreeKindlePrice(html));
 
   return normalizeSnapshot({
     ...base,
     currentPrice,
     listPrice,
-    currentPoints
+    currentPoints,
+    explicitPriceDisplay,
+    explicitFreeKindlePrice
   });
 }
 
@@ -2120,6 +2124,8 @@ function extractAmazonSearchSnapshotFromHtml(html, asin, url, provider) {
   currentPrice = corrected.currentPrice;
   currentPoints = corrected.currentPoints;
   listPrice = extractListPrice(fragment, currentPrice) ?? listPrice;
+  const explicitPriceDisplay = currentPrice != null && hasExplicitPriceDisplay(fragment, currentPrice);
+  const explicitFreeKindlePrice = currentPrice === 0 && (explicitPriceDisplay || hasExplicitFreeKindlePrice(fragment));
 
   return normalizeSnapshot({
     asin,
@@ -2131,7 +2137,9 @@ function extractAmazonSearchSnapshotFromHtml(html, asin, url, provider) {
     currentPrice,
     currentPoints,
     listPrice,
-    provider
+    provider,
+    explicitPriceDisplay,
+    explicitFreeKindlePrice
   });
 }
 
@@ -2582,7 +2590,9 @@ function normalizeSnapshot(snapshot) {
     currentPoints,
     effectivePrice,
     listPrice: nullableNumber(snapshot.listPrice),
-    provider: snapshot.provider
+    provider: snapshot.provider,
+    explicitPriceDisplay: Boolean(snapshot.explicitPriceDisplay),
+    explicitFreeKindlePrice: Boolean(snapshot.explicitFreeKindlePrice)
   };
 }
 
@@ -3597,6 +3607,10 @@ function correctImplausibleKindlePrice({ currentPrice, currentPoints, listPrice,
     return { currentPrice: null, currentPoints: 0 };
   }
 
+  if (isImplicitTinyKindlePrice(currentPrice, html)) {
+    return { currentPrice: null, currentPoints: 0 };
+  }
+
   const explicitReplacement = explicitDisplayedPriceForTinyContamination(currentPrice, currentPoints, html);
   if (explicitReplacement != null) {
     return {
@@ -3630,6 +3644,13 @@ function correctImplausibleKindlePrice({ currentPrice, currentPoints, listPrice,
     currentPrice,
     currentPoints: sanitizePoints(currentPoints, currentPrice)
   };
+}
+
+function isImplicitTinyKindlePrice(currentPrice, html = '') {
+  const current = Number(currentPrice);
+  if (!Number.isFinite(current) || current <= 0 || current > 5) return false;
+  if (hasExplicitPriceDisplay(html, current) || hasExplicitFreeKindlePrice(html)) return false;
+  return true;
 }
 
 function inferDiscountedKindlePrice(html, listPrice) {

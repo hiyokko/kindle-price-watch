@@ -1660,6 +1660,8 @@ function suspiciousSnapshotReason(book, snapshot) {
     effectivePrice: snapshot.effectivePrice,
     listPrice: snapshot.listPrice ?? book.listPrice,
     provider: snapshot.provider,
+    explicitPriceDisplay: snapshot.explicitPriceDisplay,
+    explicitFreeKindlePrice: snapshot.explicitFreeKindlePrice,
     referencePrices: [
       book.currentPrice,
       book.effectivePrice,
@@ -2156,7 +2158,16 @@ function isSeriesDerivedPriceProvider(provider) {
   return normalized.includes('_series') || normalized === 'amazon_series_bulk' || normalized === 'amazon_series_reader';
 }
 
-export function suspiciousPriceReason({ price, points = 0, effectivePrice = null, listPrice = null, provider = '', referencePrices = [] }) {
+export function suspiciousPriceReason({
+  price,
+  points = 0,
+  effectivePrice = null,
+  listPrice = null,
+  provider = '',
+  referencePrices = [],
+  explicitPriceDisplay = false,
+  explicitFreeKindlePrice = false
+}) {
   const current = Number(price);
   const pointValue = Number(points || 0);
   const reference = Math.max(
@@ -2165,7 +2176,13 @@ export function suspiciousPriceReason({ price, points = 0, effectivePrice = null
       .filter((value) => Number.isFinite(value) && value > 0)
   );
   if (!Number.isFinite(current)) return '';
-  if (isLikelyAmazonHtmlTinyContamination({ price: current, provider, reference })) {
+  if (isLikelyAmazonHtmlTinyContamination({
+    price: current,
+    provider,
+    reference,
+    explicitPriceDisplay,
+    explicitFreeKindlePrice
+  })) {
     return current === 0 ? 'Amazon HTML価格が不自然に0円です' : 'Amazon HTML価格が不自然に小さすぎます';
   }
   if (current <= 0) return '';
@@ -2192,10 +2209,18 @@ export function suspiciousPriceReason({ price, points = 0, effectivePrice = null
   return '';
 }
 
-function isLikelyAmazonHtmlTinyContamination({ price, provider = '', reference = 0 }) {
+function isLikelyAmazonHtmlTinyContamination({
+  price,
+  provider = '',
+  reference = 0,
+  explicitPriceDisplay = false,
+  explicitFreeKindlePrice = false
+}) {
   const current = Number(price);
   if (!Number.isFinite(current) || current < 0 || current > AMAZON_HTML_TINY_PRICE_MAX) return false;
   if (!isAmazonHtmlLikePriceProvider(provider)) return false;
+  if (current === 0 && explicitFreeKindlePrice) return false;
+  if (current > 0 && explicitPriceDisplay) return false;
   return true;
 }
 

@@ -41,6 +41,32 @@ test('price validation still accepts explicit low Kindle sale prices above the c
   );
 });
 
+test('price validation accepts explicitly displayed tiny Kindle yen prices', () => {
+  assert.equal(
+    suspiciousPriceReason({
+      price: 2,
+      points: 0,
+      effectivePrice: 2,
+      provider: 'amazon_html',
+      explicitPriceDisplay: true
+    }),
+    ''
+  );
+});
+
+test('price validation accepts explicitly free Kindle prices', () => {
+  assert.equal(
+    suspiciousPriceReason({
+      price: 0,
+      points: 0,
+      effectivePrice: 0,
+      provider: 'amazon_html',
+      explicitFreeKindlePrice: true
+    }),
+    ''
+  );
+});
+
 test('series snapshots prefer validated series page prices for checked series books', () => {
   const snapshot = seriesSnapshotFromKindleSeriesForBook({
     items: [

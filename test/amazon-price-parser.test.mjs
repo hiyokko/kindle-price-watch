@@ -109,6 +109,74 @@ test('Amazon HTML parser reads the full yen amount instead of the leading digit'
   assert.equal(snapshot.currentPrice, 537);
   assert.equal(snapshot.currentPoints, 5);
   assert.equal(snapshot.effectivePrice, 532);
+  assert.equal(snapshot.explicitPriceDisplay, true);
+});
+
+test('Amazon HTML parser ignores implicit tiny a-price whole values', () => {
+  const snapshot = extractAmazonHtmlSnapshotFromHtml(`
+    <html>
+      <head><meta property="og:title" content="Implicit tiny price"></head>
+      <body>
+        <span id="productTitle">Implicit tiny price</span>
+        <div id="tmm-grid-swatch-KINDLE">
+          Kindle版
+          <span class="a-price" data-a-color="price">
+            <span class="a-price-whole">2</span>
+          </span>
+        </div>
+      </body>
+    </html>
+  `, 'B00TEST004', 'https://www.amazon.co.jp/dp/B00TEST004');
+
+  assert.equal(snapshot.currentPrice, null);
+  assert.equal(snapshot.currentPoints, 0);
+  assert.equal(snapshot.effectivePrice, null);
+});
+
+test('Amazon HTML parser accepts explicit tiny Kindle yen prices', () => {
+  const snapshot = extractAmazonHtmlSnapshotFromHtml(`
+    <html>
+      <head><meta property="og:title" content="Explicit tiny price"></head>
+      <body>
+        <span id="productTitle">Explicit tiny price</span>
+        <div id="tmm-grid-swatch-KINDLE">
+          Kindle版
+          <span class="a-price" data-a-color="price">
+            <span class="a-offscreen">￥2</span>
+            <span class="a-price-whole">2</span>
+          </span>
+        </div>
+      </body>
+    </html>
+  `, 'B00TEST005', 'https://www.amazon.co.jp/dp/B00TEST005');
+
+  assert.equal(snapshot.currentPrice, 2);
+  assert.equal(snapshot.currentPoints, 0);
+  assert.equal(snapshot.effectivePrice, 2);
+  assert.equal(snapshot.explicitPriceDisplay, true);
+});
+
+test('Amazon HTML parser marks explicit free Kindle prices', () => {
+  const snapshot = extractAmazonHtmlSnapshotFromHtml(`
+    <html>
+      <head><meta property="og:title" content="Explicit free price"></head>
+      <body>
+        <span id="productTitle">Explicit free price</span>
+        <div id="tmm-grid-swatch-KINDLE">
+          Kindle版
+          <span class="a-price" data-a-color="price">
+            <span class="a-offscreen">￥0</span>
+            <span class="a-price-whole">0</span>
+          </span>
+        </div>
+      </body>
+    </html>
+  `, 'B00TEST006', 'https://www.amazon.co.jp/dp/B00TEST006');
+
+  assert.equal(snapshot.currentPrice, 0);
+  assert.equal(snapshot.currentPoints, 0);
+  assert.equal(snapshot.effectivePrice, 0);
+  assert.equal(snapshot.explicitFreeKindlePrice, true);
 });
 
 test('Amazon HTML parser ignores paper and used offers when Kindle swatch is present', () => {
