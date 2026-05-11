@@ -76,14 +76,14 @@ export async function fetchKindleSeriesItems(input, options = {}) {
       items = [];
     }
 
-    amazonResult = buildKindleSeriesResult({
+    amazonResult = await withSeriesCompletionProbe(buildKindleSeriesResult({
       seriesName: extractSeriesName(html),
       sourceAsin,
       sourcePriceSeed: extractSeriesSourcePriceSeedFromHtml(html, sourceAsin, url, items),
       expectedVolumeCount: extractSeriesExpectedCount(html) || maxSeriesItemVolume(items) || items.length,
       completed: extractSeriesCompletionStatus(html),
       items
-    });
+    }), options);
   } catch (error) {
     amazonError = error;
   }
@@ -108,6 +108,73 @@ function buildKindleSeriesResult(series) {
     ...series,
     items: limit == null ? items : items.slice(0, limit)
   };
+}
+
+async function withSeriesCompletionProbe(series, options = {}) {
+  if (series?.completed || options.probeSeriesCompletion === false) return series;
+  if (!Array.isArray(series?.items) || series.items.length <= 1) return series;
+
+  try {
+    const evidence = await fetchMangaZenkanCompletionEvidence(series, options);
+    if (evidence?.completed) {
+      return {
+        ...series,
+        completed: true,
+        completionSource: evidence.source
+      };
+    }
+  } catch {
+    // External web evidence is optional.
+  }
+
+  const finalItem = highestVolumeSeriesItem(series.items);
+  if (!finalItem?.asin) return series;
+
+  try {
+    const url = finalItem.amazonUrl || amazonUrlForAsin(finalItem.asin);
+    const html = await fetchAmazonHtml(url, options);
+    if (!extractSeriesCompletionStatus(html)) return series;
+    return {
+      ...series,
+      completed: true,
+      completionSource: 'final_volume_description'
+    };
+  } catch {
+    return series;
+  }
+}
+
+function highestVolumeSeriesItem(items = []) {
+  return [...items].sort((left, right) => {
+    const leftVolume = seriesItemVolume(left);
+    const rightVolume = seriesItemVolume(right);
+    if (leftVolume !== rightVolume) return rightVolume - leftVolume;
+    return String(right.asin || '').localeCompare(String(left.asin || ''));
+  })[0] || null;
+}
+
+function seriesItemVolume(item = {}) {
+  const direct = Number(item.volume);
+  if (Number.isFinite(direct) && direct > 0) return direct;
+  return Number(toHalfWidthNumber(String(item.title || '').match(/(?:第)?([0-9０-９]{1,3})\s*巻/)?.[1] || '')) || 0;
+}
+
+async function fetchMangaZenkanCompletionEvidence(series, options = {}) {
+  if (options.probeExternalCompletion === false) return null;
+  if (String(process.env.SERIES_COMPLETION_WEB_PROBE || 'true').toLowerCase() === 'false') return null;
+
+  const seriesName = cleanTitle(series?.seriesName || '');
+  const expectedVolumeCount = Number(series?.expectedVolumeCount) || maxSeriesItemVolume(series?.items || []);
+  if (!seriesName || seriesName === 'Kindle シリーズ' || expectedVolumeCount <= 1) return null;
+
+  const url = `https://www.mangazenkan.com/s/?mode=search&name=${encodeURIComponent(seriesName)}`;
+  const html = await fetchHtml(url, {
+    ...options,
+    retries: options.retries ?? process.env.HTTP_EXTERNAL_FETCH_RETRIES ?? 1,
+    retryDelayMs: options.retryDelayMs ?? process.env.HTTP_FETCH_RETRY_DELAY_MS ?? 1000,
+    throttleUrl: url
+  });
+  return extractMangaZenkanCompletionEvidence(html, seriesName, expectedVolumeCount);
 }
 
 function normalizeKindleSeriesItemVolumes(items) {
@@ -2864,27 +2931,137 @@ function extractSeriesExpectedCount(html) {
   return 0;
 }
 
-function extractSeriesCompletionStatus(html) {
-  const value = cleanText(
-    [
-      extractById(html, 'collectionTitle'),
-      extractById(html, 'series-title'),
-      extractById(html, 'ebooksProductTitle'),
-      extractMeta(html, 'description'),
-      extractMeta(html, 'og:title'),
-      extractTag(html, 'title'),
-      extractTag(html, 'h1')
-    ]
-      .filter(Boolean)
-      .join(' ')
-  );
-  if (!value) return false;
+export function extractSeriesCompletionStatusFromHtml(html) {
+  return extractSeriesCompletionStatus(html);
+}
 
+function extractSeriesCompletionStatus(html) {
+  const scopes = [
+    extractById(html, 'collectionTitle'),
+    extractById(html, 'series-title'),
+    extractById(html, 'ebooksProductTitle'),
+    extractMeta(html, 'description'),
+    extractMeta(html, 'og:title'),
+    extractTag(html, 'title'),
+    extractTag(html, 'h1'),
+    ...completionEvidenceScopes(html),
+    ...completionKeywordScopes(html)
+  ];
+
+  return scopes.some((scope) => hasSeriesCompletionEvidence(scope));
+}
+
+export function extractMangaZenkanCompletionEvidenceFromHtml(html, seriesName = '', expectedVolumeCount = 0) {
+  return extractMangaZenkanCompletionEvidence(html, seriesName, expectedVolumeCount);
+}
+
+function extractMangaZenkanCompletionEvidence(html, seriesName = '', expectedVolumeCount = 0) {
+  const normalizedSeriesName = normalizeSeriesNameForMatch(seriesName);
+  const expected = Number(expectedVolumeCount) || 0;
+  if (!normalizedSeriesName || expected <= 1) return null;
+
+  const candidates = mangaZenkanCompletionCandidateScopes(html);
+  for (const scope of candidates) {
+    const text = pageEvidenceText(scope);
+    if (!text || !normalizeSeriesNameForMatch(text).includes(normalizedSeriesName)) continue;
+
+    const count = extractVolumeCount(text) || mangaZenkanAllVolumeCount(text);
+    if (count && count !== expected) continue;
+    if (hasSeriesCompletionNegation(text)) continue;
+
+    if (hasSeriesCompletionEvidence(text) || /タグ\s*完結|tags\s*:\s*["']完結["']/.test(text)) {
+      return {
+        completed: true,
+        source: 'mangazenkan_search'
+      };
+    }
+  }
+
+  return null;
+}
+
+function completionEvidenceScopes(html) {
+  const value = String(html || '');
+  const scopes = [];
+  for (const id of [
+    'productDescription',
+    'bookDescription_feature_div',
+    'editorialReviews_feature_div',
+    'aplus_feature_div',
+    'feature-bullets'
+  ]) {
+    const text = extractById(value, id);
+    if (text) scopes.push(text);
+  }
+  for (const match of value.matchAll(/productDescription|bookDescription|editorialReviews|内容紹介|商品の説明|出版社より|著者について/gi)) {
+    const fragment = value.slice(Math.max(0, (match.index || 0) - 400), Math.min(value.length, (match.index || 0) + 2600));
+    if (fragment) scopes.push(fragment);
+  }
+  return scopes;
+}
+
+function hasSeriesCompletionEvidence(scope) {
+  const value = pageEvidenceText(scope);
+  if (!value) return false;
+  if (hasSeriesCompletionNegation(value)) return false;
+
+  const compact = value.replace(/\s+/g, '');
   return (
     /(?:全\s*)?[0-9０-９]{1,3}\s*巻\s*(?:完結|完)/.test(value) ||
-    /(?:完結済み|完結作品|シリーズ完結|全巻完結)/.test(value) ||
+    /(?:完結済み|完結作品|シリーズ完結|全巻完結|完結巻|最終巻|最終回)/.test(value) ||
+    /(?:遂に|ついに|遂げに|堂々|ここに|いよいよ|ついに、?|遂に、?).{0,16}完結/.test(value) ||
+    /(?:完結|最終巻).{0,16}(?:!!|！|。|$)/.test(compact) ||
     /\b(?:completed|complete)\s+series\b/i.test(value)
   );
+}
+
+function hasSeriesCompletionNegation(scope) {
+  const value = pageEvidenceText(scope);
+  return /(?:未完結|完結していない|完結ではない|完結予定|完結間近|完結へ)/.test(value);
+}
+
+function completionKeywordScopes(html) {
+  const text = pageEvidenceText(html);
+  if (!text) return [];
+
+  const scopes = [];
+  const pattern = /(?:遂に|ついに|堂々|ここに|いよいよ).{0,16}完結|完結!!|完結！|完結。|最終巻|最終回/g;
+  for (const match of text.matchAll(pattern)) {
+    const index = match.index || 0;
+    scopes.push(text.slice(Math.max(0, index - 160), Math.min(text.length, index + 220)));
+    if (scopes.length >= 4) break;
+  }
+  return scopes;
+}
+
+function mangaZenkanCompletionCandidateScopes(html) {
+  const value = String(html || '');
+  const scopes = [];
+
+  for (const match of value.matchAll(/<div\b[^>]*class=["'][^"']*search-result-item[^"']*["'][\s\S]*?(?=<div\b[^>]*class=["'][^"']*search-result-item|<\/script>|$)/gi)) {
+    scopes.push(match[0]);
+  }
+
+  for (const match of value.matchAll(/\{product_id:[\s\S]{0,3500}?tags:[\s\S]{0,120}?(?:完結|未設定)[\s\S]{0,1200}?\}/g)) {
+    scopes.push(match[0]);
+  }
+
+  for (const match of value.matchAll(/[^\n。]{0,240}(?:[0-9０-９]+\s*-\s*[0-9０-９]+\s*巻\s*全巻|全\s*[0-9０-９]+\s*巻|タグ\s*完結|tags\s*:\s*["']完結["'])[^\n。]{0,600}/g)) {
+    scopes.push(match[0]);
+  }
+
+  return scopes.length ? scopes : completionKeywordScopes(value);
+}
+
+function mangaZenkanAllVolumeCount(text) {
+  const value = String(text || '');
+  const range = value.match(/(?:[（(]?\s*)?1\s*-\s*([0-9０-９]{1,3})\s*巻\s*全巻/);
+  if (range) return Number(toHalfWidthNumber(range[1])) || 0;
+
+  const set = value.match(/([0-9０-９]{1,3})\s*冊\s*セット\s*全巻/);
+  if (set) return Number(toHalfWidthNumber(set[1])) || 0;
+
+  return 0;
 }
 
 function extractVolumeCount(text) {

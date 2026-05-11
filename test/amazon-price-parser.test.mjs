@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { extractAmazonHtmlSnapshotFromHtml } from '../src/price-provider.mjs';
+import {
+  extractAmazonHtmlSnapshotFromHtml,
+  extractMangaZenkanCompletionEvidenceFromHtml,
+  extractSeriesCompletionStatusFromHtml
+} from '../src/price-provider.mjs';
 
 test('Amazon HTML parser keeps explicit Kindle price separate from discount and points', () => {
   const snapshot = extractAmazonHtmlSnapshotFromHtml(productHtml({
@@ -136,6 +140,59 @@ test('Amazon HTML parser ignores paper and used offers when Kindle swatch is pre
   assert.equal(snapshot.currentPrice, 792);
   assert.equal(snapshot.currentPoints, 8);
   assert.equal(snapshot.effectivePrice, 784);
+});
+
+test('Amazon series completion parser detects final-volume description text', () => {
+  assert.equal(extractSeriesCompletionStatusFromHtml(`
+    <html>
+      <head><meta property="og:title" content="孤高の人 17"></head>
+      <body>
+        <h1>孤高の人 17</h1>
+        <div id="bookDescription_feature_div">
+          K2東壁に単独で挑んだ文太郎は、遂に人類未踏の領域に到達。
+          現代に生きる「加藤文太郎」の生き様を描いた山岳ロマン、遂に完結!!
+        </div>
+      </body>
+    </html>
+  `), true);
+});
+
+test('Amazon series completion parser does not treat current volume count as completed', () => {
+  assert.equal(extractSeriesCompletionStatusFromHtml(`
+    <html>
+      <head><meta property="og:title" content="連載中シリーズ (全17巻)"></head>
+      <body>
+        <h1>連載中シリーズ (全17巻)</h1>
+        <div id="bookDescription_feature_div">次巻へ続く物語。</div>
+      </body>
+    </html>
+  `), false);
+});
+
+test('MangaZenkan completion parser requires matching title and volume count', () => {
+  const html = `
+    <div class="search-result-item book">
+      <a class="product-name">孤高の人 (1-17巻 全巻)</a>
+      <table><tr><th>タグ</th><td>完結</td></tr></table>
+    </div>
+    <script>
+      t[19]={product_id:2630,name:"孤高の人 (1-17巻 全巻)",tags:"完結",volume:null};
+    </script>
+  `;
+
+  assert.deepEqual(extractMangaZenkanCompletionEvidenceFromHtml(html, '孤高の人', 17), {
+    completed: true,
+    source: 'mangazenkan_search'
+  });
+  assert.equal(extractMangaZenkanCompletionEvidenceFromHtml(html, '孤高の人', 18), null);
+  assert.equal(
+    extractMangaZenkanCompletionEvidenceFromHtml(
+      '<div class="search-result-item"><a>孤高の人 (1-17巻 全巻)</a><span>未完結</span></div>',
+      '孤高の人',
+      17
+    ),
+    null
+  );
 });
 
 function productHtml({ title, currentPrice, listPrice, promo }) {
