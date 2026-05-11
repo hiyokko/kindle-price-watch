@@ -37,6 +37,8 @@ const UNVALIDATED_SERIES_PRICE_PROVIDERS = new Set([
 const SINGLE_EPISODE_SERIES_PRICE_MAX = 250;
 const SUSPICIOUS_BULK_SERIES_COUNT_MIN = 20;
 const AMAZON_HTML_TINY_PRICE_MAX = 5;
+const DISCOUNT_RECHECK_DEFAULT_HOURS = 24;
+const DISCOUNT_RECHECK_RATIO = 0.7;
 
 export async function listBooks() {
   const store = await readStoreWithPriceRepairs();
@@ -5146,6 +5148,7 @@ function checkPriorityScore(book, context, now) {
   if (needsBookImageRefresh(book)) score += 60000;
   if (isDiscardedUnvalidatedSeriesPrice(book)) score += 25000;
   if (!book.lastCheckedAt) score += 12000;
+  if (needsDiscountExpiryRecheck(book, now)) score += 45000;
   if (isBookStaleForPriority(book, now)) score += 2500;
   if (isTransientSnapshotError(book.lastError) && !isBlockingSnapshotError(book.lastError)) score += 1500;
 
@@ -5199,6 +5202,23 @@ function isBookStaleForPriority(book, now) {
   const checkedAt = new Date(book?.lastCheckedAt || 0).getTime();
   if (!Number.isFinite(checkedAt) || checkedAt <= 0) return true;
   return now - checkedAt >= 3 * 24 * 60 * 60 * 1000;
+}
+
+export function needsDiscountExpiryRecheck(book, now = Date.now()) {
+  if (!hasTrustedCurrentPrice(book)) return false;
+
+  const checkedAt = new Date(book?.lastCheckedAt || 0).getTime();
+  if (!Number.isFinite(checkedAt) || checkedAt <= 0) return true;
+
+  const ageMs = now - checkedAt;
+  const thresholdHours = floorNumber(process.env.DISCOUNT_RECHECK_HOURS, 1, DISCOUNT_RECHECK_DEFAULT_HOURS);
+  if (ageMs < thresholdHours * 60 * 60 * 1000) return false;
+
+  const effective = nullableNumber(book.effectivePrice ?? book.currentPrice);
+  const listPrice = nullableNumber(trustedListPriceFor(book.currentPrice, book.listPrice, book.provider));
+  if (effective == null || effective <= 0 || listPrice == null || listPrice <= 0) return false;
+
+  return effective <= listPrice * DISCOUNT_RECHECK_RATIO;
 }
 
 function isCheckRetryCoolingDown(book, now) {

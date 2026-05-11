@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  needsDiscountExpiryRecheck,
   seriesSnapshotFromKindleSeriesForBook,
   suspiciousPriceReason
 } from '../src/checker.mjs';
@@ -78,5 +79,33 @@ test('series snapshots reject unvalidated source-wide series prices', () => {
       ]
     }, 'B085VPHHNK'),
     null
+  );
+});
+
+test('discounted prices are prioritized for expiry recheck after a day', () => {
+  const checkedAt = new Date(Date.UTC(2026, 4, 10, 0, 0, 0)).toISOString();
+
+  assert.equal(
+    needsDiscountExpiryRecheck({
+      currentPrice: 200,
+      currentPoints: 2,
+      effectivePrice: 198,
+      listPrice: 440,
+      provider: 'amazon_html',
+      lastCheckedAt: checkedAt
+    }, Date.UTC(2026, 4, 11, 1, 0, 0)),
+    true
+  );
+
+  assert.equal(
+    needsDiscountExpiryRecheck({
+      currentPrice: 396,
+      currentPoints: 4,
+      effectivePrice: 392,
+      listPrice: 440,
+      provider: 'amazon_html',
+      lastCheckedAt: checkedAt
+    }, Date.UTC(2026, 4, 11, 1, 0, 0)),
+    false
   );
 });
