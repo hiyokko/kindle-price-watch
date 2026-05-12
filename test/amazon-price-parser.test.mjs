@@ -2,12 +2,32 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  cleanAmazonSeriesName,
   extractAmazonHtmlSnapshotFromHtml,
   extractKindleSeriesItemsFromHtml,
   extractMangaZenkanCompletionEvidenceFromHtml,
   extractSeriesCompletionStatusFromHtml,
   shouldDeferAmazonReaderPrice
 } from '../src/price-provider.mjs';
+
+test('Amazon series names drop store chrome, author text, and volume markers', () => {
+  assert.equal(
+    cleanAmazonSeriesName('Amazon.co.jp: サーチアンドデストロイ 3 (TCコミックス) eBook : カネコアツシ: Kindleストア'),
+    'サーチアンドデストロイ'
+  );
+  assert.equal(
+    cleanAmazonSeriesName('Amazon.co.jp: SPUNK - スパンク！ - 1 (ビームコミックス) eBook : 新井 英樹, 鏡 ゆみこ: Kindleストア'),
+    'SPUNK - スパンク！'
+  );
+  assert.equal(
+    cleanAmazonSeriesName('Amazon.co.jp: ヒストリエ（３） (アフタヌーンコミックス) eBook : 岩明均: Kindleストア'),
+    'ヒストリエ'
+  );
+  assert.equal(
+    cleanAmazonSeriesName('Amazon.co.jp: 火の鳥 1 eBook : 手塚治虫: Kindleストア'),
+    '火の鳥'
+  );
+});
 
 test('Amazon HTML parser keeps explicit Kindle price separate from discount and points', () => {
   const snapshot = extractAmazonHtmlSnapshotFromHtml(productHtml({

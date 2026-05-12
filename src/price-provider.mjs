@@ -3175,17 +3175,13 @@ function extractSeriesChildItemPoints(fragment, currentPrice) {
 }
 
 function extractSeriesName(html) {
-  return cleanTitle(
+  return cleanAmazonSeriesName(
     extractById(html, 'collectionTitle') ||
       extractById(html, 'series-title') ||
       extractById(html, 'ebooksProductTitle') ||
       extractMeta(html, 'og:title') ||
       extractTag(html, 'title')
-  )
-    .replace(/\s*\(全\s*\d+\s*巻\).*$/, '')
-    .replace(/\s*全\s*\d+\s*巻.*$/, '')
-    .replace(/\s*Kindle版.*$/, '')
-    .trim();
+  );
 }
 
 function extractSeriesExpectedCount(html) {
@@ -3357,6 +3353,50 @@ function cleanTitle(value) {
     .replace(/\s+\|.*$/, '')
     .replace(/\s*-\s*Amazon.*$/i, '')
     .replace(/\s*\(Kindle版\)\s*$/, '')
+    .trim();
+}
+
+export function cleanAmazonSeriesName(value) {
+  let text = cleanTitle(value);
+  for (let index = 0; index < 4; index += 1) {
+    const next = cleanupSeriesNameSeparators(
+      stripSeriesVolumeTokens(
+        stripSeriesImprint(
+          text
+            .replace(/^Amazon\.co\.jp\s*[:：]\s*/i, '')
+            .replace(/\s+(?:eBook|電子書籍)\s*[:：].*$/i, '')
+            .replace(/\s*[:：]\s*Kindle(?:ストア| Store).*$/i, '')
+            .replace(/\s+Kindle(?:ストア| Store).*$/i, '')
+            .replace(/\s*Kindle版.*$/i, '')
+            .replace(/\s*\(全\s*[0-9０-９]+\s*巻\).*$/i, '')
+            .replace(/\s*全\s*[0-9０-９]+\s*巻.*$/i, '')
+        )
+      )
+    );
+    if (next === text) break;
+    text = next;
+  }
+  return text || 'Kindle シリーズ';
+}
+
+function stripSeriesImprint(value) {
+  return String(value || '')
+    .replace(/\s*[（(][^（）()]{0,100}(?:コミックス|コミック|文庫|新書|DX|KC|REX|ZERO-SUM|モーニング|イブニング|アフタヌーン|ビッグ|スピリッツ|ジャンプ|マガジン|サンデー|チャンピオン|ヒーローズ|A\.?L\.?C\.?|L\.?C\.?|ebook|Kindle|DIGITAL|デジタル|TC|ビーム)[^（）()]{0,100}[）)]\s*/giu, ' ');
+}
+
+function stripSeriesVolumeTokens(value) {
+  return String(value || '')
+    .replace(/\s*[（(]\s*(?:第\s*)?[0-9０-９]{1,4}\s*(?:巻|巻目)?\s*[）)]\s*/giu, ' ')
+    .replace(/(^|[\s　\-－–—:：])(?:第\s*)?[0-9０-９]{1,4}\s*巻(?=$|[\s　\-－–—:：])/giu, '$1 ')
+    .replace(/(^|[\s　\-－–—:：])(?:vol\.?|volume)\s*[0-9０-９]{1,4}(?=$|[\s　\-－–—:：])/giu, '$1 ')
+    .replace(/(^|[\s　\-－–—:：])(?:第\s*)?[0-9０-９]{1,4}(?=$|[\s　\-－–—:：])/giu, '$1 ');
+}
+
+function cleanupSeriesNameSeparators(value) {
+  return String(value || '')
+    .replace(/\s+/g, ' ')
+    .replace(/\s*[-－–—:：]\s*$/u, '')
+    .replace(/^\s*[-－–—:：]\s*/u, '')
     .trim();
 }
 

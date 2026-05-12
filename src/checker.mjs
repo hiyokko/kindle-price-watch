@@ -12,6 +12,7 @@ import {
   fetchKintyakuKindleSeriesItems,
   fetchKindleSeriesItems,
   fetchSaleBonKindleSeriesItems,
+  cleanAmazonSeriesName,
   isProbablyBookAsin,
   isKindleSeriesUrl
 } from './price-provider.mjs';
@@ -404,7 +405,7 @@ async function importSeriesIntoStore(store, input, series, options = {}) {
   let updatedDuplicates = 0;
   const seriesErrors = [...(series.reconciliation?.errors || [])];
   const seriesKey = seriesKeyForSeries(input, series);
-  const seriesName = series.seriesName || 'Kindle シリーズ';
+  const seriesName = cleanStoredSeriesName(series.seriesName || 'Kindle シリーズ');
   const sourceUrl = seriesSourceUrlFor(input, series);
   const seriesCompleted = Boolean(series.completed);
 
@@ -1047,7 +1048,7 @@ function mergeSeriesCandidate(primary, secondary) {
 
   return {
     ...base,
-    seriesName: base.seriesName || overlay.seriesName,
+    seriesName: cleanStoredSeriesName(base.seriesName || overlay.seriesName),
     sourceAsin: base.sourceAsin || overlay.sourceAsin,
     sourcePriceSeed: base.sourcePriceSeed || overlay.sourcePriceSeed,
     completed: Boolean(base.completed || overlay.completed),
@@ -1831,6 +1832,12 @@ function repairStorePriceState(store, options = {}) {
     summary.removedNotifications += classificationRepair.removedNotifications;
   }
 
+  const seriesNameRepair = repairStoredSeriesNames(store, { now });
+  if (seriesNameRepair.changed) {
+    summary.changed = true;
+    summary.booksRepaired += seriesNameRepair.booksRepaired;
+  }
+
   for (const book of store.books) {
     const repair = repairSuspiciousPriceState(book, store, {
       clearCurrent: options.clearCurrent !== false,
@@ -1864,6 +1871,114 @@ function repairStorePriceState(store, options = {}) {
   }
 
   return summary;
+}
+
+function repairStoredSeriesNames(store, options = {}) {
+  const now = options.now || new Date().toISOString();
+  const groups = new Map();
+  for (const book of store.books || []) {
+    if (!isSeriesBookRecord(book)) continue;
+    const key = book.seriesKey || book.sourceUrl || `series:${book.id}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(book);
+  }
+
+  let booksRepaired = 0;
+  for (const books of groups.values()) {
+    const canonical = canonicalStoredSeriesName(books);
+    if (!canonical) continue;
+
+    const previousNames = [...new Set(books.map((book) => String(book.seriesName || '').trim()).filter(Boolean))];
+    for (const book of books) {
+      let changed = false;
+      if (book.seriesName !== canonical) {
+        book.seriesName = canonical;
+        changed = true;
+      }
+      if (shouldRepairStoredSeriesBookTitle(book, previousNames)) {
+        book.title = storedSeriesVolumeTitle(canonical, seriesItemVolume(book));
+        changed = true;
+      }
+      if (changed) {
+        book.updatedAt = now;
+        booksRepaired += 1;
+      }
+    }
+  }
+
+  return {
+    changed: booksRepaired > 0,
+    booksRepaired
+  };
+}
+
+function isSeriesBookRecord(book = {}) {
+  return (
+    book.importMode === 'kindle_series' ||
+    Boolean(book.seriesKey) ||
+    Number(book.seriesExpectedCount || 0) > 1
+  );
+}
+
+function canonicalStoredSeriesName(books = []) {
+  const candidates = [];
+  for (const book of books) {
+    addStoredSeriesNameCandidate(candidates, book.seriesName, 0);
+    addStoredSeriesNameCandidate(candidates, book.title, 1);
+  }
+  if (candidates.length === 0) return '';
+
+  const counts = new Map();
+  for (const candidate of candidates) {
+    const current = counts.get(candidate.name) || { ...candidate, count: 0 };
+    current.count += 1;
+    current.rank = Math.min(current.rank, candidate.rank);
+    counts.set(candidate.name, current);
+  }
+
+  return [...counts.values()].sort((left, right) => {
+    if (left.rank !== right.rank) return left.rank - right.rank;
+    if (left.dirty !== right.dirty) return Number(left.dirty) - Number(right.dirty);
+    if (left.count !== right.count) return right.count - left.count;
+    if (left.name.length !== right.name.length) return left.name.length - right.name.length;
+    return left.name.localeCompare(right.name, 'ja');
+  })[0]?.name || '';
+}
+
+function addStoredSeriesNameCandidate(candidates, value, rank) {
+  const raw = String(value || '').trim();
+  const cleaned = cleanStoredSeriesName(raw);
+  if (!cleaned || cleaned === 'Kindle シリーズ' || isGenericSeriesName(cleaned)) return;
+  candidates.push({
+    name: cleaned,
+    rank,
+    dirty: isDirtyAmazonSeriesText(raw)
+  });
+}
+
+function cleanStoredSeriesName(value) {
+  return cleanAmazonSeriesName(value || 'Kindle シリーズ');
+}
+
+function shouldRepairStoredSeriesBookTitle(book, previousNames = []) {
+  const title = String(book?.title || '').trim();
+  if (!title) return true;
+  if (isDirtyAmazonSeriesText(title)) return true;
+  return previousNames.some((name) => name && name !== book.seriesName && title.startsWith(name));
+}
+
+function isDirtyAmazonSeriesText(value) {
+  return /Amazon\.co\.jp:|Kindleストア|Kindle Store|\beBook\s*[:：]|電子書籍\s*[:：]/i.test(String(value || ''));
+}
+
+function storedSeriesVolumeTitle(seriesName, volume) {
+  const number = Number(volume);
+  if (!Number.isFinite(number) || number <= 0) return seriesName;
+  return `${seriesName} ${toFullWidthNumber(number)}`;
+}
+
+function toFullWidthNumber(value) {
+  return String(value).replace(/[0-9]/g, (number) => String.fromCharCode(number.charCodeAt(0) + 0xfee0));
 }
 
 function repairSingleBookSeriesClassifications(store, options = {}) {
@@ -3769,9 +3884,7 @@ function seriesDiscoveryInput(sourceUrl = '', seriesKey = '') {
 }
 
 function seriesTitleFromBook(book) {
-  return String(book.seriesName || book.title || 'Kindle シリーズ')
-    .replace(/\s*\(?\d+\)?\s*巻?.*$/, '')
-    .trim();
+  return cleanStoredSeriesName(book.seriesName || book.title || 'Kindle シリーズ');
 }
 
 function shouldStopSeriesDiscoveryForRuntimeLimit(startedAt, maxRuntimeMs, completedCount, reserveMs = 0) {
