@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 const ASIN_PATTERN = /[A-Z0-9]{10}/i;
 const ASIN_GLOBAL_PATTERN = /[A-Z0-9]{10}/gi;
 const DEFAULT_FETCH_TIMEOUT_MS = 4000;
+const IMPLICIT_TINY_KINDLE_PRICE_MAX = 99;
 const HOST_THROTTLES = new Map();
 
 const AMAZON_HEADERS = {
@@ -3654,7 +3655,7 @@ function hasExplicitFreeKindlePrice(html) {
 
 function isAmbiguousTinyFallbackPrice(price, prices = [], html = '') {
   const current = Number(price);
-  if (!Number.isFinite(current) || current > 5) return false;
+  if (!Number.isFinite(current) || current > IMPLICIT_TINY_KINDLE_PRICE_MAX) return false;
   if (hasExplicitPriceDisplay(html, current) || hasExplicitFreeKindlePrice(html)) return false;
   return prices.some((candidate) => Number(candidate) >= 100);
 }
@@ -3664,6 +3665,9 @@ function isIgnoredKindlePriceContext(text, index) {
   const near = cleanText(String(text || '').slice(Math.max(0, index - 80), Math.min(String(text || '').length, index + 100)));
   const compactNear = near.replace(/\s+/g, '');
   if (/(?:その他)?(?:中古品?|新品|コレクター商品|マーケットプレイス).{0,24}(?:￥|¥|[0-9,]+円|から)|(?:￥|¥|[0-9,]+円).{0,24}(?:中古品?|新品|コレクター商品|マーケットプレイス)|used|collectible|marketplace/i.test(compactNear)) {
+    return true;
+  }
+  if (/(?:獲得)?ポイント|points?|pt/i.test(near) && !/(?:￥|¥|円|\bJPY\b)/i.test(near)) {
     return true;
   }
   if (/コミック[（(]\s*紙\s*[）)]|文庫[（(]\s*紙\s*[）)]|紙(?:の)?(?:本|書籍|版)|Paperback|paperback|Tankobon|単行本/i.test(near)) {
@@ -3683,16 +3687,16 @@ function correctImplausibleKindlePrice({ currentPrice, currentPoints, listPrice,
     return { currentPrice: null, currentPoints: 0 };
   }
 
-  if (isImplicitTinyOrFreeKindlePrice(currentPrice, html)) {
-    return { currentPrice: null, currentPoints: 0 };
-  }
-
   const explicitReplacement = explicitDisplayedPriceForTinyContamination(currentPrice, currentPoints, html);
   if (explicitReplacement != null) {
     return {
       currentPrice: explicitReplacement,
       currentPoints: sanitizePoints(extractPointsNearPrice(html, explicitReplacement) ?? 0, explicitReplacement)
     };
+  }
+
+  if (isImplicitTinyOrFreeKindlePrice(currentPrice, html)) {
+    return { currentPrice: null, currentPoints: 0 };
   }
 
   const inferred = inferDiscountedKindlePrice(html, listPrice);
@@ -3724,7 +3728,7 @@ function correctImplausibleKindlePrice({ currentPrice, currentPoints, listPrice,
 
 function isImplicitTinyOrFreeKindlePrice(currentPrice, html = '') {
   const current = Number(currentPrice);
-  if (!Number.isFinite(current) || current < 0 || current > 5) return false;
+  if (!Number.isFinite(current) || current < 0 || current > IMPLICIT_TINY_KINDLE_PRICE_MAX) return false;
   if (hasExplicitPriceDisplay(html, current) || hasExplicitFreeKindlePrice(html)) return false;
   return true;
 }
@@ -3804,7 +3808,7 @@ function hasExplicitPriceDisplay(html, price) {
 
 function explicitDisplayedPriceForTinyContamination(currentPrice, currentPoints, html = '') {
   const current = Number(currentPrice);
-  if (!Number.isFinite(current) || current > 5) return null;
+  if (!Number.isFinite(current) || current > IMPLICIT_TINY_KINDLE_PRICE_MAX) return null;
   if (hasExplicitPriceDisplay(html, current) || hasExplicitFreeKindlePrice(html)) return null;
 
   const pointValue = Number(currentPoints || 0);

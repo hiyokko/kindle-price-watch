@@ -37,7 +37,7 @@ const UNVALIDATED_SERIES_PRICE_PROVIDERS = new Set([
 ]);
 const SINGLE_EPISODE_SERIES_PRICE_MAX = 250;
 const SUSPICIOUS_BULK_SERIES_COUNT_MIN = 20;
-const AMAZON_HTML_TINY_PRICE_MAX = 5;
+const AMAZON_HTML_TINY_PRICE_MAX = 10;
 const DISCOUNT_RECHECK_DEFAULT_HOURS = 24;
 const DISCOUNT_RECHECK_RATIO = 0.7;
 const PRICE_INTEGRITY_SERIES_OUTLIER_RATIO = 0.55;
@@ -651,7 +651,7 @@ async function refreshExistingSingleBookFromInput(id, input) {
         book.lastError = snapshotResult.error;
         updated = true;
       }
-      if (isPermanentSnapshotError(snapshotResult?.error)) {
+      if (isPermanentSnapshotError(snapshotResult?.error) || isTrustedSeriesOverrideSnapshotError(snapshotResult?.error)) {
         book.lastCheckedAt = now;
         updated = true;
       } else if (isUnresolvedSingleBook(book) && book.lastCheckedAt) {
@@ -664,7 +664,7 @@ async function refreshExistingSingleBookFromInput(id, input) {
         clearStaleDiscountedCurrent: isSuspiciousSnapshotError(snapshotResult?.error)
       });
       if (repair.changed) updated = true;
-      if (isPermanentSnapshotError(snapshotResult?.error)) {
+      if (isPermanentSnapshotError(snapshotResult?.error) || isTrustedSeriesOverrideSnapshotError(snapshotResult?.error)) {
         book.lastCheckedAt = now;
       } else if ((repair.currentCleared && !repair.currentRestored) || isSuspiciousSnapshotError(snapshotResult?.error)) {
         book.lastCheckedAt = null;
@@ -687,6 +687,7 @@ async function refreshExistingSingleBookFromInput(id, input) {
     book.currentPoints = snapshot.currentPoints;
     book.effectivePrice = snapshot.effectivePrice;
     book.listPrice = mergedSnapshotListPrice(snapshot, book.listPrice);
+    applySnapshotPriceEvidence(book, snapshot);
     book.lowestPrice =
       snapshot.currentPrice == null
         ? book.lowestPrice
@@ -1441,6 +1442,8 @@ function mergeAmazonSnapshotIntoSeriesItem(item, snapshot) {
     effectivePrice: useSnapshotPrice ? snapshot.effectivePrice ?? effectivePriceFromSeed(snapshot) : item.effectivePrice,
     listPrice,
     provider,
+    explicitPriceDisplay: useSnapshotPrice ? Boolean(snapshot.explicitPriceDisplay) : Boolean(item.explicitPriceDisplay),
+    explicitFreeKindlePrice: useSnapshotPrice ? Boolean(snapshot.explicitFreeKindlePrice) : Boolean(item.explicitFreeKindlePrice),
     lastError: currentPrice == null ? item.lastError || '' : ''
   };
 }
@@ -1522,6 +1525,8 @@ function updateExistingSeriesBook(book, item, options) {
     book.currentPrice = item.currentPrice;
     book.currentPoints = item.currentPoints ?? 0;
     book.effectivePrice = effectivePrice;
+    book.explicitPriceDisplay = Boolean(item.explicitPriceDisplay);
+    book.explicitFreeKindlePrice = Boolean(item.explicitFreeKindlePrice);
     book.lowestPrice = book.lowestPrice == null ? item.currentPrice : Math.min(book.lowestPrice, item.currentPrice);
     if (effectivePrice != null) {
       book.lowestEffectivePrice =
@@ -1656,6 +1661,9 @@ function shouldClearUnvalidatedSourcePrice(book, item) {
 }
 
 export function suspiciousSnapshotReason(book, snapshot) {
+  const seriesOverrideReason = untrustedAmazonHtmlSeriesOverrideReason(book, snapshot);
+  if (seriesOverrideReason) return seriesOverrideReason;
+
   return suspiciousPriceReason({
     price: snapshot.currentPrice,
     points: snapshot.currentPoints,
@@ -1674,6 +1682,24 @@ export function suspiciousSnapshotReason(book, snapshot) {
   });
 }
 
+function untrustedAmazonHtmlSeriesOverrideReason(book = {}, snapshot = {}) {
+  if (!hasTrustedSeriesPagePrice(book)) return '';
+  if (String(snapshot.provider || '').toLowerCase() !== 'amazon_html') return '';
+  if (snapshot.explicitPriceDisplay || snapshot.explicitFreeKindlePrice) return '';
+
+  const current = Number(book.currentPrice);
+  const next = Number(snapshot.currentPrice);
+  if (!Number.isFinite(current) || current < 0 || !Number.isFinite(next) || next < 0) return '';
+  if (current === next) return '';
+
+  return 'シリーズ一括取得済み価格を、円表示の証拠が弱い単巻HTML価格で上書きしません';
+}
+
+function hasTrustedSeriesPagePrice(book = {}) {
+  if (book.currentPrice == null) return false;
+  return ['amazon_series_bulk', 'amazon_series_child'].includes(String(book.provider || '').toLowerCase());
+}
+
 function snapshotValidationListPrice(book = {}, snapshot = {}) {
   if (snapshot.listPrice != null) return snapshot.listPrice;
   if (String(snapshot.provider || '').toLowerCase() === 'amazon_html' && snapshot.explicitPriceDisplay) return null;
@@ -1682,6 +1708,10 @@ function snapshotValidationListPrice(book = {}, snapshot = {}) {
 
 function isSuspiciousSnapshotError(error) {
   return String(error || '').startsWith('疑わしい価格を無視しました');
+}
+
+function isTrustedSeriesOverrideSnapshotError(error) {
+  return /シリーズ一括取得済み価格/.test(String(error || ''));
 }
 
 function isPermanentSnapshotError(error) {
@@ -2173,6 +2203,8 @@ function suspiciousStoredCurrentPriceReason(book) {
     effectivePrice: book.effectivePrice,
     listPrice,
     provider: book.provider,
+    explicitPriceDisplay: book.explicitPriceDisplay,
+    explicitFreeKindlePrice: book.explicitFreeKindlePrice,
     referencePrices: [
       listPrice,
       book.previousEffectivePrice,
@@ -2193,6 +2225,8 @@ function isSuspiciousHistoryEntry(entry, book) {
       effectivePrice: entry.effectivePrice,
       listPrice,
       provider,
+      explicitPriceDisplay: entry.explicitPriceDisplay,
+      explicitFreeKindlePrice: entry.explicitFreeKindlePrice,
       referencePrices: [book.currentPrice, book.effectivePrice, book.previousEffectivePrice, listPrice]
     })
   );
@@ -3351,7 +3385,7 @@ function seriesPriceOutlierReason(book, store) {
   const median = medianNumber(peerPrices);
   if (!Number.isFinite(median) || median <= 0) return '';
   if (current > median * PRICE_INTEGRITY_SERIES_OUTLIER_RATIO) return '';
-  if (trustedSeriesOutlierProvider(book.provider)) return '';
+  if (trustedSeriesOutlierProvider(book)) return '';
   return `シリーズ中央値 ${Math.round(median).toLocaleString('ja-JP')}円に対して低すぎます`;
 }
 
@@ -3369,9 +3403,10 @@ function isSamePriceIntegritySeries(left, right) {
   return Boolean(left.sourceUrl && right.sourceUrl && left.sourceUrl === right.sourceUrl);
 }
 
-function trustedSeriesOutlierProvider(provider) {
-  const normalized = String(provider || '').toLowerCase();
-  return ['amazon_series_child', 'amazon_html', 'keepa'].includes(normalized);
+function trustedSeriesOutlierProvider(book = {}) {
+  const normalized = String(book.provider || '').toLowerCase();
+  if (normalized === 'amazon_html') return Boolean(book.explicitPriceDisplay || book.explicitFreeKindlePrice);
+  return ['amazon_series_child', 'amazon_series_bulk', 'keepa'].includes(normalized);
 }
 
 function priceIntegrityAuditSnapshotTimeoutMs() {
@@ -4259,7 +4294,7 @@ function applyCheckResultToStore(store, bookRef, snapshotResult, now, options = 
       restoreMissingCurrent: true,
       clearStaleDiscountedCurrent: isSuspiciousSnapshotError(snapshotResult.error)
     });
-    if (isPermanentSnapshotError(snapshotResult.error)) {
+    if (isPermanentSnapshotError(snapshotResult.error) || isTrustedSeriesOverrideSnapshotError(snapshotResult.error)) {
       book.lastCheckedAt = now;
     } else if (
       isUnresolvedSingleBook(book) ||
@@ -4288,6 +4323,7 @@ function applyCheckResultToStore(store, bookRef, snapshotResult, now, options = 
   book.currentPoints = snapshot.currentPoints;
   book.effectivePrice = snapshot.effectivePrice;
   book.listPrice = mergedSnapshotListPrice(snapshot, book.listPrice);
+  applySnapshotPriceEvidence(book, snapshot);
   book.provider = snapshot.provider;
   book.lastCheckedAt = now;
   book.updatedAt = now;
@@ -4656,6 +4692,12 @@ function applyMetadataSnapshotToBook(book, snapshot) {
   repairStoredBookTitle(book);
 }
 
+function applySnapshotPriceEvidence(book, snapshot) {
+  if (!book || !snapshot) return;
+  book.explicitPriceDisplay = Boolean(snapshot.explicitPriceDisplay);
+  book.explicitFreeKindlePrice = Boolean(snapshot.explicitFreeKindlePrice);
+}
+
 function normalizeImageUrl(value) {
   const text = String(value || '').trim();
   if (!text) return '';
@@ -4728,7 +4770,9 @@ async function buildBookFromAsin(asin, options = {}) {
     currentPoints: seedPriceIsUnvalidated ? 0 : seed.currentPoints ?? 0,
     effectivePrice: seedPriceIsUnvalidated ? null : seed.effectivePrice ?? effectivePriceFromSeed(seed),
     listPrice: fallbackListPrice,
-    provider: fallbackProvider
+    provider: fallbackProvider,
+    explicitPriceDisplay: Boolean(seed.explicitPriceDisplay),
+    explicitFreeKindlePrice: Boolean(seed.explicitFreeKindlePrice)
   };
   snapshot = mergeSnapshot(fallback, snapshot);
   if (snapshot.currentPrice == null && !lastError) {
@@ -4752,6 +4796,8 @@ async function buildBookFromAsin(asin, options = {}) {
     currentPoints: snapshot.currentPoints,
     effectivePrice: snapshot.effectivePrice,
     listPrice: snapshot.listPrice,
+    explicitPriceDisplay: Boolean(snapshot.explicitPriceDisplay),
+    explicitFreeKindlePrice: Boolean(snapshot.explicitFreeKindlePrice),
     lowestPrice: snapshot.currentPrice,
     lowestEffectivePrice: snapshot.effectivePrice,
     previousEffectivePrice: null,
@@ -4786,7 +4832,9 @@ function mergeSnapshot(fallback, snapshot) {
     currentPoints: snapshot.currentPoints ?? fallback.currentPoints,
     effectivePrice: snapshot.effectivePrice ?? fallback.effectivePrice,
     listPrice: snapshot.listPrice ?? fallback.listPrice,
-    provider: snapshot.provider || fallback.provider
+    provider: snapshot.provider || fallback.provider,
+    explicitPriceDisplay: Boolean(snapshot.explicitPriceDisplay ?? fallback.explicitPriceDisplay),
+    explicitFreeKindlePrice: Boolean(snapshot.explicitFreeKindlePrice ?? fallback.explicitFreeKindlePrice)
   };
 }
 
@@ -4880,6 +4928,8 @@ function historyEntry(book, checkedAt) {
     effectivePrice: book.effectivePrice,
     listPrice: book.listPrice,
     provider: book.provider,
+    explicitPriceDisplay: Boolean(book.explicitPriceDisplay),
+    explicitFreeKindlePrice: Boolean(book.explicitFreeKindlePrice),
     checkedAt
   };
 }
@@ -4997,7 +5047,9 @@ function samePriceHistoryState(left, right) {
     nullableNumber(left.price) === nullableNumber(right.price) &&
     nullableNumber(left.points) === nullableNumber(right.points) &&
     nullableNumber(left.effectivePrice) === nullableNumber(right.effectivePrice) &&
-    nullableNumber(left.listPrice) === nullableNumber(right.listPrice)
+    nullableNumber(left.listPrice) === nullableNumber(right.listPrice) &&
+    Boolean(left.explicitPriceDisplay) === Boolean(right.explicitPriceDisplay) &&
+    Boolean(left.explicitFreeKindlePrice) === Boolean(right.explicitFreeKindlePrice)
   );
 }
 

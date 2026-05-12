@@ -23,9 +23,9 @@ test('price validation rejects tiny Amazon HTML prices without a prior reference
 
   assert.match(
     suspiciousPriceReason({
-      price: 3,
+      price: 7,
       points: 0,
-      effectivePrice: 3,
+      effectivePrice: 7,
       provider: 'amazon_html'
     }),
     /不自然に小さすぎます/
@@ -105,6 +105,44 @@ test('snapshot validation does not reject series prices against stale stored lis
         effectivePrice: 543,
         listPrice: null,
         provider: 'amazon_series_child'
+      }
+    ),
+    ''
+  );
+});
+
+test('snapshot validation keeps trusted series bulk prices over weak single-page HTML prices', () => {
+  assert.match(
+    suspiciousSnapshotReason(
+      {
+        currentPrice: 891,
+        effectivePrice: 891,
+        provider: 'amazon_series_bulk'
+      },
+      {
+        currentPrice: 6,
+        currentPoints: 0,
+        effectivePrice: 6,
+        provider: 'amazon_html',
+        explicitPriceDisplay: false
+      }
+    ),
+    /シリーズ一括取得済み価格/
+  );
+
+  assert.equal(
+    suspiciousSnapshotReason(
+      {
+        currentPrice: 891,
+        effectivePrice: 891,
+        provider: 'amazon_series_bulk'
+      },
+      {
+        currentPrice: 33,
+        currentPoints: 0,
+        effectivePrice: 33,
+        provider: 'amazon_html',
+        explicitPriceDisplay: true
       }
     ),
     ''
