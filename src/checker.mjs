@@ -1802,8 +1802,8 @@ function repairSuspiciousPriceState(book, store, options = {}) {
       book.currentPrice = latest.price;
       book.currentPoints = latest.points || 0;
       book.effectivePrice = latest.effectivePrice ?? effectivePriceFromSeed(latest);
-      book.listPrice = latest.listPrice ?? book.listPrice ?? null;
       book.provider = latest.provider || book.provider;
+      book.listPrice = trustedListPriceFor(book.currentPrice, latest.listPrice, book.provider);
       book.lastCheckedAt = latest.checkedAt || book.lastCheckedAt;
       currentRestored = true;
       changed = true;
@@ -1888,6 +1888,11 @@ export function repairStorePriceState(store, options = {}) {
     summary.currentRestored += repair.currentRestored ? 1 : 0;
     summary.removedHistory += repair.removedHistory;
     summary.removedNotifications += repair.removedNotifications;
+  }
+
+  const clearedHistoryListPrices = clearSeriesDerivedListPricesFromHistory(store);
+  if (clearedHistoryListPrices > 0) {
+    summary.changed = true;
   }
 
   const compacted = compactPriceHistory(store);
@@ -2319,6 +2324,18 @@ function clearStaleSeriesDerivedListPrice(book, store) {
   }
 
   return changed;
+}
+
+function clearSeriesDerivedListPricesFromHistory(store) {
+  const history = Array.isArray(store?.priceHistory) ? store.priceHistory : [];
+  let cleared = 0;
+  for (const entry of history) {
+    if (entry?.listPrice == null) continue;
+    if (!isSeriesDerivedPriceProvider(entry.provider)) continue;
+    entry.listPrice = null;
+    cleared += 1;
+  }
+  return cleared;
 }
 
 function hasSeriesDerivedListPriceHistory(book, store, listPrice) {

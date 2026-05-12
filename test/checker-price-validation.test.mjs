@@ -302,6 +302,17 @@ test('store repair clears stale series-derived aggregate list prices after later
         provider: 'amazon_html',
         lowestPrice: 759,
         lowestEffectivePrice: 731
+      },
+      {
+        id: 'book-2',
+        asin: 'B0CURATED1',
+        title: '履歴だけに定価が残ったシリーズ本',
+        currentPrice: 396,
+        currentPoints: 0,
+        effectivePrice: 396,
+        provider: 'curated_series',
+        lowestPrice: 396,
+        lowestEffectivePrice: 396
       }
     ],
     priceHistory: [
@@ -324,6 +335,16 @@ test('store repair clears stale series-derived aggregate list prices after later
         listPrice: 2310,
         provider: 'amazon_html',
         checkedAt: '2026-05-11T22:49:29.824Z'
+      },
+      {
+        bookId: 'book-2',
+        asin: 'B0CURATED1',
+        price: 396,
+        points: 0,
+        effectivePrice: 396,
+        listPrice: 396,
+        provider: 'curated_series',
+        checkedAt: '2026-05-06T19:28:04.417Z'
       }
     ],
     notifications: [],
