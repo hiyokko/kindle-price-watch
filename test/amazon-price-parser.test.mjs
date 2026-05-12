@@ -3,12 +3,20 @@ import test from 'node:test';
 
 import {
   cleanAmazonSeriesName,
+  extractAsin,
   extractAmazonHtmlSnapshotFromHtml,
   extractKindleSeriesItemsFromHtml,
   extractMangaZenkanCompletionEvidenceFromHtml,
   extractSeriesCompletionStatusFromHtml,
+  isKindleSeriesUrl,
   shouldDeferAmazonReaderPrice
 } from '../src/price-provider.mjs';
+
+test('Amazon Kindle DBS product URLs are treated as series URLs', () => {
+  const url = 'https://www.amazon.co.jp/kindle-dbs/product/B0DPDXNFQN';
+  assert.equal(extractAsin(url), 'B0DPDXNFQN');
+  assert.equal(isKindleSeriesUrl(url), true);
+});
 
 test('Amazon series names drop store chrome, author text, and volume markers', () => {
   assert.equal(
@@ -92,6 +100,29 @@ test('Amazon HTML parser accepts genuinely small explicit yen prices', () => {
   assert.equal(snapshot.currentPrice, 33);
   assert.equal(snapshot.currentPoints, 30);
   assert.equal(snapshot.effectivePrice, 3);
+});
+
+test('Amazon HTML parser records Kindle release dates for preorder filtering', () => {
+  const snapshot = extractAmazonHtmlSnapshotFromHtml(`
+    <html>
+      <head><meta property="og:title" content="天幕のジャードゥーガル 6"></head>
+      <body>
+        <span id="productTitle">天幕のジャードゥーガル 6</span>
+        <div id="tmm-grid-swatch-KINDLE">Kindle版</div>
+        <div id="corePriceDisplay_desktop_feature_div">
+          <span class="a-price"><span class="a-offscreen">￥880</span></span>
+          <span>9ポイント</span>
+        </div>
+        <li>
+          <span><span>発売日</span></span>
+          <span>2026/7/15</span>
+        </li>
+      </body>
+    </html>
+  `, 'B0H1BN5ZC6', 'https://www.amazon.co.jp/dp/B0H1BN5ZC6');
+
+  assert.equal(snapshot.currentPrice, 880);
+  assert.equal(snapshot.releaseDate, '2026-07-15');
 });
 
 test('Amazon HTML parser keeps series bundle discounts out of single-volume price', () => {

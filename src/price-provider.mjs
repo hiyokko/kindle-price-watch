@@ -29,7 +29,7 @@ export function extractAsin(input) {
 
   try {
     const url = new URL(value);
-    const pathMatch = url.pathname.match(/\/(?:dp|gp\/product|exec\/obidos\/ASIN)\/([A-Z0-9]{10})/i);
+    const pathMatch = url.pathname.match(/\/(?:dp|gp\/product|exec\/obidos\/ASIN|kindle-dbs\/product)\/([A-Z0-9]{10})/i);
     if (pathMatch) return pathMatch[1].toUpperCase();
 
     for (const key of ['asin', 'ASIN']) {
@@ -57,6 +57,7 @@ export function isKindleSeriesUrl(input) {
     const ref = `${url.searchParams.get('ref') || ''} ${url.searchParams.get('ref_') || ''}`;
     return (
       /\/series\//i.test(url.pathname) ||
+      /\/kindle-dbs\/product\/[A-Z0-9]{10}/i.test(url.pathname) ||
       /dbs_|dbs-|saga_sdp|hulkbuy|dbs_dp_rwt_sb_pc_tkin|dbs_s_ks_series_rwt_tkin/i.test(ref)
     );
   } catch {
@@ -65,7 +66,7 @@ export function isKindleSeriesUrl(input) {
 }
 
 export async function fetchKindleSeriesItems(input, options = {}) {
-  const sourceAsin = extractAsin(input);
+  const inputAsin = extractAsin(input);
   let amazonResult = null;
   let amazonError = null;
 
@@ -73,6 +74,7 @@ export async function fetchKindleSeriesItems(input, options = {}) {
     const { url, html } = await fetchAmazonSeriesHtml(input, options);
     let items = extractKindleSeriesItemsFromHtml(html);
     items = await enrichKindleSeriesItemsFromChildListPages(items, html, url, options);
+    const sourceAsin = extractSeriesCollectionAsin(html, inputAsin, items);
 
     if (options.requireCollectionPage && !isKindleCollectionPage(html, sourceAsin, items)) {
       items = [];
@@ -2248,6 +2250,7 @@ function extractAmazonHtmlSnapshotBase(html, asin, url, provider) {
   );
   const author = cleanContributorText(extractContributor(html));
   const publisher = cleanMetadataText(extractDetail(html, /出版社|Publisher/i));
+  const releaseDate = extractAmazonReleaseDate(html);
   const imageUrl = extractMeta(html, 'og:image') || extractLandingImage(html);
 
   return {
@@ -2255,6 +2258,7 @@ function extractAmazonHtmlSnapshotBase(html, asin, url, provider) {
     title,
     author,
     publisher,
+    releaseDate,
     imageUrl,
     amazonUrl: url,
     provider
@@ -2621,6 +2625,7 @@ function normalizeSnapshot(snapshot) {
     title: snapshot.title,
     author: snapshot.author || '',
     publisher: snapshot.publisher || '',
+    releaseDate: normalizeReleaseDate(snapshot.releaseDate),
     imageUrl: snapshot.imageUrl || '',
     amazonUrl: snapshot.amazonUrl || amazonUrlForAsin(snapshot.asin),
     currentPrice,
@@ -2631,6 +2636,44 @@ function normalizeSnapshot(snapshot) {
     explicitPriceDisplay: Boolean(snapshot.explicitPriceDisplay),
     explicitFreeKindlePrice: Boolean(snapshot.explicitFreeKindlePrice)
   };
+}
+
+function normalizeReleaseDate(value) {
+  const text = cleanText(value);
+  if (!text) return '';
+
+  const numeric = text.match(/([12][0-9]{3})\s*(?:\/|年|\.|-)\s*([0-9]{1,2})\s*(?:\/|月|\.|-)\s*([0-9]{1,2})/);
+  if (numeric) return formatDateParts(numeric[1], numeric[2], numeric[3]);
+
+  const monthNames = {
+    january: 1,
+    february: 2,
+    march: 3,
+    april: 4,
+    may: 5,
+    june: 6,
+    july: 7,
+    august: 8,
+    september: 9,
+    october: 10,
+    november: 11,
+    december: 12
+  };
+  const english = text.match(/\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+([0-9]{1,2}),?\s+([12][0-9]{3})\b/i);
+  if (english) return formatDateParts(english[3], monthNames[english[1].toLowerCase()], english[2]);
+
+  return '';
+}
+
+function formatDateParts(year, month, day) {
+  const y = Number(year);
+  const m = Number(month);
+  const d = Number(day);
+  if (!Number.isInteger(y) || !Number.isInteger(m) || !Number.isInteger(d)) return '';
+  if (y < 1900 || y > 2200 || m < 1 || m > 12 || d < 1 || d > 31) return '';
+  const date = new Date(Date.UTC(y, m - 1, d));
+  if (date.getUTCFullYear() !== y || date.getUTCMonth() !== m - 1 || date.getUTCDate() !== d) return '';
+  return `${String(y).padStart(4, '0')}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
 }
 
 function isAmazonErrorPageTitle(title) {
@@ -2772,6 +2815,38 @@ function isKindleCollectionPage(html, sourceAsin = '', items = []) {
     /hulk-buy-card|Kindle版\(電子書籍\)のシリーズを購入|data-offer-asins/i.test(value) &&
     /全\s*[0-9０-９]+\s*巻|collection/i.test(cleanText(value.slice(0, 15000)))
   );
+}
+
+function extractSeriesCollectionAsin(html, fallbackAsin = '', items = []) {
+  const value = String(html || '');
+  const fallback = String(fallbackAsin || '').toUpperCase();
+  const itemAsins = new Set((items || []).map((item) => String(item?.asin || '').toUpperCase()).filter(Boolean));
+  const candidates = [];
+  const add = (asin) => {
+    const normalized = String(asin || '').toUpperCase();
+    if (!isProbablyBookAsin(normalized)) return;
+    if (itemAsins.has(normalized)) return;
+    if (!candidates.includes(normalized)) candidates.push(normalized);
+  };
+
+  for (const match of value.matchAll(/collectionAsin(?:&quot;|"|')\s*:\s*(?:&quot;|"|')([A-Z0-9]{10})/gi)) {
+    add(match[1]);
+  }
+  for (const match of value.matchAll(/data-parent-asins=["']([^"']+)["']/gi)) {
+    for (const asin of match[1].match(ASIN_GLOBAL_PATTERN) || []) add(asin);
+  }
+  for (const match of value.matchAll(/data-asin=["']([A-Z0-9]{10})["'][^>]+data-entity-type=["']collection["']/gi)) {
+    add(match[1]);
+  }
+  for (const match of value.matchAll(/data-entity-type=["']collection["'][^>]+data-asin=["']([A-Z0-9]{10})["']/gi)) {
+    add(match[1]);
+  }
+  for (const match of value.matchAll(/\/kindle-dbs\/product\/([A-Z0-9]{10})/gi)) {
+    add(match[1]);
+  }
+
+  if (candidates.length > 0) return candidates[0];
+  return fallback;
 }
 
 function isSeriesTitleHref(href) {
@@ -3486,6 +3561,26 @@ function extractDetail(html, labelPattern) {
     if (labelPattern.test(cleanText(match[1]))) return cleanText(match[2]);
   }
   return '';
+}
+
+function extractAmazonReleaseDate(html) {
+  const detail = cleanMetadataText(extractDetail(html, /発売日|配信日|Publication date/i));
+  const normalizedDetail = normalizeReleaseDate(detail);
+  if (normalizedDetail) return normalizedDetail;
+
+  const text = releaseDateText(String(html || '').slice(0, 300000));
+  const autoDelivery = text.match(/([12][0-9]{3}\s*(?:\/|年|-)\s*[0-9]{1,2}\s*(?:\/|月|-)\s*[0-9]{1,2})\s*(?:日)?\s*に、?\s*Kindleに自動配信/);
+  const normalizedAutoDelivery = normalizeReleaseDate(autoDelivery?.[1] || '');
+  if (normalizedAutoDelivery) return normalizedAutoDelivery;
+
+  const labelMatch = text.match(/(?:発売日|配信日|Publication date)\s*[:：]?\s*([12][0-9]{3}\s*(?:\/|年|-)\s*[0-9]{1,2}\s*(?:\/|月|-)\s*[0-9]{1,2})/i);
+  return normalizeReleaseDate(labelMatch?.[1] || '');
+}
+
+function releaseDateText(value) {
+  return decodeHtml(String(value || '').replace(/<[^>]+>/g, ' '))
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function extractLandingImage(html) {
