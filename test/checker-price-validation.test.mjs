@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   needsDiscountExpiryRecheck,
+  isFutureReleaseDate,
   priceIntegrityIssueForBook,
   repairStorePriceState,
   seriesSnapshotFromKindleSeriesForBook,
@@ -70,6 +71,12 @@ test('price validation accepts explicitly free Kindle prices', () => {
     }),
     ''
   );
+});
+
+test('future release dates are evaluated in JST', () => {
+  assert.equal(isFutureReleaseDate('2026-06-04', '2026-05-13T00:00:00+09:00'), true);
+  assert.equal(isFutureReleaseDate('2026-05-13', '2026-05-13T00:00:00+09:00'), false);
+  assert.equal(isFutureReleaseDate('2026-05-12', '2026-05-13T00:00:00+09:00'), false);
 });
 
 test('snapshot validation does not reject explicit Amazon HTML prices against stale stored list price', () => {

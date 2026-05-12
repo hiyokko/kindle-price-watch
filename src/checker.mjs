@@ -442,7 +442,12 @@ async function importSeriesIntoStore(store, input, series, options = {}) {
     }
     seriesItems.push(item);
   }
-  const regularSeriesItems = dropDuplicateAlternativeEditionItems(seriesItems, seriesErrors);
+  let regularSeriesItems = dropDuplicateAlternativeEditionItems(seriesItems, seriesErrors);
+  regularSeriesItems = await dropFutureReleaseNewSeriesItems(regularSeriesItems, store, seriesErrors, {
+    now,
+    signal: options.signal,
+    timeoutMs: options.timeoutMs
+  });
 
   if (isSingleBookSeriesCandidate(series, regularSeriesItems)) {
     return importSingleBookSeriesCandidateIntoStore(store, input, regularSeriesItems[0], {
@@ -603,6 +608,39 @@ function alternativeEditionRank(item = {}) {
     return 10;
   }
   return 0;
+}
+
+async function dropFutureReleaseNewSeriesItems(items = [], store = {}, errors = [], options = {}) {
+  const targets = futureReleaseValidationTargets(items, store);
+  if (targets.length === 0) return items;
+
+  const droppedAsins = new Set();
+  for (const item of targets) {
+    try {
+      const snapshot = await fetchAmazonHtmlSnapshotForSeriesBackfill(item.asin, item, options);
+      if (!isFutureReleaseDate(snapshot.releaseDate, options.now)) continue;
+      droppedAsins.add(item.asin);
+      errors.push(`${item.asin}: skipped future release (${snapshot.releaseDate})`);
+    } catch {
+      // If Amazon cannot confirm the release date, keep the candidate and let the normal price checks handle it.
+    }
+  }
+
+  if (droppedAsins.size === 0) return items;
+  return items.filter((item) => !droppedAsins.has(item.asin));
+}
+
+function futureReleaseValidationTargets(items = [], store = {}) {
+  const existingAsins = new Set((store.books || []).map((book) => book.asin).filter(Boolean));
+  const limit = floorNumber(process.env.SERIES_FUTURE_RELEASE_PROBE_LIMIT, 1, 5);
+  return items
+    .filter((item) => item?.asin && !existingAsins.has(item.asin))
+    .sort((left, right) => {
+      const volumeDiff = (seriesItemVolume(right) || 0) - (seriesItemVolume(left) || 0);
+      if (volumeDiff !== 0) return volumeDiff;
+      return String(right.asin || '').localeCompare(String(left.asin || ''));
+    })
+    .slice(0, limit);
 }
 
 async function importSingleBookSeriesCandidateIntoStore(store, input, item, options = {}) {
@@ -1231,7 +1269,7 @@ async function resolveSeriesCandidateDiffs(series, candidates, options = {}) {
     if (!item || !seriesItemNeedsBackfill(item, weakSeriesImageUrls([...itemsByAsin.values()]))) continue;
 
     try {
-      const snapshot = await fetchAmazonHtmlSnapshotForSeriesBackfill(asin, item);
+      const snapshot = await fetchAmazonHtmlSnapshotForSeriesBackfill(asin, item, options);
       const next = mergeAmazonSnapshotIntoSeriesItem(item, snapshot);
       if (next.currentPrice == null) {
         next.lastError = 'シリーズ価格補完: Amazon HTMLで価格を取得できませんでした';
@@ -1283,7 +1321,7 @@ function dropFutureReleaseItems(itemsByAsin, options = {}) {
   return dropped;
 }
 
-function isFutureReleaseDate(value, now = new Date()) {
+export function isFutureReleaseDate(value, now = new Date()) {
   const match = String(value || '').match(/^([0-9]{4})-([0-9]{2})-([0-9]{2})$/);
   if (!match) return false;
   const releaseDay = Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
@@ -1450,7 +1488,7 @@ function weakSeriesImageUrls(items = []) {
   return new Set([...counts.entries()].filter(([, count]) => count > 1).map(([url]) => url));
 }
 
-async function fetchAmazonHtmlSnapshotForSeriesBackfill(asin, seed = {}) {
+async function fetchAmazonHtmlSnapshotForSeriesBackfill(asin, seed = {}, options = {}) {
   const attempts = floorNumber(process.env.SERIES_PRICE_BACKFILL_ATTEMPTS, 1, 2);
   let lastSnapshot = null;
   let lastError = null;
@@ -1458,7 +1496,11 @@ async function fetchAmazonHtmlSnapshotForSeriesBackfill(asin, seed = {}) {
   for (const url of seriesBackfillUrls(asin)) {
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       try {
-        const snapshot = await fetchAmazonHtmlSnapshot(asin, url, seed);
+        const snapshot = await fetchAmazonHtmlSnapshot(asin, url, {
+          ...seed,
+          signal: options.signal,
+          timeoutMs: options.timeoutMs
+        });
         if (snapshot.currentPrice != null) return snapshot;
         lastSnapshot = snapshot;
       } catch (error) {
