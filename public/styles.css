@@ -114,18 +114,26 @@ a {
 
 .summary {
   display: grid;
-  gap: 4px;
+  align-content: start;
+  gap: 6px;
   padding: 18px;
   min-height: 88px;
 }
 
 .summary-value {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  min-height: 32px;
   font-size: 28px;
-  line-height: 1.1;
+  line-height: 1;
   font-weight: 800;
+  font-variant-numeric: tabular-nums;
 }
 
 .summary-button {
+  appearance: none;
+  -webkit-appearance: none;
   justify-content: flex-start;
   width: fit-content;
   min-height: 0;
@@ -155,7 +163,7 @@ a {
 
 .summary-value.compact {
   font-size: 18px;
-  line-height: 1.25;
+  line-height: 1.15;
 }
 
 .summary-label,
