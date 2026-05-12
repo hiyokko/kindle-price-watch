@@ -113,30 +113,32 @@ a {
 }
 
 .summary {
-  display: grid;
-  align-content: start;
-  gap: 6px;
-  padding: 18px;
-  min-height: 88px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: 10px;
+  padding: 18px 20px;
+  min-height: 104px;
 }
 
 .summary-value {
   display: inline-flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: flex-start;
-  min-height: 32px;
-  font-size: 28px;
-  line-height: 1;
+  min-height: 38px;
+  width: 100%;
+  font-size: 32px;
+  line-height: 1.05;
   font-weight: 800;
   font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
 }
 
 .summary-button {
   appearance: none;
   -webkit-appearance: none;
   justify-content: flex-start;
-  width: fit-content;
-  min-height: 0;
+  min-height: 38px;
   padding: 0;
   border: 0;
   border-radius: 0;
@@ -162,8 +164,25 @@ a {
 }
 
 .summary-value.compact {
-  font-size: 18px;
-  line-height: 1.15;
+  font-size: 17px;
+  line-height: 1.25;
+}
+
+#discordState,
+#cronState {
+  font-size: 17px;
+  line-height: 1.25;
+}
+
+#discordState {
+  white-space: nowrap;
+}
+
+#bookCount,
+#dropCount,
+#bestCount,
+#importQueueState {
+  font-size: 34px;
 }
 
 .summary-label,
@@ -173,6 +192,12 @@ a {
 .eyebrow {
   color: var(--muted);
   font-size: 12px;
+}
+
+.summary-label {
+  order: -1;
+  font-weight: 700;
+  line-height: 1.2;
 }
 
 .toolbar {
