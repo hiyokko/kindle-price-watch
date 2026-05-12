@@ -926,13 +926,26 @@ function compareGroupsByDiscountRate(a, b) {
   const br = discountSortRank(bm);
   if (ar !== br) return ar - br;
   if (am.discountRate !== bm.discountRate) return (bm.discountRate ?? -1) - (am.discountRate ?? -1);
+  if (am.discountComplete !== bm.discountComplete) return am.discountComplete ? -1 : 1;
+  const ac = discountCoverageRatio(am);
+  const bc = discountCoverageRatio(bm);
+  if (ac !== bc) return bc - ac;
   if (am.effectiveTotal !== bm.effectiveTotal) return am.effectiveTotal - bm.effectiveTotal;
   return String(a.title || '').localeCompare(String(b.title || ''), 'ja');
 }
 
 function discountSortRank(metrics) {
   if (metrics.discountRate == null) return 2;
-  return metrics.discountComplete ? 0 : 1;
+  return 0;
+}
+
+function discountCoverageRatio(metrics) {
+  const discountCount = Number(metrics.discountPricedCount || 0);
+  const missing = Number(metrics.missing || 0);
+  const unregistered = Number(metrics.unregistered || 0);
+  const denominator = discountCount + Math.max(0, missing) + Math.max(0, unregistered);
+  if (!Number.isFinite(denominator) || denominator <= 0) return 0;
+  return discountCount / denominator;
 }
 
 function expectedSeriesCount(books) {
