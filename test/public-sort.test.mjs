@@ -82,6 +82,47 @@ test('discount sort primarily orders by series discount rate', () => {
   assert.equal(compareGroupsByDiscountRate(incompleteHigherDiscount, completeLowerDiscount) < 0, true);
 });
 
+test('average price sort orders by per-book average before total price', () => {
+  const { compareGroupsByAveragePrice } = loadAppSortContext();
+  const lowerAverageHigherTotal = {
+    title: 'lower average higher total',
+    totalMetrics: {
+      pricedCount: 5,
+      complete: true,
+      totalPrice: 1000,
+      effectiveTotal: 1000,
+      averagePrice: 200,
+      averageEffectivePrice: 200
+    }
+  };
+  const higherAverageLowerTotal = {
+    title: 'higher average lower total',
+    totalMetrics: {
+      pricedCount: 2,
+      complete: true,
+      totalPrice: 600,
+      effectiveTotal: 600,
+      averagePrice: 300,
+      averageEffectivePrice: 300
+    }
+  };
+
+  assert.equal(compareGroupsByAveragePrice(lowerAverageHigherTotal, higherAverageLowerTotal) < 0, true);
+});
+
+test('series total label includes per-book average price', () => {
+  const { seriesTotalLabel } = loadAppSortContext();
+  const label = seriesTotalLabel({
+    books: [
+      { currentPrice: 300, currentPoints: 0, effectivePrice: 300 },
+      { currentPrice: 500, currentPoints: 0, effectivePrice: 500 }
+    ],
+    expectedCount: 2
+  });
+
+  assert.match(label, /合計 ¥800 \/ 平均 ¥400/);
+});
+
 test('discount sort uses completeness and coverage only as tie breakers', () => {
   const { compareGroupsByDiscountRate } = loadAppSortContext();
   const complete = {

@@ -889,6 +889,7 @@ function shouldDisplayGroupAsSingle(group) {
 
 function sortedGroups(groups) {
   if (state.sortMode === 'total_asc') return [...groups].sort(compareGroupsByTotalPrice);
+  if (state.sortMode === 'average_asc') return [...groups].sort(compareGroupsByAveragePrice);
   if (state.sortMode === 'discount_desc') return [...groups].sort(compareGroupsByDiscountRate);
   return [...groups].sort(compareGroupsByQueueOrder);
 }
@@ -917,6 +918,20 @@ function compareGroupsByTotalPrice(a, b) {
 function totalPriceSortRank(metrics) {
   if (metrics.pricedCount === 0) return 2;
   return metrics.complete ? 0 : 1;
+}
+
+function compareGroupsByAveragePrice(a, b) {
+  const am = a.totalMetrics || seriesTotalMetrics(a);
+  const bm = b.totalMetrics || seriesTotalMetrics(b);
+  const ar = totalPriceSortRank(am);
+  const br = totalPriceSortRank(bm);
+  if (ar !== br) return ar - br;
+  if (am.averagePrice !== bm.averagePrice) return (am.averagePrice ?? Infinity) - (bm.averagePrice ?? Infinity);
+  if (am.averageEffectivePrice !== bm.averageEffectivePrice) {
+    return (am.averageEffectivePrice ?? Infinity) - (bm.averageEffectivePrice ?? Infinity);
+  }
+  if (am.totalPrice !== bm.totalPrice) return am.totalPrice - bm.totalPrice;
+  return String(a.title || '').localeCompare(String(b.title || ''), 'ja');
 }
 
 function compareGroupsByDiscountRate(a, b) {
@@ -1119,15 +1134,16 @@ function formatPrice(book) {
 }
 
 function seriesTotalLabel(group) {
-  const { pricedCount, totalPrice, totalPoints, effectiveTotal, missing, unregistered, discountRate } =
+  const { pricedCount, totalPrice, totalPoints, effectiveTotal, averagePrice, missing, unregistered, discountRate } =
     group.totalMetrics || seriesTotalMetrics(group);
   if (pricedCount === 0) return '合計 未取得';
 
+  const average = averagePrice == null ? '' : ` / 平均 ${yen(averagePrice)}`;
   const points = totalPoints > 0 ? ` / ${totalPoints.toLocaleString('ja-JP')}pt（実質 ${yen(effectiveTotal)}）` : '';
   const discount = discountRate == null ? '' : ` / 割引 ${discountRateLabel(discountRate)}`;
   const missingText = missing > 0 ? ` / 未取得${missing}冊` : '';
   const unregisteredText = unregistered > 0 ? ` / 未登録${unregistered}冊` : '';
-  return `合計 ${yen(totalPrice)}${points}${discount}${missingText}${unregisteredText}`;
+  return `合計 ${yen(totalPrice)}${average}${points}${discount}${missingText}${unregisteredText}`;
 }
 
 function seriesTotalMetrics(group) {
@@ -1144,6 +1160,8 @@ function seriesTotalMetrics(group) {
   const discountEffectiveTotal = discountBooks.reduce((sum, book) => sum + Number(book.effectivePrice || 0), 0);
   const missing = group.books.length - pricedBooks.length;
   const unregistered = Math.max(0, (group.expectedCount || group.books.length) - group.books.length);
+  const averagePrice = pricedBooks.length > 0 ? Math.round(totalPrice / pricedBooks.length) : null;
+  const averageEffectivePrice = pricedBooks.length > 0 ? Math.round(effectiveTotal / pricedBooks.length) : null;
   const discountRate = listTotal > 0 ? calculateDiscountRate(discountEffectiveTotal, listTotal) : null;
   const discountComplete = discountBooks.length > 0 && discountBooks.length === group.books.length && missing === 0 && unregistered === 0;
 
@@ -1152,6 +1170,8 @@ function seriesTotalMetrics(group) {
     totalPrice,
     totalPoints,
     effectiveTotal,
+    averagePrice,
+    averageEffectivePrice,
     listTotal,
     discountEffectiveTotal,
     discountRate,
@@ -1282,7 +1302,7 @@ function isBlockingBookError(error) {
 function readSavedSortMode() {
   try {
     const value = localStorage.getItem('kw_sort_mode');
-    return ['total_asc', 'discount_desc'].includes(value) ? value : 'default';
+    return validSortModes().includes(value) ? value : 'default';
   } catch {
     return 'default';
   }
@@ -1290,10 +1310,14 @@ function readSavedSortMode() {
 
 function saveSortMode(value) {
   try {
-    localStorage.setItem('kw_sort_mode', ['total_asc', 'discount_desc'].includes(value) ? value : 'default');
+    localStorage.setItem('kw_sort_mode', validSortModes().includes(value) ? value : 'default');
   } catch {
     // Sorting still works for the current session if storage is unavailable.
   }
+}
+
+function validSortModes() {
+  return ['total_asc', 'average_asc', 'discount_desc'];
 }
 
 load().catch((error) => setMessage(error.message, 'error'));
