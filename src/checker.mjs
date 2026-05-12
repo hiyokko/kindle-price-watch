@@ -3229,6 +3229,7 @@ export async function runDueChecks(options = {}) {
     const results = [];
     let stoppedByRuntimeLimit = false;
     const processedBookIds = new Set();
+    let transientErrorStreak = 0;
     for (let index = 0; index < plan.books.length; index += 1) {
       if (shouldStopForRuntimeLimit(startedAt, maxRuntimeMs, results.length, saveReserveMs)) {
         stoppedByRuntimeLimit = true;
@@ -3282,10 +3283,22 @@ export async function runDueChecks(options = {}) {
       }
 
       if (isBlockingCheckResult(result)) {
+        transientErrorStreak = 0;
         if (!(await waitAfterBlockedCheck(pacing, startedAt, maxRuntimeMs, saveReserveMs))) {
           stoppedByRuntimeLimit = true;
           break;
         }
+      } else if (isTransientCheckResult(result)) {
+        transientErrorStreak += 1;
+        if (shouldCooldownAfterTransientErrorStreak(pacing, transientErrorStreak)) {
+          transientErrorStreak = 0;
+          if (!(await waitAfterTransientErrorChecks(pacing, startedAt, maxRuntimeMs, saveReserveMs))) {
+            stoppedByRuntimeLimit = true;
+            break;
+          }
+        }
+      } else {
+        transientErrorStreak = 0;
       }
 
       if (shouldStopForRuntimeLimit(startedAt, maxRuntimeMs, results.length, saveReserveMs)) {
@@ -6221,7 +6234,9 @@ function checkPacing() {
   return {
     delayMs: floorNumber(process.env.CHECK_REQUEST_DELAY_MS, 0, 1800),
     jitterMs: floorNumber(process.env.CHECK_REQUEST_JITTER_MS, 0, 1200),
-    blockCooldownMs: floorNumber(process.env.CHECK_BLOCK_COOLDOWN_MS, 0, 60000)
+    blockCooldownMs: floorNumber(process.env.CHECK_BLOCK_COOLDOWN_MS, 0, 60000),
+    transientErrorCooldownMs: floorNumber(process.env.CHECK_TRANSIENT_ERROR_COOLDOWN_MS, 0, 60000),
+    transientErrorCooldownThreshold: floorNumber(process.env.CHECK_TRANSIENT_ERROR_COOLDOWN_THRESHOLD, 1, 50)
   };
 }
 
@@ -6240,6 +6255,20 @@ async function waitBeforeCheck(pacing, completedCount, startedAt, maxRuntimeMs, 
 async function waitAfterBlockedCheck(pacing, startedAt, maxRuntimeMs, reserveMs = 0) {
   return sleepWithinRuntime(
     randomizedDelay(pacing.blockCooldownMs, Math.floor(pacing.blockCooldownMs / 3)),
+    startedAt,
+    maxRuntimeMs,
+    reserveMs
+  );
+}
+
+function shouldCooldownAfterTransientErrorStreak(pacing, streak) {
+  const threshold = Math.max(1, Number(pacing.transientErrorCooldownThreshold || 0));
+  return pacing.transientErrorCooldownMs > 0 && streak >= threshold;
+}
+
+async function waitAfterTransientErrorChecks(pacing, startedAt, maxRuntimeMs, reserveMs = 0) {
+  return sleepWithinRuntime(
+    randomizedDelay(pacing.transientErrorCooldownMs, Math.floor(pacing.transientErrorCooldownMs / 3)),
     startedAt,
     maxRuntimeMs,
     reserveMs
@@ -6309,6 +6338,11 @@ function randomizedDelay(baseMs, jitterMs) {
 function isBlockingCheckResult(result) {
   const value = String(result?.error || result?.book?.lastError || '');
   return isBlockingSnapshotError(value);
+}
+
+function isTransientCheckResult(result) {
+  const value = checkResultErrorMessage(result);
+  return Boolean(value && isTransientSnapshotError(value));
 }
 
 function sleep(ms) {
