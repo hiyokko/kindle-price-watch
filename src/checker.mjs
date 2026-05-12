@@ -1841,7 +1841,8 @@ export function repairStorePriceState(store, options = {}) {
       currentRestored: 0,
       removedHistory: 0,
       removedNotifications: 0,
-      singleSeriesDemoted: 0
+      singleSeriesDemoted: 0,
+      seriesDiscoveryDeferred: 0
     };
   }
 
@@ -1853,7 +1854,8 @@ export function repairStorePriceState(store, options = {}) {
     currentRestored: 0,
     removedHistory: 0,
     removedNotifications: 0,
-    singleSeriesDemoted: 0
+    singleSeriesDemoted: 0,
+    seriesDiscoveryDeferred: 0
   };
 
   const classificationRepair = repairSingleBookSeriesClassifications(store, { now });
@@ -1867,6 +1869,12 @@ export function repairStorePriceState(store, options = {}) {
   if (seriesNameRepair.changed) {
     summary.changed = true;
     summary.booksRepaired += seriesNameRepair.booksRepaired;
+  }
+
+  const discoveryRepair = repairDeferredSeriesDiscoveryErrors(store, { now });
+  if (discoveryRepair.changed) {
+    summary.changed = true;
+    summary.seriesDiscoveryDeferred += discoveryRepair.deferred;
   }
 
   for (const book of store.books) {
@@ -1907,6 +1915,26 @@ export function repairStorePriceState(store, options = {}) {
   }
 
   return summary;
+}
+
+function repairDeferredSeriesDiscoveryErrors(store, options = {}) {
+  const now = options.now || new Date().toISOString();
+  let deferred = 0;
+  for (const group of seriesDiscoveryGroups(store.books || [])) {
+    const hasDeferrableError = group.books.some(
+      (book) =>
+        book.seriesDiscoveryStatus === 'error' &&
+        /シリーズ内のKindle ASINを取得できませんでした/.test(String(book.seriesDiscoveryError || ''))
+    );
+    if (!hasDeferrableError || !hasCompleteKnownSeriesCoverage(group)) continue;
+    markSeriesDiscoveryDeferredInStore(store, group, now, 'source_unavailable');
+    deferred += 1;
+  }
+
+  return {
+    changed: deferred > 0,
+    deferred
+  };
 }
 
 function repairStoredSeriesNames(store, options = {}) {
@@ -3277,6 +3305,7 @@ export async function runDueChecks(options = {}) {
         })
       : null;
 
+    const checkErrorSummary = summarizeCheckResultErrors(results);
     const seriesNotifications = await sendDeferredSeriesNotifications(store, seriesNotificationBaselines, {
       ...options,
       getWebhookUrls
@@ -3297,6 +3326,7 @@ export async function runDueChecks(options = {}) {
       importQueue,
       seriesDiscovery,
       priceIntegrityAudit,
+      checkErrorSummary,
       seriesNotifications,
       results
     };
@@ -3315,6 +3345,9 @@ export async function runDueChecks(options = {}) {
           lastCronChecked: result.checked,
           lastCronRemainingDue: result.remainingDue,
           lastCronStoppedByRuntimeLimit: result.stoppedByRuntimeLimit,
+          lastCronResultErrors: checkErrorSummary.total,
+          lastCronErrorBreakdown: checkErrorSummary.breakdown,
+          lastCronErrorSamples: checkErrorSummary.samples,
           lastImportQueueProcessed: importQueue?.processed || 0,
           lastImportQueueImported: importQueue?.imported || 0,
           lastImportQueueErrors: importQueue?.errors?.length || 0,
@@ -3322,11 +3355,14 @@ export async function runDueChecks(options = {}) {
           lastSeriesDiscoveryAdded: seriesDiscovery?.added || 0,
           lastSeriesDiscoveryCompleted: seriesDiscovery?.completed || 0,
           lastSeriesDiscoverySkipped: seriesDiscovery?.skippedNoRun || 0,
+          lastSeriesDiscoveryDeferred: seriesDiscovery?.deferred || 0,
           lastSeriesDiscoveryErrors: seriesDiscovery?.errors?.length || 0,
           lastPriceIntegrityAuditChecked: priceIntegrityAudit?.checked || 0,
           lastPriceIntegrityAuditSuspicious: priceIntegrityAudit?.suspicious || 0,
+          lastPriceIntegrityAuditWarnings: priceIntegrityAudit?.warnings || 0,
           lastPriceIntegrityAuditRepaired: priceIntegrityAudit?.repaired || 0,
           lastPriceIntegrityAuditUnresolved: priceIntegrityAudit?.unresolved || 0,
+          lastPriceIntegrityAuditFindings: priceIntegrityAudit?.findings || [],
           lastCronError: ''
         }
       : null;
@@ -3370,6 +3406,63 @@ export async function runDueChecks(options = {}) {
     }
     throw error;
   }
+}
+
+export function summarizeCheckResultErrors(results = []) {
+  const buckets = new Map();
+  const samples = [];
+
+  for (const entry of results || []) {
+    if (entry?.ok !== false && !entry?.error) continue;
+    const error = checkResultErrorMessage(entry);
+    if (!error) continue;
+    const reason = normalizeCheckErrorReason(error);
+    const current = buckets.get(reason) || { reason, count: 0 };
+    current.count += 1;
+    buckets.set(reason, current);
+
+    if (samples.length < 10) {
+      samples.push({
+        asin: entry?.book?.asin || '',
+        title: entry?.book?.title || '',
+        seriesName: entry?.book?.seriesName || '',
+        volume: entry?.book?.volume || '',
+        reason,
+        error: truncateSummaryText(error, 120)
+      });
+    }
+  }
+
+  const breakdown = [...buckets.values()]
+    .sort((left, right) => right.count - left.count || left.reason.localeCompare(right.reason, 'ja'))
+    .slice(0, 10);
+
+  return {
+    total: [...buckets.values()].reduce((sum, entry) => sum + entry.count, 0),
+    breakdown,
+    samples
+  };
+}
+
+function checkResultErrorMessage(entry = {}) {
+  return String(entry.error || entry.book?.lastError || '').trim();
+}
+
+function normalizeCheckErrorReason(error = '') {
+  const text = String(error || '').replace(/\s+/g, ' ').trim();
+  if (!text) return '不明な取得エラー';
+  if (isBlockingSnapshotError(text)) return 'Amazonブロック/HTTP制限';
+  if (/タイムアウト|aborted|AbortError/i.test(text)) return 'タイムアウト';
+  if (/価格を取得できませんでした/.test(text)) return '価格を取得できませんでした';
+  if (/疑わしい価格を無視しました/.test(text)) return '疑わしい価格を無視しました';
+  if (/商品ページではなくエラーページ|エラーページを返しました/.test(text)) return 'Amazonエラーページ';
+  if (/Kindle版(?:ASIN|商品)ではありません/.test(text)) return 'Kindle版ではありません';
+  return truncateSummaryText(text, 80);
+}
+
+function truncateSummaryText(value = '', limit = 80) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  return text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
 }
 
 function shouldRunPriceIntegrityAudit(source, options = {}) {
@@ -3534,7 +3627,15 @@ function isSamePriceIntegritySeries(left, right) {
 
 function trustedSeriesOutlierProvider(book = {}) {
   const normalized = String(book.provider || '').toLowerCase();
-  if (normalized === 'amazon_html') return Boolean(book.explicitPriceDisplay || book.explicitFreeKindlePrice);
+  if (normalized === 'amazon_html') {
+    if (book.explicitPriceDisplay || book.explicitFreeKindlePrice) return true;
+    const price = nullableNumber(book.currentPrice);
+    const effective = nullableNumber(book.effectivePrice ?? book.currentPrice);
+    const points = nullableNumber(book.currentPoints) || 0;
+    if (price != null && effective != null && price >= 100 && effective >= 100 && points <= price * 0.2) {
+      return true;
+    }
+  }
   return ['amazon_series_child', 'amazon_series_bulk', 'keepa'].includes(normalized);
 }
 
@@ -3571,8 +3672,10 @@ async function runSeriesDiscoveryPlan(store, plan, options = {}) {
   const saveReserveMs = Number(options.saveReserveMs || 0);
   const results = [];
   const errors = [];
+  const deferredEntries = [];
   let added = 0;
   let completed = 0;
+  const skippedNoRun = Number(plan.skippedNoRun || 0);
   let stoppedByRuntimeLimit = false;
 
   for (const group of plan.groups) {
@@ -3631,6 +3734,19 @@ async function runSeriesDiscoveryPlan(store, plan, options = {}) {
       recordSeriesDiscoveryCursorInStore(store, group, now);
     } catch (error) {
       const message = error.message || String(error);
+      if (shouldDeferSeriesDiscoveryError(group, message)) {
+        const reason = 'source_unavailable';
+        deferredEntries.push({
+          seriesKey: group.seriesKey,
+          sourceUrl: group.sourceUrl,
+          seriesName: group.seriesName,
+          reason,
+          error: message
+        });
+        markSeriesDiscoveryDeferredInStore(store, group, now, reason);
+        recordSeriesDiscoveryCursorInStore(store, group, now);
+        continue;
+      }
       errors.push({
         seriesKey: group.seriesKey,
         sourceUrl: group.sourceUrl,
@@ -3658,9 +3774,11 @@ async function runSeriesDiscoveryPlan(store, plan, options = {}) {
     checked: results.length + errors.length,
     added,
     completed,
-    skippedNoRun: plan.skippedNoRun,
+    skippedNoRun,
     skippedCompleted: plan.skippedCompleted,
     markedNoRun: plan.markedNoRun,
+    deferred: deferredEntries.length,
+    deferredEntries,
     stoppedByRuntimeLimit,
     cursor: store.seriesDiscoveryCursor,
     results,
@@ -3679,10 +3797,12 @@ function mergeSeriesDiscoverySummaries(base, next) {
     skippedNoRun: Number(base.skippedNoRun || 0) + Number(next.skippedNoRun || 0),
     skippedCompleted: Number(base.skippedCompleted || 0) + Number(next.skippedCompleted || 0),
     markedNoRun: Number(base.markedNoRun || 0) + Number(next.markedNoRun || 0),
+    deferred: Number(base.deferred || 0) + Number(next.deferred || 0),
     stoppedByRuntimeLimit: Boolean(base.stoppedByRuntimeLimit || next.stoppedByRuntimeLimit),
     cursor: next.cursor || base.cursor,
     targetKeys: [...new Set([...(base.targetKeys || []), ...(next.targetKeys || [])])],
     results: [...(base.results || []), ...(next.results || [])],
+    deferredEntries: [...(base.deferredEntries || []), ...(next.deferredEntries || [])],
     errors: [...(base.errors || []), ...(next.errors || [])]
   };
 }
@@ -3693,6 +3813,10 @@ function seriesDiscoveryKeys(seriesDiscovery = null) {
     if (key) keys.add(key);
   }
   for (const entry of seriesDiscovery?.results || []) {
+    const key = entry.seriesKey || entry.sourceUrl || '';
+    if (key) keys.add(key);
+  }
+  for (const entry of seriesDiscovery?.deferredEntries || []) {
     const key = entry.seriesKey || entry.sourceUrl || '';
     if (key) keys.add(key);
   }
@@ -4030,6 +4154,26 @@ function bookBelongsToSeriesDiscoveryGroup(book, group) {
   return false;
 }
 
+function shouldDeferSeriesDiscoveryError(group, error) {
+  if (!/シリーズ内のKindle ASINを取得できませんでした/.test(String(error || ''))) return false;
+  return hasCompleteKnownSeriesCoverage(group);
+}
+
+function hasCompleteKnownSeriesCoverage(group = {}) {
+  const books = Array.isArray(group.books) ? group.books : [];
+  if (books.length < 2) return false;
+  const expected = Math.max(...books.map((book) => Number(book.seriesExpectedCount || 0)).filter((value) => value > 0), 0);
+  const volumes = new Set(books.map((book) => Number(book.volume || 0)).filter((value) => value > 0));
+  const maxVolume = volumes.size > 0 ? Math.max(...volumes) : 0;
+  if (maxVolume < 2) return false;
+  for (let volume = 1; volume <= maxVolume; volume += 1) {
+    if (!volumes.has(volume)) return false;
+  }
+  const knownCount = Math.max(books.length, volumes.size);
+  if (expected > 0) return knownCount >= expected && maxVolume >= expected;
+  return knownCount >= maxVolume;
+}
+
 function rotateSeriesGroupsAfterCursor(groups, lastSeriesKey = '') {
   if (!Array.isArray(groups) || groups.length === 0) return [];
   const cursorIndex = groups.findIndex((group) => group.seriesKey === lastSeriesKey);
@@ -4057,8 +4201,20 @@ function shouldStopSeriesDiscoveryForRuntimeLimit(startedAt, maxRuntimeMs, compl
 
 function markSeriesDiscoveryErrorInStore(store, group, now, error) {
   for (const book of store.books) {
-    if (book.seriesKey !== group.seriesKey) continue;
+    if (!bookBelongsToSeriesDiscoveryGroup(book, group)) continue;
     applySeriesDiscoveryMetadata(book, { now, error });
+  }
+}
+
+function markSeriesDiscoveryDeferredInStore(store, group, now, reason) {
+  for (const book of store.books) {
+    if (!bookBelongsToSeriesDiscoveryGroup(book, group)) continue;
+    book.seriesLastDiscoveredAt = now;
+    book.seriesDiscoveryStatus = 'deferred';
+    book.seriesDiscoverySkipReason = reason || 'source_unavailable';
+    book.seriesDiscoverySkippedAt = '';
+    book.seriesDiscoveryError = '';
+    book.updatedAt = now;
   }
 }
 
@@ -4657,7 +4813,11 @@ function cronSummaryPayload(result, context = {}) {
     remainingDue: result.remainingDue,
     stoppedByRuntimeLimit: result.stoppedByRuntimeLimit,
     forced: result.forced,
-    resultErrors: (result.results || []).filter((entry) => entry?.ok === false || entry?.error).length,
+    resultErrors:
+      result.checkErrorSummary?.total ??
+      (result.results || []).filter((entry) => entry?.ok === false || entry?.error).length,
+    checkErrorBreakdown: result.checkErrorSummary?.breakdown || [],
+    checkErrorSamples: result.checkErrorSummary?.samples || [],
     notificationSent: notifications.filter((entry) => entry.ok === true).length,
     notificationFailed: notifications.filter((entry) => entry.ok === false).length,
     importQueue: result.importQueue
@@ -4674,6 +4834,7 @@ function cronSummaryPayload(result, context = {}) {
           completed: result.seriesDiscovery.completed || 0,
           skippedNoRun: result.seriesDiscovery.skippedNoRun || 0,
           skippedCompleted: result.seriesDiscovery.skippedCompleted || 0,
+          deferred: result.seriesDiscovery.deferred || 0,
           markedNoRun: result.seriesDiscovery.markedNoRun || 0,
           errors: result.seriesDiscovery.errors?.length || 0
         }
@@ -4686,7 +4847,8 @@ function cronSummaryPayload(result, context = {}) {
           rechecked: result.priceIntegrityAudit.rechecked || 0,
           repaired: result.priceIntegrityAudit.repaired || 0,
           unresolved: result.priceIntegrityAudit.unresolved || 0,
-          skipped: result.priceIntegrityAudit.skipped || 0
+          skipped: result.priceIntegrityAudit.skipped || 0,
+          findings: result.priceIntegrityAudit.findings || []
         }
       : null
   };
@@ -6234,6 +6396,7 @@ function hasSeriesDiscoveryWork(seriesDiscovery = null) {
     seriesDiscovery.added > 0 ||
     seriesDiscovery.completed > 0 ||
     seriesDiscovery.skippedNoRun > 0 ||
+    seriesDiscovery.deferred > 0 ||
     seriesDiscovery.stoppedByRuntimeLimit ||
     (Array.isArray(seriesDiscovery.errors) && seriesDiscovery.errors.length > 0)
   );

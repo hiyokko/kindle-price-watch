@@ -7,6 +7,7 @@ import {
   repairStorePriceState,
   seriesSnapshotFromKindleSeriesForBook,
   snapshotInputUrlForBook,
+  summarizeCheckResultErrors,
   suspiciousSnapshotReason,
   suspiciousPriceReason
 } from '../src/checker.mjs';
@@ -240,6 +241,98 @@ test('price integrity audit warns on low-confidence series outliers', () => {
   const issue = priceIntegrityIssueForBook(store.books[0], store);
   assert.equal(issue.severity, 'warning');
   assert.match(issue.reason, /シリーズ中央値/);
+});
+
+test('price integrity audit trusts plausible Amazon HTML sale prices', () => {
+  const store = {
+    books: [
+      {
+        id: 'book-1',
+        asin: 'B00TEST001',
+        title: '通常セール 1',
+        seriesKey: 'series:asin:B00SERIES1',
+        currentPrice: 110,
+        currentPoints: 1,
+        effectivePrice: 109,
+        provider: 'amazon_html'
+      },
+      ...[2, 3, 4].map((volume) => ({
+        id: `book-${volume}`,
+        asin: `B00TEST00${volume}`,
+        title: `通常セール ${volume}`,
+        seriesKey: 'series:asin:B00SERIES1',
+        currentPrice: 396,
+        currentPoints: 4,
+        effectivePrice: 392,
+        provider: 'amazon_series_child'
+      }))
+    ]
+  };
+
+  assert.equal(priceIntegrityIssueForBook(store.books[0], store), null);
+});
+
+test('check result error summary groups transient failures', () => {
+  const summary = summarizeCheckResultErrors([
+    {
+      ok: false,
+      error: '価格を取得できませんでした',
+      book: { asin: 'B00TEST001', title: '取得失敗 1' }
+    },
+    {
+      ok: false,
+      error: 'HTTP 503',
+      book: { asin: 'B00TEST002', title: '取得失敗 2' }
+    },
+    {
+      ok: true,
+      book: { asin: 'B00TEST003', title: '成功' }
+    }
+  ]);
+
+  assert.equal(summary.total, 2);
+  assert.deepEqual(
+    summary.breakdown.map((entry) => [entry.reason, entry.count]),
+    [
+      ['Amazonブロック/HTTP制限', 1],
+      ['価格を取得できませんでした', 1]
+    ]
+  );
+  assert.equal(summary.samples.length, 2);
+});
+
+test('store repair defers nonfatal series discovery source errors for complete known coverage', () => {
+  const store = {
+    books: [1, 2, 3].map((volume) => ({
+      id: `series-${volume}`,
+      asin: `B00SERIES${volume}`,
+      title: `保留シリーズ ${volume}`,
+      seriesName: '保留シリーズ',
+      seriesKey: 'series:asin:B00SERIES1',
+      sourceUrl: 'https://www.amazon.co.jp/dp/B00SERIES1',
+      importMode: 'kindle_series',
+      seriesExpectedCount: 3,
+      volume,
+      currentPrice: 396,
+      currentPoints: 0,
+      effectivePrice: 396,
+      provider: 'amazon_series_bulk',
+      seriesDiscoveryStatus: 'error',
+      seriesDiscoveryError: 'シリーズ内のKindle ASINを取得できませんでした'
+    })),
+    priceHistory: [],
+    notifications: [],
+    seriesPriceHistory: []
+  };
+
+  const summary = repairStorePriceState(store, {
+    clearCurrent: false,
+    now: '2026-05-12T03:00:00.000Z'
+  });
+
+  assert.equal(summary.seriesDiscoveryDeferred, 1);
+  assert.equal(store.books.every((book) => book.seriesDiscoveryStatus === 'deferred'), true);
+  assert.equal(store.books.every((book) => book.seriesDiscoveryError === ''), true);
 });
 
 test('series snapshots prefer validated series page prices for checked series books', () => {

@@ -103,6 +103,16 @@ export function buildCronSummaryNotification(summary = {}) {
     { name: '実行時間', value: formatDuration(durationMs), inline: true },
     { name: '残件', value: `${remainingDue.toLocaleString('ja-JP')}冊`, inline: true },
     resultErrors > 0 ? { name: '取得エラー', value: `${resultErrors.toLocaleString('ja-JP')}冊`, inline: true } : null,
+    resultErrors > 0 && Array.isArray(summary.checkErrorBreakdown) && summary.checkErrorBreakdown.length > 0
+      ? {
+          name: '取得エラー内訳',
+          value: summary.checkErrorBreakdown
+            .slice(0, 5)
+            .map((entry) => `${entry.reason}: ${Number(entry.count || 0).toLocaleString('ja-JP')}`)
+            .join('\n'),
+          inline: false
+        }
+      : null,
     notificationSent + notificationFailed > 0
       ? {
           name: '価格通知',
@@ -120,7 +130,7 @@ export function buildCronSummaryNotification(summary = {}) {
     summary.seriesDiscovery
       ? {
           name: 'シリーズ探索',
-          value: `確認 ${Number(summary.seriesDiscovery.checked || 0).toLocaleString('ja-JP')} / 新規 ${Number(summary.seriesDiscovery.added || 0).toLocaleString('ja-JP')} / 実行なし ${Number(summary.seriesDiscovery.skippedNoRun || 0).toLocaleString('ja-JP')} / エラー ${Number(summary.seriesDiscovery.errors || 0).toLocaleString('ja-JP')}`,
+          value: `確認 ${Number(summary.seriesDiscovery.checked || 0).toLocaleString('ja-JP')} / 新規 ${Number(summary.seriesDiscovery.added || 0).toLocaleString('ja-JP')} / 実行なし ${Number(summary.seriesDiscovery.skippedNoRun || 0).toLocaleString('ja-JP')} / 保留 ${Number(summary.seriesDiscovery.deferred || 0).toLocaleString('ja-JP')} / エラー ${Number(summary.seriesDiscovery.errors || 0).toLocaleString('ja-JP')}`,
           inline: false
         }
       : null,

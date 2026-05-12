@@ -35,6 +35,9 @@ const defaultStore = {
     lastCronChecked: 0,
     lastCronRemainingDue: 0,
     lastCronStoppedByRuntimeLimit: false,
+    lastCronResultErrors: 0,
+    lastCronErrorBreakdown: [],
+    lastCronErrorSamples: [],
     lastCronError: '',
     lastImportQueueProcessed: 0,
     lastImportQueueImported: 0,
@@ -43,7 +46,14 @@ const defaultStore = {
     lastSeriesDiscoveryAdded: 0,
     lastSeriesDiscoveryCompleted: 0,
     lastSeriesDiscoverySkipped: 0,
-    lastSeriesDiscoveryErrors: 0
+    lastSeriesDiscoveryDeferred: 0,
+    lastSeriesDiscoveryErrors: 0,
+    lastPriceIntegrityAuditChecked: 0,
+    lastPriceIntegrityAuditSuspicious: 0,
+    lastPriceIntegrityAuditWarnings: 0,
+    lastPriceIntegrityAuditRepaired: 0,
+    lastPriceIntegrityAuditUnresolved: 0,
+    lastPriceIntegrityAuditFindings: []
   },
   checkCursor: {
     lastBookId: '',

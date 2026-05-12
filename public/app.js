@@ -1015,6 +1015,7 @@ function latestSeriesDiscoveryError(books) {
 
 function aggregateSeriesDiscoveryStatus(books) {
   if (books.some((book) => book.seriesDiscoveryStatus === 'error')) return 'error';
+  if (books.some((book) => book.seriesDiscoveryStatus === 'deferred')) return 'deferred';
   if (books.some((book) => book.seriesDiscoveryStatus === 'checked')) return 'checked';
   if (books.some((book) => book.seriesDiscoveryStatus === 'skipped')) return 'skipped';
   return '';
@@ -1198,6 +1199,7 @@ function seriesStatusLabel(group) {
     return `新刊探索 実行なし（${reason}）`;
   }
   const discovered = group.seriesLastDiscoveredAt ? `新刊探索 ${relativeTime(group.seriesLastDiscoveredAt)}` : '新刊探索 未実行';
+  if (group.seriesDiscoveryStatus === 'deferred') return `${discovered}（保留）`;
   return group.seriesDiscoveryError ? `${discovered}（要確認）` : discovered;
 }
 

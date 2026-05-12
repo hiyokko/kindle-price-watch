@@ -115,6 +115,8 @@ GitHub Actionsでは毎日JST 03:54と15:54にWorkflowを起動します。ア�
 
 Blob Advanced Operationsを抑えるため、定期実行では本ごとに保存せず、価格チェック・画像未取得の補完・通知状態・シリーズ合計価格履歴・シリーズ新刊探索結果・カーソルをメモリ上で更新して最後にまとめて保存します。正常終了またはアプリ側のランタイム停止判定で終了した場合は、最後に確認できた本を `checkCursor` として保存し、次回はその続きから確認します。
 
+定期実行サマリーでは取得エラー件数だけでなく、エラー内訳と代表サンプルをBlobの `automation.lastCronErrorBreakdown` / `automation.lastCronErrorSamples` に残します。シリーズ新刊探索で既存の巻数が連番で揃っているにもかかわらずAmazon側からシリーズ内ASIN一覧だけ取れない場合は、価格チェック全体の失敗ではなく一時的な「保留」として記録し、次回以降も再試行します。価格監査は1円・2円・ポイント誤読のような異常値を検知しつつ、100円台以上の通常セール価格は低すぎるという理由だけでは警告にしません。
+
 Fast Origin Transferを抑えるため、Blob読み込みはプロセス内で短時間キャッシュします。`BLOB_STORE_MEMORY_CACHE_MS` でキャッシュ時間を調整できます。また、価格履歴は価格・ポイント・実質価格・定価が変わった時だけ追加し、単巻は `PRICE_HISTORY_MAX_ENTRIES_PER_BOOK` 件、シリーズ合計は `SERIES_PRICE_HISTORY_MAX_ENTRIES_PER_SERIES` 件まで保持します。シリーズ合計履歴では上限外でも観測済み最安のエントリを保持します。`SERIES_TOTAL_OBSERVATION_RUNS` はシリーズ合計として同一観測扱いする直近実行枠数で、未設定時は5回です。
 
 ### GitHub Actionsログ確認
@@ -128,7 +130,7 @@ node scripts/github-actions.mjs jobs <run-id>
 node scripts/github-actions.mjs logs <run-id> --grep 'timeout|SIGTERM|CHECK_HARD_TIMEOUT|error'
 ```
 
-定期実行時は、登録済みシリーズのAmazonシリーズページも巡回し、新しい巻が見つかった場合は自動で追加します。明示的に完結が確認できたシリーズには完結フラグと新刊探索の「実行なし」状態を保存し、次回以降の新刊探索から除外します。未探索のシリーズは「未実行」、完結などで今後探索しないシリーズは「実行なし」として画面上でも区別します。`SERIES_DISCOVERY_BATCH_SIZE` を設定すると、1回の実行で探索するシリーズ数を調整できます。`SERIES_DISCOVERY_INTERVAL_HOURS` の既定値は24時間です。
+定期実行時は、登録済みシリーズのAmazonシリーズページも巡回し、新しい巻が見つかった場合は自動で追加します。明示的に完結が確認できたシリーズには完結フラグと新刊探索の「実行なし」状態を保存し、次回以降の新刊探索から除外します。未探索のシリーズは「未実行」、完結などで今後探索しないシリーズは「実行なし」、Amazon側の一時的なシリーズ一覧取得失敗は「保留」として画面上でも区別します。`SERIES_DISCOVERY_BATCH_SIZE` を設定すると、1回の実行で探索するシリーズ数を調整できます。`SERIES_DISCOVERY_INTERVAL_HOURS` の既定値は24時間です。
 
 GitHub Actionsの手動実行では、`force_all` を有効にすると24時間以内に確認済みの本も保存した件数まで再確認します。
 
