@@ -1749,6 +1749,7 @@ function repairSuspiciousPriceState(book, store, options = {}) {
   let currentCleared = false;
   let currentRestored = false;
 
+  if (clearStaleSeriesDerivedListPrice(book, store)) changed = true;
   if (clearUnreliableStoredListPrice(book)) changed = true;
 
   if (
@@ -1831,7 +1832,7 @@ function repairSuspiciousPriceState(book, store, options = {}) {
   return { changed, currentCleared, currentRestored, removedHistory, removedNotifications };
 }
 
-function repairStorePriceState(store, options = {}) {
+export function repairStorePriceState(store, options = {}) {
   if (!store || !Array.isArray(store.books)) {
     return {
       changed: false,
@@ -2291,6 +2292,50 @@ function clearUnreliableStoredListPrice(book) {
   if (!shouldIgnoreListPriceForProvider(book.currentPrice, book.listPrice, book.provider)) return false;
   book.listPrice = null;
   return true;
+}
+
+function clearStaleSeriesDerivedListPrice(book, store) {
+  const listPrice = nullableNumber(book?.listPrice);
+  if (listPrice == null) return false;
+
+  const shouldClear =
+    isSeriesDerivedPriceProvider(book.provider) ||
+    hasSeriesDerivedListPriceHistory(book, store, listPrice);
+  if (!shouldClear) return false;
+
+  let changed = false;
+  if (book.listPrice != null) {
+    book.listPrice = null;
+    changed = true;
+  }
+
+  const history = Array.isArray(store?.priceHistory) ? store.priceHistory : [];
+  for (const entry of history) {
+    if (!isPriceHistoryEntryForBook(entry, book)) continue;
+    if (nullableNumber(entry.listPrice) !== listPrice) continue;
+    if (entry.listPrice == null) continue;
+    entry.listPrice = null;
+    changed = true;
+  }
+
+  return changed;
+}
+
+function hasSeriesDerivedListPriceHistory(book, store, listPrice) {
+  const history = Array.isArray(store?.priceHistory) ? store.priceHistory : [];
+  return history.some(
+    (entry) =>
+      isPriceHistoryEntryForBook(entry, book) &&
+      nullableNumber(entry.listPrice) === listPrice &&
+      isSeriesDerivedPriceProvider(entry.provider)
+  );
+}
+
+function isPriceHistoryEntryForBook(entry, book) {
+  if (!entry || !book) return false;
+  if (entry.bookId && book.id && entry.bookId === book.id) return true;
+  if (entry.asin && book.asin && String(entry.asin).toUpperCase() === String(book.asin).toUpperCase()) return true;
+  return false;
 }
 
 function trustedListPriceFor(currentPrice, listPrice, provider) {

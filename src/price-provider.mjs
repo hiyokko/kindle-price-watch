@@ -2964,14 +2964,20 @@ function withPreferredSeriesPricing(base, primary = {}, fallback = {}) {
   if (!Number.isFinite(currentPrice) || currentPrice < 0) return base;
 
   const currentPoints = sanitizePoints(priced.currentPoints ?? 0, currentPrice);
+  const provider = priced.provider || base.provider;
   return {
     ...base,
     currentPrice,
     currentPoints,
     effectivePrice: Math.max(0, Math.round(currentPrice - currentPoints)),
-    listPrice: priced.listPrice ?? base.listPrice ?? null,
-    provider: priced.provider || base.provider
+    listPrice: shouldDropSeriesItemListPrice(provider) ? null : priced.listPrice ?? base.listPrice ?? null,
+    provider
   };
+}
+
+function shouldDropSeriesItemListPrice(provider) {
+  const normalized = String(provider || '').toLowerCase();
+  return normalized.includes('_series') || normalized === 'amazon_series_bulk' || normalized === 'amazon_series_reader';
 }
 
 function extractAsinFromProductHref(fragment) {

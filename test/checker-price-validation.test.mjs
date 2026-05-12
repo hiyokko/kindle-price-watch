@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   needsDiscountExpiryRecheck,
   priceIntegrityIssueForBook,
+  repairStorePriceState,
   seriesSnapshotFromKindleSeriesForBook,
   snapshotInputUrlForBook,
   suspiciousSnapshotReason,
@@ -285,6 +286,59 @@ test('series snapshots do not reuse stale stored list prices for discounts', () 
 
   assert.equal(snapshot.currentPrice, 594);
   assert.equal(snapshot.listPrice, null);
+});
+
+test('store repair clears stale series-derived aggregate list prices after later single-page checks', () => {
+  const store = {
+    books: [
+      {
+        id: 'book-1',
+        asin: 'B0DGL9JJMJ',
+        title: '国宝 １',
+        currentPrice: 759,
+        currentPoints: 28,
+        effectivePrice: 731,
+        listPrice: 2310,
+        provider: 'amazon_html',
+        lowestPrice: 759,
+        lowestEffectivePrice: 731
+      }
+    ],
+    priceHistory: [
+      {
+        bookId: 'book-1',
+        asin: 'B0DGL9JJMJ',
+        price: 759,
+        points: 0,
+        effectivePrice: 759,
+        listPrice: 2310,
+        provider: 'amazon_series_bulk',
+        checkedAt: '2026-05-11T17:11:10.480Z'
+      },
+      {
+        bookId: 'book-1',
+        asin: 'B0DGL9JJMJ',
+        price: 759,
+        points: 28,
+        effectivePrice: 731,
+        listPrice: 2310,
+        provider: 'amazon_html',
+        checkedAt: '2026-05-11T22:49:29.824Z'
+      }
+    ],
+    notifications: [],
+    seriesPriceHistory: []
+  };
+
+  const summary = repairStorePriceState(store, {
+    clearCurrent: false,
+    now: '2026-05-12T01:00:00.000Z'
+  });
+
+  assert.equal(summary.changed, true);
+  assert.equal(store.books[0].currentPrice, 759);
+  assert.equal(store.books[0].listPrice, null);
+  assert.equal(store.priceHistory.every((entry) => entry.listPrice == null), true);
 });
 
 test('series snapshots reject unvalidated source-wide series prices', () => {
