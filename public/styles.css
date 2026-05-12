@@ -143,6 +143,11 @@ a {
   color: var(--teal-strong);
 }
 
+.summary-button:disabled {
+  color: var(--text);
+  cursor: default;
+}
+
 .summary-button:focus-visible {
   outline: 3px solid rgba(39, 140, 132, 0.18);
   outline-offset: 4px;

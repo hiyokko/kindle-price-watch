@@ -123,6 +123,57 @@ test('series total label includes per-book average price', () => {
   assert.match(label, /合計 ¥800 \/ 平均 ¥400/);
 });
 
+test('last cron new releases are inferred from series discovery additions', () => {
+  const { newReleaseBooksFromLastCron } = loadAppSortContext();
+  const automation = {
+    lastCronStartedAt: '2026-05-12T09:28:35.000Z',
+    lastCronFinishedAt: '2026-05-12T14:25:52.000Z',
+    lastSeriesDiscoveryAdded: 2
+  };
+  const books = [
+    {
+      id: 'existing',
+      title: '既存巻',
+      importMode: 'kindle_series',
+      createdAt: '2026-05-01T00:00:00.000Z',
+      seriesLastDiscoveredAt: '2026-05-12T09:42:44.000Z'
+    },
+    {
+      id: 'queued-import',
+      title: '追加キュー',
+      importMode: 'kindle_series',
+      createdAt: '2026-05-12T09:28:35.000Z',
+      seriesLastDiscoveredAt: '2026-05-12T09:28:35.000Z'
+    },
+    {
+      id: 'new-1',
+      title: '新刊1',
+      importMode: 'kindle_series',
+      createdAt: '2026-05-12T10:00:00.000Z',
+      seriesLastDiscoveredAt: '2026-05-12T10:00:00.000Z'
+    },
+    {
+      id: 'new-2',
+      title: '新刊2',
+      importMode: 'kindle_series',
+      createdAt: '2026-05-12T11:00:00.000Z',
+      seriesLastDiscoveredAt: '2026-05-12T11:00:00.000Z'
+    },
+    {
+      id: 'manual',
+      title: '手動追加',
+      importMode: 'single',
+      createdAt: '2026-05-12T12:00:00.000Z',
+      seriesLastDiscoveredAt: '2026-05-12T12:00:00.000Z'
+    }
+  ];
+
+  assert.deepEqual(
+    newReleaseBooksFromLastCron(books, automation).map((book) => book.id),
+    ['new-2', 'new-1']
+  );
+});
+
 test('discount sort uses completeness and coverage only as tie breakers', () => {
   const { compareGroupsByDiscountRate } = loadAppSortContext();
   const complete = {

@@ -123,6 +123,7 @@ els.checkAllButton.addEventListener('click', async () => {
 els.refreshButton.addEventListener('click', load);
 els.bookCount.addEventListener('click', () => setBookFilter('all'));
 els.bestCount.addEventListener('click', () => setBookFilter(state.activeFilter === 'best' ? 'all' : 'best'));
+els.cronState.addEventListener('click', () => setBookFilter(state.activeFilter === 'new' ? 'all' : 'new'));
 els.discordState.addEventListener('click', openWebhookDialog);
 els.importQueueState.addEventListener('click', openImportQueueDialog);
 els.sortInput.value = state.sortMode;
@@ -270,10 +271,16 @@ function renderSummary() {
   els.discordState.textContent = discordSummaryText();
   els.discordState.title = 'Webhookを編集';
   els.cronState.textContent = cronSummary(state.automation);
+  els.cronState.disabled = lastCronNewReleaseCount(state.automation) === 0;
+  els.cronState.classList.toggle('active', state.activeFilter === 'new');
+  els.cronState.setAttribute('aria-pressed', String(state.activeFilter === 'new'));
+  els.cronState.title = lastCronNewReleaseCount(state.automation) > 0
+    ? '直近の自動実行で追加された新刊のみ表示'
+    : '直近の自動実行で追加された新刊はありません';
 }
 
 function setBookFilter(filter) {
-  state.activeFilter = filter;
+  state.activeFilter = filter === 'new' && lastCronNewReleaseCount(state.automation) === 0 ? 'all' : filter;
   state.selectedBookIds.clear();
   renderBooks();
   renderBulkControls();
@@ -431,10 +438,13 @@ function renderBooks() {
   if (groups.length === 0 && queued.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'book-card';
-    empty.innerHTML =
+    const emptyMessage =
       state.activeFilter === 'best'
         ? '<div class="book-body"><h2 class="book-title">過去最安の本はありません</h2><p class="book-meta">フィルタを解除すると全件を表示します。</p></div>'
-        : '<div class="book-body"><h2 class="book-title">まだ本がありません</h2><p class="book-meta">Amazon URLかASINを追加してください。</p></div>';
+        : state.activeFilter === 'new'
+          ? '<div class="book-body"><h2 class="book-title">直近自動実行の新刊はありません</h2><p class="book-meta">フィルタを解除すると全件を表示します。</p></div>'
+          : '<div class="book-body"><h2 class="book-title">まだ本がありません</h2><p class="book-meta">Amazon URLかASINを追加してください。</p></div>';
+    empty.innerHTML = emptyMessage;
     els.bookGrid.append(empty);
     renderBulkControls();
     return;
@@ -457,7 +467,35 @@ function renderBooks() {
 
 function filteredGroups() {
   if (state.activeFilter === 'best') return state.groups.filter(isGroupAtBestEver);
+  if (state.activeFilter === 'new') {
+    return newReleaseBooksFromLastCron(state.books, state.automation).map((book, index) => bookFilterGroup(book, index));
+  }
   return state.groups;
+}
+
+function bookFilterGroup(book, order = 0) {
+  const group = {
+    key: `filter:${book.id}`,
+    order,
+    seriesKey: '',
+    sourceUrl: '',
+    isSeries: false,
+    title: book.title,
+    expectedCount: 1,
+    seriesCompleted: false,
+    seriesLastDiscoveredAt: book.seriesLastDiscoveredAt || '',
+    seriesDiscoveryStatus: book.seriesDiscoveryStatus || '',
+    seriesDiscoverySkipReason: book.seriesDiscoverySkipReason || '',
+    seriesDiscoverySkippedAt: book.seriesDiscoverySkippedAt || '',
+    seriesDiscoveryError: book.seriesDiscoveryError || '',
+    books: [book],
+    checkedCount: book.lastCheckedAt ? 1 : 0,
+    lastCheckedAt: book.lastCheckedAt || '',
+    sortCheckedAt: groupCheckedSortTime([book]),
+    sortRegisteredAt: groupRegistrationSortTime([book])
+  };
+  group.totalMetrics = seriesTotalMetrics(group);
+  return group;
 }
 
 function pendingImportQueueEntries() {
@@ -1237,6 +1275,62 @@ function cronSummary(automation) {
   const added = Number(automation.lastSeriesDiscoveryAdded || 0);
   const time = relativeTime(automation.lastCronFinishedAt || automation.lastCronStartedAt);
   return `${time} / ${checked}冊${added > 0 ? ` / 新刊${added}冊` : ''}`;
+}
+
+function lastCronNewReleaseCount(automation) {
+  const count = Number(automation?.lastSeriesDiscoveryAdded || 0);
+  return Number.isFinite(count) && count > 0 ? Math.floor(count) : 0;
+}
+
+function newReleaseBooksFromLastCron(books, automation) {
+  const count = lastCronNewReleaseCount(automation);
+  if (count === 0 || !Array.isArray(books) || books.length === 0) return [];
+
+  const window = lastCronTimestampWindow(automation);
+  if (!window) return [];
+
+  return books
+    .filter((book) => isLastCronSeriesDiscoveryAddition(book, window))
+    .sort(compareLastCronNewReleaseBooks)
+    .slice(0, count);
+}
+
+function lastCronTimestampWindow(automation) {
+  const startedAt = timestampMs(automation?.lastCronStartedAt);
+  const finishedAt = timestampMs(automation?.lastCronFinishedAt);
+  if (startedAt == null && finishedAt == null) return null;
+
+  const baseStart = startedAt ?? finishedAt;
+  const baseFinish = finishedAt ?? startedAt;
+  return {
+    start: baseStart - 5 * 60 * 1000,
+    end: baseFinish + 5 * 60 * 1000
+  };
+}
+
+function isLastCronSeriesDiscoveryAddition(book, window) {
+  if (book?.importMode !== 'kindle_series') return false;
+  const createdAt = timestampMs(book.createdAt);
+  const discoveredAt = timestampMs(book.seriesLastDiscoveredAt);
+  return createdAt != null && discoveredAt != null && isTimestampInWindow(createdAt, window) && isTimestampInWindow(discoveredAt, window);
+}
+
+function compareLastCronNewReleaseBooks(a, b) {
+  const createdDiff = (timestampMs(b.createdAt) || 0) - (timestampMs(a.createdAt) || 0);
+  if (createdDiff !== 0) return createdDiff;
+  const discoveredDiff = (timestampMs(b.seriesLastDiscoveredAt) || 0) - (timestampMs(a.seriesLastDiscoveredAt) || 0);
+  if (discoveredDiff !== 0) return discoveredDiff;
+  return String(a.title || '').localeCompare(String(b.title || ''), 'ja');
+}
+
+function isTimestampInWindow(time, window) {
+  return time >= window.start && time <= window.end;
+}
+
+function timestampMs(value) {
+  if (!value) return null;
+  const time = new Date(value).getTime();
+  return Number.isFinite(time) && time > 0 ? time : null;
 }
 
 function dateLabel(date) {
