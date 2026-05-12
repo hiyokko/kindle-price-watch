@@ -228,6 +228,27 @@ test('series snapshots prefer validated series page prices for checked series bo
   assert.equal(snapshot.provider, 'amazon_series_child');
 });
 
+test('series snapshots do not reuse stale stored list prices for discounts', () => {
+  const snapshot = seriesSnapshotFromKindleSeriesForBook({
+    items: [
+      {
+        asin: 'B0B6FJ8589',
+        currentPrice: 594,
+        currentPoints: 0,
+        effectivePrice: 594,
+        provider: 'amazon_series_bulk'
+      }
+    ]
+  }, 'B0B6FJ8589', {
+    title: '天幕のジャードゥーガル 1',
+    listPrice: 2376,
+    provider: 'amazon_series_bulk'
+  });
+
+  assert.equal(snapshot.currentPrice, 594);
+  assert.equal(snapshot.listPrice, null);
+});
+
 test('series snapshots reject unvalidated source-wide series prices', () => {
   assert.equal(
     seriesSnapshotFromKindleSeriesForBook({

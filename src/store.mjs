@@ -139,6 +139,7 @@ export async function updateStore(mutator) {
 }
 
 export function publicBook(book) {
+  const listPrice = publicListPrice(book);
   return {
     id: book.id,
     asin: book.asin,
@@ -156,8 +157,8 @@ export function publicBook(book) {
     currentPrice: book.currentPrice,
     currentPoints: book.currentPoints,
     effectivePrice: book.effectivePrice,
-    listPrice: book.listPrice,
-    discountRate: discountRate(book.effectivePrice, book.listPrice),
+    listPrice,
+    discountRate: discountRate(book.effectivePrice, listPrice),
     lowestPrice: book.lowestPrice,
     lowestEffectivePrice: book.lowestEffectivePrice,
     previousEffectivePrice: book.previousEffectivePrice,
@@ -174,6 +175,16 @@ export function publicBook(book) {
     lastError: book.lastError,
     provider: book.provider
   };
+}
+
+function publicListPrice(book) {
+  if (!book || isSeriesDerivedPriceProvider(book.provider)) return null;
+  return book.listPrice;
+}
+
+function isSeriesDerivedPriceProvider(provider) {
+  const normalized = String(provider || '').toLowerCase();
+  return normalized.includes('_series') || normalized === 'amazon_series_bulk' || normalized === 'amazon_series_reader';
 }
 
 function discountRate(effectivePrice, listPrice) {

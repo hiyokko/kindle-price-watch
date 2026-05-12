@@ -2154,10 +2154,7 @@ function mergedSnapshotListPrice(snapshot, existingListPrice) {
 }
 
 function shouldIgnoreListPriceForProvider(currentPrice, listPrice, provider) {
-  if (!isSeriesDerivedPriceProvider(provider)) return false;
-  const current = Number(currentPrice);
-  const list = Number(listPrice);
-  return Number.isFinite(current) && current > 0 && Number.isFinite(list) && list > 0 && current > list;
+  return isSeriesDerivedPriceProvider(provider);
 }
 
 function isSeriesDerivedPriceProvider(provider) {
@@ -4510,7 +4507,7 @@ export function seriesSnapshotFromKindleSeriesForBook(series, asin, book = {}) {
     currentPrice,
     currentPoints,
     effectivePrice,
-    listPrice: trustedListPriceFor(currentPrice, item.listPrice ?? book.listPrice, provider),
+    listPrice: trustedListPriceFor(currentPrice, item.listPrice, provider),
     provider
   };
 }
