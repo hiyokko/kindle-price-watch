@@ -29,6 +29,22 @@ test('Amazon series names drop store chrome, author text, and volume markers', (
   );
 });
 
+test('Amazon series parser keeps bulk volume when child list repeats the first volume title', () => {
+  const items = extractKindleSeriesItemsFromHtml(`
+    <meta property="og:title" content="進撃の巨人 (全34巻)" />
+    <div data-offer-asins="B009KYC6S6,B009KYC6SQ,B009KYC6U4,B009KYC6UY"></div>
+    <div id="series-childAsin-list">
+      <div id="series-childAsin-item_0" data-asin="B009KYC6UY">
+        <a href="/dp/B009KYC6UY" title="進撃の巨人 １">進撃の巨人 １</a>
+      </div>
+    </div>
+  `);
+
+  const fourth = items.find((item) => item.asin === 'B009KYC6UY');
+  assert.equal(fourth.volume, 4);
+  assert.equal(fourth.title, '進撃の巨人 ４');
+});
+
 test('Amazon HTML parser keeps explicit Kindle price separate from discount and points', () => {
   const snapshot = extractAmazonHtmlSnapshotFromHtml(productHtml({
     title: '火の鳥 3',

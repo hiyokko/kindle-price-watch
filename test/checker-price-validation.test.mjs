@@ -362,6 +362,90 @@ test('store repair clears stale series-derived aggregate list prices after later
   assert.equal(store.priceHistory.every((entry) => entry.listPrice == null), true);
 });
 
+test('store repair canonicalizes series bulk titles and fixes duplicated sequential volumes', () => {
+  const store = {
+    books: [1, 2, 1, 4, 5].map((volume, index) => ({
+      id: `attack-${index + 1}`,
+      asin: `B00ATTACK${index + 1}`,
+      title: '進撃の巨人 １',
+      seriesName: '進撃の巨人',
+      seriesKey: 'series:asin:B009KYC6S6',
+      seriesExpectedCount: 5,
+      importMode: 'kindle_series',
+      volume,
+      currentPrice: 594,
+      currentPoints: 0,
+      effectivePrice: 594,
+      provider: 'amazon_series_bulk'
+    })),
+    priceHistory: [],
+    notifications: [],
+    seriesPriceHistory: []
+  };
+
+  const summary = repairStorePriceState(store, {
+    clearCurrent: false,
+    now: '2026-05-12T02:30:00.000Z'
+  });
+
+  assert.equal(summary.changed, true);
+  assert.deepEqual(store.books.map((book) => book.volume), [1, 2, 3, 4, 5]);
+  assert.deepEqual(store.books.map((book) => book.title), [
+    '進撃の巨人 １',
+    '進撃の巨人 ２',
+    '進撃の巨人 ３',
+    '進撃の巨人 ４',
+    '進撃の巨人 ５'
+  ]);
+});
+
+test('store repair canonicalizes noisy series child titles for the same series', () => {
+  const store = {
+    books: [
+      {
+        id: 'kaiji-1',
+        asin: 'B00KAIJI01',
+        title: '賭博堕天録 カイジ 和也編 １ 賭博堕天録カイジ 和也編',
+        seriesName: '賭博堕天録 カイジ 和也編',
+        seriesKey: 'series:asin:B00KAIJI01',
+        seriesExpectedCount: 3,
+        importMode: 'kindle_series',
+        volume: 1,
+        currentPrice: 440,
+        currentPoints: 0,
+        effectivePrice: 440,
+        provider: 'amazon_series_child'
+      },
+      {
+        id: 'bambi-1',
+        asin: 'B00BAMBI01',
+        title: 'BAMBi 1 remodeled BAMBi remodeled (ビームコミックス)',
+        seriesName: 'BAMBi remodeled',
+        seriesKey: 'series:asin:B00BAMBI01',
+        seriesExpectedCount: 6,
+        importMode: 'kindle_series',
+        volume: 1,
+        currentPrice: 440,
+        currentPoints: 0,
+        effectivePrice: 440,
+        provider: 'amazon_series_child'
+      }
+    ],
+    priceHistory: [],
+    notifications: [],
+    seriesPriceHistory: []
+  };
+
+  const summary = repairStorePriceState(store, {
+    clearCurrent: false,
+    now: '2026-05-12T02:30:00.000Z'
+  });
+
+  assert.equal(summary.changed, true);
+  assert.equal(store.books[0].title, '賭博堕天録 カイジ 和也編 １');
+  assert.equal(store.books[1].title, 'BAMBi remodeled １');
+});
+
 test('series snapshots reject unvalidated source-wide series prices', () => {
   assert.equal(
     seriesSnapshotFromKindleSeriesForBook({

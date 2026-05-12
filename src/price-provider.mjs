@@ -2844,7 +2844,7 @@ function mergeSeriesItemsWithChildItems(items = [], childItems = []) {
 function mergeSeriesItemWithChildItem(item, childItem) {
   const merged = {
     ...item,
-    title: betterText(childItem.title, item.title),
+    title: preferredSeriesItemTitle(item, childItem),
     imageUrl: childItem.imageUrl || item.imageUrl || '',
     imageSource: childItem.imageUrl ? childItem.imageSource || 'amazon_series_child' : item.imageSource || '',
     amazonUrl: childItem.amazonUrl || item.amazonUrl,
@@ -2947,13 +2947,32 @@ function mergeBulkSeriesItem(bulkItem, childItem) {
   if (!childItem) return bulkItem;
   const merged = {
     ...bulkItem,
-    title: betterText(childItem.title, bulkItem.title),
+    title: preferredSeriesItemTitle(bulkItem, childItem),
     imageUrl: childItem.imageUrl || bulkItem.imageUrl || '',
     imageSource: childItem.imageUrl ? childItem.imageSource || 'amazon_series_child' : bulkItem.imageSource || '',
     amazonUrl: childItem.amazonUrl || bulkItem.amazonUrl,
-    volume: childItem.volume || bulkItem.volume
+    volume: bulkItem.volume || childItem.volume
   };
   return withPreferredSeriesPricing(merged, childItem, bulkItem);
+}
+
+function preferredSeriesItemTitle(primary = {}, secondary = {}) {
+  const primaryTitle = cleanText(primary.title);
+  const secondaryTitle = cleanText(secondary.title);
+  const primaryVolume = Number(primary.volume) || 0;
+  const secondaryTitleVolume = extractExternalVolumeFromTitle(secondaryTitle);
+
+  if (
+    primaryTitle &&
+    !/^ASIN\s+[A-Z0-9]{10}$/i.test(primaryTitle) &&
+    primaryVolume > 0 &&
+    secondaryTitleVolume > 0 &&
+    secondaryTitleVolume !== primaryVolume
+  ) {
+    return primaryTitle;
+  }
+
+  return betterText(secondaryTitle, primaryTitle);
 }
 
 function withPreferredSeriesPricing(base, primary = {}, fallback = {}) {

@@ -1912,27 +1912,33 @@ export function repairStorePriceState(store, options = {}) {
 function repairStoredSeriesNames(store, options = {}) {
   const now = options.now || new Date().toISOString();
   const groups = new Map();
-  for (const book of store.books || []) {
+  for (const [index, book] of (store.books || []).entries()) {
     if (!isSeriesBookRecord(book)) continue;
     const key = book.seriesKey || book.sourceUrl || `series:${book.id}`;
     if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(book);
+    groups.get(key).push({ book, index });
   }
 
   let booksRepaired = 0;
-  for (const books of groups.values()) {
+  for (const entries of groups.values()) {
+    const books = entries.map((entry) => entry.book);
     const canonical = canonicalStoredSeriesName(books);
     if (!canonical) continue;
 
+    const previousVolumes = new Map(books.map((book) => [book, book.volume]));
+    repairSequentialStoredSeriesVolumes(entries);
     const previousNames = [...new Set(books.map((book) => String(book.seriesName || '').trim()).filter(Boolean))];
     for (const book of books) {
       let changed = false;
+      if (String(previousVolumes.get(book) || '') !== String(book.volume || '')) {
+        changed = true;
+      }
       if (book.seriesName !== canonical) {
         book.seriesName = canonical;
         changed = true;
       }
       if (shouldRepairStoredSeriesBookTitle(book, previousNames)) {
-        book.title = storedSeriesVolumeTitle(canonical, seriesItemVolume(book));
+        book.title = storedSeriesVolumeTitle(canonical, storedBookVolume(book));
         changed = true;
       }
       if (changed) {
@@ -1946,6 +1952,38 @@ function repairStoredSeriesNames(store, options = {}) {
     changed: booksRepaired > 0,
     booksRepaired
   };
+}
+
+function repairSequentialStoredSeriesVolumes(entries = []) {
+  if (entries.length < 3) return 0;
+
+  const ordered = [...entries].sort((left, right) => left.index - right.index);
+  const volumes = ordered.map((entry) => storedBookVolume(entry.book));
+  const nonZero = volumes.filter((volume) => volume > 0);
+  if (nonZero.length < 2) return 0;
+
+  const uniqueVolumes = new Set(nonZero);
+  const hasDuplicateVolumes = uniqueVolumes.size < nonZero.length;
+  if (!hasDuplicateVolumes) return 0;
+
+  const maxStoredVolume = Math.max(...nonZero);
+  const expectedCount = Math.max(
+    ordered.length,
+    ...ordered.map((entry) => Number(entry.book.seriesExpectedCount) || 0)
+  );
+  const sequentialMatches = volumes.filter((volume, index) => volume === index + 1).length;
+  const strongSequentialEvidence = sequentialMatches >= Math.max(2, Math.floor(ordered.length * 0.6));
+  const boundedCompleteSeries = expectedCount === ordered.length && maxStoredVolume <= ordered.length;
+  if (!strongSequentialEvidence && !boundedCompleteSeries) return 0;
+
+  let repaired = 0;
+  for (const [index, entry] of ordered.entries()) {
+    const expectedVolume = index + 1;
+    if (storedBookVolume(entry.book) === expectedVolume) continue;
+    entry.book.volume = expectedVolume;
+    repaired += 1;
+  }
+  return repaired;
 }
 
 function isSeriesBookRecord(book = {}) {
@@ -2000,7 +2038,26 @@ function shouldRepairStoredSeriesBookTitle(book, previousNames = []) {
   const title = String(book?.title || '').trim();
   if (!title) return true;
   if (isDirtyAmazonSeriesText(title)) return true;
+  if (shouldCanonicalizeStoredSeriesBookTitle(book)) return true;
   return previousNames.some((name) => name && name !== book.seriesName && title.startsWith(name));
+}
+
+function shouldCanonicalizeStoredSeriesBookTitle(book = {}) {
+  if (!isSeriesDerivedPriceProvider(book.provider)) return false;
+  if (!book.seriesName || storedBookVolume(book) <= 0) return false;
+  const canonical = storedSeriesVolumeTitle(book.seriesName, storedBookVolume(book));
+  if (String(book.title || '').trim() === canonical) return false;
+  const titleCore = seriesTitleComparisonCore(book.title);
+  const seriesCore = seriesTitleComparisonCore(book.seriesName);
+  return (
+    cleanStoredSeriesName(book.title) === cleanStoredSeriesName(book.seriesName) ||
+    Boolean(titleCore && seriesCore && titleCore.includes(seriesCore))
+  );
+}
+
+function storedBookVolume(book = {}) {
+  const volume = Number(book.volume);
+  return Number.isFinite(volume) && volume > 0 ? volume : seriesItemVolume(book);
 }
 
 function isDirtyAmazonSeriesText(value) {
@@ -2686,7 +2743,17 @@ function compareSeriesItemSeeds(a, b) {
 }
 
 function seriesItemVolume(item) {
-  return volumeFromSeriesTitle(item?.title) || Number(item?.volume) || 0;
+  const titleVolume = volumeFromSeriesTitle(item?.title);
+  const explicitVolume = Number(item?.volume) || 0;
+  if (
+    explicitVolume > 0 &&
+    titleVolume > 0 &&
+    titleVolume !== explicitVolume &&
+    isSeriesDerivedPriceProvider(item?.provider)
+  ) {
+    return explicitVolume;
+  }
+  return titleVolume || explicitVolume || 0;
 }
 
 function volumeFromSeriesTitle(title) {
