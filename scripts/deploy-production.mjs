@@ -120,7 +120,7 @@ async function vercelDeployCommands() {
   });
 
   const bundledNpm = '/private/tmp/npm-cli/package/bin/npm-cli.js';
-  if (await exists(bundledNpm)) {
+  if (await isRunnableBundledNpm(bundledNpm)) {
     commands.push({
       label: bundledNpm,
       command: process.execPath,
@@ -142,6 +142,12 @@ async function vercelDeployCommands() {
   );
 
   return commands;
+}
+
+async function isRunnableBundledNpm(binPath) {
+  if (!(await exists(binPath))) return false;
+  const packageRoot = path.resolve(path.dirname(binPath), '..');
+  return exists(path.join(packageRoot, 'lib', 'cli.js'));
 }
 
 async function exists(filePath) {
