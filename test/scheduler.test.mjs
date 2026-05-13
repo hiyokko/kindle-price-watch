@@ -13,6 +13,26 @@ test('delayed evening backup still targets the 15:54 JST execution window', () =
   assert.equal(intent.stale, false);
 });
 
+test('late evening backup still targets the 15:54 JST execution window', () => {
+  const now = Date.UTC(2026, 4, 10, 10, 9); // 2026-05-10 19:09 JST
+  const intent = resolveCronScheduleIntent('7 10 * * *', now);
+
+  assert.equal(intent.backup, true);
+  assert.equal(intent.executionBoundaryAt, '2026-05-10T06:54:00.000Z');
+  assert.equal(intent.nextExecutionBoundaryAt, '2026-05-10T18:54:00.000Z');
+  assert.equal(intent.stale, false);
+});
+
+test('late morning backup still targets the 03:54 JST execution window', () => {
+  const now = Date.UTC(2026, 4, 10, 22, 9); // 2026-05-11 07:09 JST
+  const intent = resolveCronScheduleIntent('7 22 * * *', now);
+
+  assert.equal(intent.backup, true);
+  assert.equal(intent.executionBoundaryAt, '2026-05-10T18:54:00.000Z');
+  assert.equal(intent.nextExecutionBoundaryAt, '2026-05-11T06:54:00.000Z');
+  assert.equal(intent.stale, false);
+});
+
 test('a scheduled run is stale after the next execution window begins', () => {
   const now = Date.UTC(2026, 4, 10, 19, 0); // 2026-05-11 04:00 JST
   const intent = resolveCronScheduleIntent('7 7 * * *', now);

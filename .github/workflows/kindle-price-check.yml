@@ -16,9 +16,13 @@ on:
     - cron: "7 19 * * *"
     - cron: "37 19 * * *"
     - cron: "17 20 * * *"
+    - cron: "7 21 * * *"
+    - cron: "7 22 * * *"
     - cron: "7 7 * * *"
     - cron: "37 7 * * *"
     - cron: "17 8 * * *"
+    - cron: "7 9 * * *"
+    - cron: "7 10 * * *"
 
 concurrency:
   group: kindle-price-check
@@ -29,7 +33,7 @@ env:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 330
     env:
       BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
@@ -58,7 +62,7 @@ jobs:
       LISTASIN_EARLY_FALLBACK: "true"
       FORCE_CHECK_ALL: ${{ github.event_name == 'workflow_dispatch' && inputs.force_all }}
       CHECK_SCHEDULE_CRON: ${{ github.event.schedule }}
-      CHECK_BACKUP_RUN: ${{ github.event_name == 'schedule' && (github.event.schedule == '7 19 * * *' || github.event.schedule == '37 19 * * *' || github.event.schedule == '17 20 * * *' || github.event.schedule == '7 7 * * *' || github.event.schedule == '37 7 * * *' || github.event.schedule == '17 8 * * *') }}
+      CHECK_BACKUP_RUN: ${{ github.event_name == 'schedule' && github.event.schedule != '54 18 * * *' && github.event.schedule != '54 6 * * *' }}
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
     steps:
       - name: Checkout
