@@ -1360,8 +1360,9 @@ async function fetchFromAmazonHtml(asin, inputUrl = '', options = {}) {
   let lastSnapshot = null;
   const errors = [];
   let amazonBlocked = false;
+  let listasinTried = false;
 
-  for (const url of amazonProductCandidateUrls(asin, inputUrl)) {
+  for (const url of amazonProductCandidateUrls(asin, inputUrl, options)) {
     try {
       const html = await fetchAmazonHtml(url, options);
       const snapshot = isAmazonSearchUrl(url)
@@ -1376,6 +1377,16 @@ async function fetchFromAmazonHtml(asin, inputUrl = '', options = {}) {
         amazonBlocked = true;
         break;
       }
+    }
+  }
+
+  if (shouldUseEarlyListasinFallback(options)) {
+    listasinTried = true;
+    try {
+      const snapshot = await fetchFromListasin(asin, snapshotSeedFromOptions(asin, options, lastSnapshot), options);
+      return lastSnapshot ? mergeSnapshotLike(lastSnapshot, snapshot) : snapshot;
+    } catch (error) {
+      errors.push(`listasIn: ${error.message}`);
     }
   }
 
@@ -1401,11 +1412,13 @@ async function fetchFromAmazonHtml(asin, inputUrl = '', options = {}) {
     errors.push(`Kintyaku: ${error.message}`);
   }
 
-  try {
-    const snapshot = await fetchFromListasin(asin, snapshotSeedFromOptions(asin, options, lastSnapshot), options);
-    return lastSnapshot ? mergeSnapshotLike(lastSnapshot, snapshot) : snapshot;
-  } catch (error) {
-    errors.push(`listasIn: ${error.message}`);
+  if (!listasinTried) {
+    try {
+      const snapshot = await fetchFromListasin(asin, snapshotSeedFromOptions(asin, options, lastSnapshot), options);
+      return lastSnapshot ? mergeSnapshotLike(lastSnapshot, snapshot) : snapshot;
+    } catch (error) {
+      errors.push(`listasIn: ${error.message}`);
+    }
   }
 
   if (!lastSnapshot && isLegacyPhysicalProductAsin(asin)) throw nonKindleProductError();
@@ -1471,7 +1484,7 @@ function titleFromSnapshotSeed(seed = {}) {
   return '';
 }
 
-function amazonProductCandidateUrls(asin, inputUrl = '') {
+function amazonProductCandidateUrls(asin, inputUrl = '', options = {}) {
   const normalizedAsin = String(asin || '').toUpperCase();
   const urls = [];
   const add = (value, options = {}) => {
@@ -1487,6 +1500,8 @@ function amazonProductCandidateUrls(asin, inputUrl = '') {
   add(base);
   add(withAmazonSearchParams(base, { binding: 'kindle_edition', ref: 'dbs_dp_rwt_sb_pc_tkin' }));
 
+  if (options.allowAmazonExtendedFallback === false) return urls;
+
   try {
     const baseUrl = new URL(base);
     const host = baseUrl.host;
@@ -1496,10 +1511,12 @@ function amazonProductCandidateUrls(asin, inputUrl = '') {
     add(`https://${host}/gp/product/${normalizedAsin}?storeType=ebooks`);
     add(`https://${host}/gp/product/${normalizedAsin}?binding=kindle_edition&ref=dbs_dp_rwt_sb_pc_tkin`);
     add(`https://${host}/gp/aw/d/${normalizedAsin}`);
-    for (const query of amazonSearchQueriesForInput(inputUrl, normalizedAsin)) {
-      add(`https://${host}/s?k=${encodeURIComponent(query)}&i=digital-text`, { skipAsinCheck: true });
+    if (options.allowAmazonSearchFallback !== false) {
+      for (const query of amazonSearchQueriesForInput(inputUrl, normalizedAsin)) {
+        add(`https://${host}/s?k=${encodeURIComponent(query)}&i=digital-text`, { skipAsinCheck: true });
+      }
+      add(`https://${host}/s?k=${normalizedAsin}&i=digital-text`, { skipAsinCheck: true });
     }
-    add(`https://${host}/s?k=${normalizedAsin}&i=digital-text`, { skipAsinCheck: true });
   } catch {
     // Keep the canonical URL candidates.
   }
@@ -1570,6 +1587,11 @@ function withAmazonSearchParams(value, params) {
 
 function shouldUseAmazonReaderFallback() {
   return String(process.env.AMAZON_READER_FALLBACK || 'true').toLowerCase() !== 'false';
+}
+
+function shouldUseEarlyListasinFallback(options = {}) {
+  if (options.preferListasinFallback === false) return false;
+  return String(process.env.LISTASIN_EARLY_FALLBACK || 'true').toLowerCase() !== 'false';
 }
 
 async function fetchFromAmazonReader(asin, inputUrl = '', options = {}) {

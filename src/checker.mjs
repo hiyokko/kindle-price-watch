@@ -284,7 +284,8 @@ async function addBooksFromInputInStore(store, input, options = {}) {
       skipBackfill: options.skipBackfill === true,
       now: options.now,
       signal: options.signal,
-      timeoutMs: options.timeoutMs
+      timeoutMs: options.timeoutMs,
+      seriesCandidateCache: options.seriesCandidateCache
     });
     if (!series) {
       const error = new Error('シリーズ内のKindle ASINを取得できませんでした');
@@ -318,7 +319,13 @@ async function addBooksFromInputInStore(store, input, options = {}) {
 async function addSeriesBooksFromInputInStore(store, input, options = {}) {
   const explicitSeriesUrl = isKindleSeriesUrl(input);
   const series = explicitSeriesUrl
-    ? await fetchSeriesCandidates(input, { allowIncomplete: true, now: options.now, signal: options.signal, timeoutMs: options.timeoutMs })
+    ? await fetchSeriesCandidates(input, {
+        allowIncomplete: true,
+        now: options.now,
+        signal: options.signal,
+        timeoutMs: options.timeoutMs,
+        seriesCandidateCache: options.seriesCandidateCache
+      })
     : await detectCollectionSeries(input, options);
   const asins = series?.items?.map((item) => item.asin) || [];
 
@@ -3382,12 +3389,17 @@ export async function runDueChecks(options = {}) {
     const processedBookIds = new Set();
     let transientErrorStreak = 0;
     for (let index = 0; index < plan.books.length; index += 1) {
-      if (shouldStopForRuntimeLimit(startedAt, maxRuntimeMs, results.length, saveReserveMs)) {
+      if (shouldStopBeforeNextBookCheck(startedAt, maxRuntimeMs, saveReserveMs)) {
         stoppedByRuntimeLimit = true;
         break;
       }
 
       if (!(await waitBeforeCheck(pacing, results.length, startedAt, maxRuntimeMs, saveReserveMs))) {
+        stoppedByRuntimeLimit = true;
+        break;
+      }
+
+      if (shouldStopBeforeNextBookCheck(startedAt, maxRuntimeMs, saveReserveMs)) {
         stoppedByRuntimeLimit = true;
         break;
       }
@@ -3416,6 +3428,10 @@ export async function runDueChecks(options = {}) {
       processedBookIds.add(book.id);
 
       if (discoverCheckedSeries) {
+        if (shouldStopBeforeSeriesDiscovery(startedAt, maxRuntimeMs, saveReserveMs)) {
+          stoppedByRuntimeLimit = true;
+          break;
+        }
         const checkedSeriesDiscovery = await discoverSeriesUpdateForCheckedBook(store, result.book, {
           startedAt,
           maxRuntimeMs,
@@ -3452,7 +3468,7 @@ export async function runDueChecks(options = {}) {
         transientErrorStreak = 0;
       }
 
-      if (shouldStopForRuntimeLimit(startedAt, maxRuntimeMs, results.length, saveReserveMs)) {
+      if (shouldStopBeforeNextBookCheck(startedAt, maxRuntimeMs, saveReserveMs)) {
         stoppedByRuntimeLimit = true;
         break;
       }
@@ -3864,6 +3880,18 @@ async function runSeriesDiscoveryPlan(store, plan, options = {}) {
           options.maxRuntimeMs,
           saveReserveMs
         ))
+      ) {
+        stoppedByRuntimeLimit = true;
+        break;
+      }
+
+      if (
+        shouldStopSeriesDiscoveryForRuntimeLimit(
+          options.startedAt,
+          options.maxRuntimeMs,
+          results.length + errors.length,
+          saveReserveMs
+        )
       ) {
         stoppedByRuntimeLimit = true;
         break;
@@ -4360,7 +4388,10 @@ function seriesTitleFromBook(book) {
 }
 
 function shouldStopSeriesDiscoveryForRuntimeLimit(startedAt, maxRuntimeMs, completedCount, reserveMs = 0) {
-  return shouldStopForRuntimeLimit(startedAt, maxRuntimeMs, completedCount, reserveMs);
+  return (
+    shouldStopForRuntimeLimit(startedAt, maxRuntimeMs, completedCount, reserveMs) ||
+    shouldStopBeforeSeriesDiscovery(startedAt, maxRuntimeMs, reserveMs)
+  );
 }
 
 function markSeriesDiscoveryErrorInStore(store, group, now, error) {
@@ -4691,7 +4722,8 @@ async function checkOneBook(bookRef, options = {}) {
   const now = new Date().toISOString();
   const snapshotResult = await settleSnapshot(bookRef.asin, bookRef, {
     signal: options.signal,
-    timeoutMs: options.timeoutMs
+    timeoutMs: options.timeoutMs,
+    seriesCandidateCache: options.seriesCandidateCache
   });
   let applied = { checkedBook: null, events: [] };
 
@@ -4711,7 +4743,8 @@ async function checkOneBookInStore(store, bookRef, options = {}) {
   const now = new Date().toISOString();
   const snapshotResult = await settleSnapshot(bookRef.asin, bookRef, {
     signal: options.signal,
-    timeoutMs: options.timeoutMs
+    timeoutMs: options.timeoutMs,
+    seriesCandidateCache: options.seriesCandidateCache
   });
   const applied = applyCheckResultToStore(store, bookRef, snapshotResult, now, {
     updateCursor: options.updateCursor
@@ -5041,7 +5074,10 @@ async function settleSnapshot(asin, book = {}, options = {}) {
         ...book,
         signal: options.signal,
         timeoutMs: options.timeoutMs,
-        url: options.url || snapshotInputUrlForBook(book)
+        url: options.url || snapshotInputUrlForBook(book),
+        allowAmazonExtendedFallback: shouldAllowAmazonExtendedFallbackForBook(book, options),
+        allowAmazonSearchFallback: shouldAllowAmazonSearchFallbackForBook(book, options),
+        preferListasinFallback: shouldPreferListasinFallbackForBook(book, options)
       });
     if (snapshot.currentPrice == null) return { ok: false, snapshot, error: '価格を取得できませんでした' };
     const suspiciousReason = suspiciousSnapshotReason(book, snapshot);
@@ -5088,6 +5124,28 @@ function shouldUseSeriesPriceSnapshot(book = {}, options = {}) {
   if (String(process.env.SERIES_PRICE_CHECK_FIRST || 'true').toLowerCase() === 'false') return false;
   if (book.importMode !== 'kindle_series' && !book.seriesKey) return false;
   return Boolean(book.sourceUrl || book.seriesKey);
+}
+
+function shouldAllowAmazonExtendedFallbackForBook(book = {}, options = {}) {
+  if (typeof options.allowAmazonExtendedFallback === 'boolean') return options.allowAmazonExtendedFallback;
+  if (readEnvBoolean('AMAZON_EXTENDED_FALLBACK_EXISTING', false)) return true;
+  return !hasReusableStoredPriceAndDirectUrl(book);
+}
+
+function shouldAllowAmazonSearchFallbackForBook(book = {}, options = {}) {
+  if (typeof options.allowAmazonSearchFallback === 'boolean') return options.allowAmazonSearchFallback;
+  if (readEnvBoolean('AMAZON_SEARCH_FALLBACK_EXISTING', false)) return true;
+  return !hasReusableStoredPriceAndDirectUrl(book);
+}
+
+function shouldPreferListasinFallbackForBook(_book = {}, options = {}) {
+  if (typeof options.preferListasinFallback === 'boolean') return options.preferListasinFallback;
+  return true;
+}
+
+function hasReusableStoredPriceAndDirectUrl(book = {}) {
+  const price = nullableNumber(book.currentPrice ?? book.effectivePrice);
+  return price != null && price > 0 && Boolean(snapshotInputUrlForBook(book));
 }
 
 export function seriesSnapshotFromKindleSeriesForBook(series, asin, book = {}) {
@@ -6375,6 +6433,16 @@ function shouldStopForRuntimeLimit(startedAt, maxRuntimeMs, _completedCount = 0,
   return maxRuntimeMs > 0 && remainingRuntimeMs(startedAt, maxRuntimeMs, reserveMs) <= 0;
 }
 
+function shouldStopBeforeNextBookCheck(startedAt, maxRuntimeMs, reserveMs = 0) {
+  if (shouldStopForRuntimeLimit(startedAt, maxRuntimeMs, 0, reserveMs)) return true;
+  return maxRuntimeMs > 0 && remainingRuntimeMs(startedAt, maxRuntimeMs, reserveMs) <= minimumUsefulBookCheckRuntimeMs();
+}
+
+function shouldStopBeforeSeriesDiscovery(startedAt, maxRuntimeMs, reserveMs = 0) {
+  if (shouldStopForRuntimeLimit(startedAt, maxRuntimeMs, 0, reserveMs)) return true;
+  return maxRuntimeMs > 0 && remainingRuntimeMs(startedAt, maxRuntimeMs, reserveMs) <= minimumUsefulSeriesDiscoveryRuntimeMs();
+}
+
 function readEnvBoolean(name, fallback) {
   const value = process.env[name];
   if (value == null || value === '') return fallback;
@@ -6454,6 +6522,18 @@ function checkBookMaxRuntimeMs() {
 
 function importItemMaxRuntimeMs() {
   return floorNumber(process.env.CHECK_IMPORT_ITEM_MAX_RUNTIME_MS, 1000, 90000);
+}
+
+function minimumUsefulBookCheckRuntimeMs() {
+  const configured = floorNumber(process.env.CHECK_MIN_BOOK_RUNTIME_MS, 0, 0);
+  if (configured > 0) return configured;
+  return Math.max(90000, checkBookMaxRuntimeMs() + 30000);
+}
+
+function minimumUsefulSeriesDiscoveryRuntimeMs() {
+  const configured = floorNumber(process.env.SERIES_DISCOVERY_MIN_RUNTIME_MS, 0, 0);
+  if (configured > 0) return configured;
+  return Math.max(90000, importItemMaxRuntimeMs());
 }
 
 function remainingRuntimeMs(startedAt, maxRuntimeMs, reserveMs = 0) {
