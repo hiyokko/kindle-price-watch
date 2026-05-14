@@ -546,6 +546,77 @@ test('store repair canonicalizes noisy series child titles for the same series',
   assert.equal(store.books[1].title, 'BAMBi remodeled １');
 });
 
+test('store repair removes collected editions from a mixed regular series', () => {
+  const store = {
+    books: [
+      {
+        id: 'shamo-thick-1',
+        asin: 'B00QAEZKNC',
+        title: '極厚版『軍鶏』 巻之壱 （１～３巻相当） (イブニングコミックス)',
+        seriesName: '極厚版『軍鶏』 巻之壱 （１～３巻相当）',
+        seriesKey: 'series:asin:B00QAEZKNC',
+        seriesExpectedCount: 22,
+        importMode: 'kindle_series',
+        volume: 1,
+        currentPrice: 1362,
+        currentPoints: 0,
+        effectivePrice: 1362,
+        provider: 'amazon_html'
+      },
+      {
+        id: 'shamo-20',
+        asin: 'B00SICO3LE',
+        title: '軍鶏（２０） (イブニングコミックス)',
+        seriesName: '極厚版『軍鶏』 巻之壱 （１～３巻相当）',
+        seriesKey: 'series:asin:B00QAEZKNC',
+        seriesExpectedCount: 22,
+        importMode: 'kindle_series',
+        volume: 20,
+        currentPrice: 792,
+        currentPoints: 0,
+        effectivePrice: 792,
+        provider: 'amazon_html'
+      },
+      {
+        id: 'shamo-21',
+        asin: 'B00SICO3NM',
+        title: '軍鶏（２１） (イブニングコミックス)',
+        seriesName: '極厚版『軍鶏』 巻之壱 （１～３巻相当）',
+        seriesKey: 'series:asin:B00QAEZKNC',
+        seriesExpectedCount: 22,
+        importMode: 'kindle_series',
+        volume: 21,
+        currentPrice: 792,
+        currentPoints: 0,
+        effectivePrice: 792,
+        provider: 'amazon_html'
+      }
+    ],
+    priceHistory: [
+      { bookId: 'shamo-thick-1', effectivePrice: 1362 },
+      { bookId: 'shamo-20', effectivePrice: 792 }
+    ],
+    notifications: [
+      { bookId: 'shamo-thick-1', type: 'best' },
+      { bookId: 'shamo-20', type: 'best' }
+    ],
+    seriesPriceHistory: []
+  };
+
+  const summary = repairStorePriceState(store, {
+    clearCurrent: false,
+    now: '2026-05-15T00:00:00.000Z'
+  });
+
+  assert.equal(summary.changed, true);
+  assert.equal(summary.alternativeEditionRemoved, 1);
+  assert.deepEqual(store.books.map((book) => book.asin), ['B00SICO3LE', 'B00SICO3NM']);
+  assert.deepEqual(store.books.map((book) => book.seriesName), ['軍鶏', '軍鶏']);
+  assert.deepEqual(store.books.map((book) => book.seriesExpectedCount), [2, 2]);
+  assert.deepEqual(store.priceHistory.map((entry) => entry.bookId), ['shamo-20']);
+  assert.deepEqual(store.notifications.map((entry) => entry.bookId), ['shamo-20']);
+});
+
 test('series snapshots reject unvalidated source-wide series prices', () => {
   assert.equal(
     seriesSnapshotFromKindleSeriesForBook({

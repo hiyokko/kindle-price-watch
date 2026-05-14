@@ -449,7 +449,8 @@ async function importSeriesIntoStore(store, input, series, options = {}) {
     }
     seriesItems.push(item);
   }
-  let regularSeriesItems = dropDuplicateAlternativeEditionItems(seriesItems, seriesErrors);
+  let regularSeriesItems = dropMixedAlternativeEditionItems(seriesItems, seriesErrors, seriesName);
+  regularSeriesItems = dropDuplicateAlternativeEditionItems(regularSeriesItems, seriesErrors);
   regularSeriesItems = await dropFutureReleaseNewSeriesItems(regularSeriesItems, store, seriesErrors, {
     now,
     signal: options.signal,
@@ -488,6 +489,7 @@ async function importSeriesIntoStore(store, input, series, options = {}) {
   const existingSeriesBooks = store.books.filter((book) => isKnownBookForSeries(book, seriesIdentity));
   const weakImageUrls = weakSeriesImageUrls([...regularSeriesItems, ...existingSeriesBooks]);
   const additions = [];
+  let skippedAlternativeEditions = 0;
 
   for (const [index, item] of regularSeriesItems.entries()) {
     const asin = item.asin;
@@ -511,8 +513,9 @@ async function importSeriesIntoStore(store, input, series, options = {}) {
       continue;
     }
 
+    const itemFetchDetails = fetchDetails || shouldFetchDetailsForSeriesEditionValidation(item, regularSeriesItems, seriesName);
     const book = await buildBookFromAsin(asin, {
-      fetchDetails,
+      fetchDetails: itemFetchDetails,
       seed: item,
       sourceUrl,
       importMode: 'kindle_series',
@@ -524,8 +527,17 @@ async function importSeriesIntoStore(store, input, series, options = {}) {
       signal: options.signal,
       timeoutMs: options.timeoutMs
     });
+    const titleVolume = nonAlternativeTitleVolume(book);
+    if (titleVolume > 0 && String(book.volume || '') !== String(titleVolume)) {
+      book.volume = titleVolume;
+    }
     if (isClearlyDifferentSeriesTitle(book.title, seriesName)) {
       seriesErrors.push(`${asin}: skipped title outside series (${book.title})`);
+      continue;
+    }
+    if (isAlternativeEditionSeriesItem(book) && seriesPrefersRegularEditionOnly(seriesItems, seriesName)) {
+      skippedAlternativeEditions += 1;
+      seriesErrors.push(`${asin}: skipped alternative edition (${book.title})`);
       continue;
     }
     additions.push(book);
@@ -534,6 +546,9 @@ async function importSeriesIntoStore(store, input, series, options = {}) {
   }
 
   store.books.push(...additions);
+  if (skippedAlternativeEditions > 0) {
+    normalizeAvailableSeriesExpectedCount(store.books.filter((item) => isKnownBookForSeries(item, seriesIdentity)));
+  }
   if (options.recordInitialHistory !== false) {
     for (const book of additions) {
       appendPriceHistoryEntry(store, book, now);
@@ -557,6 +572,18 @@ async function importSeriesIntoStore(store, input, series, options = {}) {
     books: importedBooks,
     errors: seriesErrors
   };
+}
+
+function dropMixedAlternativeEditionItems(items = [], errors = [], seriesName = '') {
+  if (!seriesHasRegularEditionCandidate(items, seriesName)) return items;
+  const droppedAsins = new Set();
+  for (const item of items) {
+    if (!isAlternativeEditionSeriesItem(item)) continue;
+    droppedAsins.add(item.asin);
+    errors.push(`${item.asin}: skipped alternative edition (${item.title})`);
+  }
+  if (droppedAsins.size === 0) return items;
+  return items.filter((item) => !droppedAsins.has(item.asin));
 }
 
 function dropDuplicateAlternativeEditionItems(items = [], errors = []) {
@@ -609,9 +636,62 @@ function isAlternativeEditionSeriesItem(item) {
   return alternativeEditionRank(item) > 0;
 }
 
+function seriesPrefersRegularEditionOnly(items = [], seriesName = '') {
+  return /極厚版/i.test(String(seriesName || '')) || seriesHasRegularEditionCandidate(items, seriesName);
+}
+
+function shouldFetchDetailsForSeriesEditionValidation(item = {}, items = [], seriesName = '') {
+  if (!item?.asin || !isSeriesDerivedPriceProvider(item.provider)) return false;
+  if (isAlternativeEditionSeriesItem(item)) return true;
+  if (!seriesHasPotentialAlternativeEditionMix(items, seriesName)) return false;
+  return isSyntheticSeriesItemTitle(item, seriesName);
+}
+
+function seriesHasPotentialAlternativeEditionMix(items = [], seriesName = '') {
+  if (/極厚版/i.test(String(seriesName || ''))) return true;
+  if ((items || []).some(isAlternativeEditionSeriesItem)) return true;
+  const prices = (items || [])
+    .map((item) => Number(item?.currentPrice))
+    .filter((value) => Number.isFinite(value) && value > 0);
+  if (prices.length < 6) return false;
+  const reference = medianNumber(prices);
+  return Number.isFinite(reference) && reference > 0 && prices.some((price) => price >= reference * 1.35);
+}
+
+function isSyntheticSeriesItemTitle(item = {}, seriesName = '') {
+  const title = String(item.title || '').trim();
+  if (!title) return false;
+  if (isAlternativeEditionSeriesItem(item)) return true;
+  const volume = seriesItemVolume(item);
+  if (!volume) return false;
+  const titleCore = seriesTitleComparisonCore(title);
+  const seriesCore = seriesTitleComparisonCore(seriesName || item.seriesName || '');
+  if (!titleCore || !seriesCore) return false;
+  const withoutVolume = seriesTitleComparisonCore(stripVolumeSuffix(title));
+  return withoutVolume === seriesCore || titleCore === `${seriesCore}${volume}`;
+}
+
+function seriesHasRegularEditionCandidate(items = [], seriesName = '') {
+  return (items || []).some((item) => {
+    if (!item?.asin) return false;
+    if (isAlternativeEditionSeriesItem(item)) return false;
+    const title = String(item.title || '').trim();
+    if (!title || isClearlyDifferentSeriesTitle(title, seriesName)) return false;
+    return true;
+  });
+}
+
+function nonAlternativeTitleVolume(item = {}) {
+  if (isAlternativeEditionSeriesItem(item)) return 0;
+  return volumeFromSeriesTitle(item.title);
+}
+
 function alternativeEditionRank(item = {}) {
   const title = String(item.title || '');
-  if (/特装版|限定版|特別版|豪華版|愛蔵版|完全版|新装版|小冊子|付録|同梱|カラー版|フルカラー|合本|単話|分冊/i.test(title)) {
+  if (
+    /極厚版|特装版|限定版|特別版|豪華版|愛蔵版|完全版|新装版|小冊子|付録|同梱|カラー版|フルカラー|合本|単話|分冊/i.test(title) ||
+    /[0-9０-９]{1,3}\s*[～〜~\-－]\s*[0-9０-９]{1,3}\s*巻相当/i.test(title)
+  ) {
     return 10;
   }
   return 0;
@@ -790,6 +870,7 @@ async function refreshExistingSingleBookFromInput(id, input) {
     const previousEffectivePrice = book.effectivePrice;
     const snapshot = snapshotResult.snapshot;
     book.title = preferSnapshotText(snapshot.title, book.title);
+    repairSeriesBookVolumeFromTitle(book);
     book.author = snapshot.author || book.author;
     book.publisher = snapshot.publisher || book.publisher;
     book.imageUrl = snapshot.imageUrl || book.imageUrl;
@@ -1991,7 +2072,8 @@ export function repairStorePriceState(store, options = {}) {
       removedHistory: 0,
       removedNotifications: 0,
       singleSeriesDemoted: 0,
-      seriesDiscoveryDeferred: 0
+      seriesDiscoveryDeferred: 0,
+      alternativeEditionRemoved: 0
     };
   }
 
@@ -2004,7 +2086,8 @@ export function repairStorePriceState(store, options = {}) {
     removedHistory: 0,
     removedNotifications: 0,
     singleSeriesDemoted: 0,
-    seriesDiscoveryDeferred: 0
+    seriesDiscoveryDeferred: 0,
+    alternativeEditionRemoved: 0
   };
 
   const classificationRepair = repairSingleBookSeriesClassifications(store, { now });
@@ -2012,6 +2095,15 @@ export function repairStorePriceState(store, options = {}) {
     summary.changed = true;
     summary.singleSeriesDemoted += classificationRepair.demoted;
     summary.removedNotifications += classificationRepair.removedNotifications;
+  }
+
+  const alternativeEditionRepair = repairMixedAlternativeEditionSeriesBooks(store);
+  if (alternativeEditionRepair.changed) {
+    summary.changed = true;
+    summary.booksRepaired += alternativeEditionRepair.removedBooks;
+    summary.removedHistory += alternativeEditionRepair.removedHistory;
+    summary.removedNotifications += alternativeEditionRepair.removedNotifications;
+    summary.alternativeEditionRemoved += alternativeEditionRepair.removedBooks;
   }
 
   const seriesNameRepair = repairStoredSeriesNames(store, { now });
@@ -2084,6 +2176,108 @@ function repairDeferredSeriesDiscoveryErrors(store, options = {}) {
     changed: deferred > 0,
     deferred
   };
+}
+
+function repairMixedAlternativeEditionSeriesBooks(store) {
+  const groups = new Map();
+  for (const book of store.books || []) {
+    if (!isSeriesBookRecord(book)) continue;
+    const key = book.seriesKey || book.sourceUrl || '';
+    if (!key) continue;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(book);
+  }
+
+  const removeIds = new Set();
+  for (const books of groups.values()) {
+    if (!seriesPrefersRegularEditionOnly(books, canonicalStoredSeriesName(books))) continue;
+    const candidates = books.filter((book) => shouldRemoveStoredAlternativeEditionBook(book, books));
+    for (const book of candidates) {
+      if (book.id) removeIds.add(book.id);
+    }
+  }
+
+  if (removeIds.size === 0) {
+    return { changed: false, removedBooks: 0, removedHistory: 0, removedNotifications: 0 };
+  }
+
+  const affectedKeys = new Set(
+    (store.books || [])
+      .filter((book) => removeIds.has(book.id))
+      .map((book) => book.seriesKey || book.sourceUrl || '')
+      .filter(Boolean)
+  );
+  const beforeHistory = Array.isArray(store.priceHistory) ? store.priceHistory.length : 0;
+  const beforeNotifications = Array.isArray(store.notifications) ? store.notifications.length : 0;
+  removeStoreBooksById(store, removeIds);
+
+  for (const key of affectedKeys) {
+    const remaining = (store.books || []).filter((book) => (book.seriesKey || book.sourceUrl || '') === key);
+    normalizeAvailableSeriesExpectedCount(remaining);
+  }
+
+  return {
+    changed: true,
+    removedBooks: removeIds.size,
+    removedHistory: beforeHistory - (store.priceHistory || []).length,
+    removedNotifications: beforeNotifications - (store.notifications || []).length
+  };
+}
+
+function shouldRemoveStoredAlternativeEditionBook(book, groupBooks = []) {
+  if (!isAlternativeEditionSeriesItem(book)) return false;
+  if (!groupBooks.some((item) => item !== book && !isAlternativeEditionSeriesItem(item))) {
+    return false;
+  }
+  if (hasRegularEditionSameStoredVolume(book, groupBooks)) return true;
+  return isAlternativeEditionPriceOutlier(book, groupBooks);
+}
+
+function hasRegularEditionSameStoredVolume(book, groupBooks = []) {
+  const volume = storedBookVolume(book);
+  if (!volume) return false;
+  return groupBooks.some((item) => item !== book && !isAlternativeEditionSeriesItem(item) && storedBookVolume(item) === volume);
+}
+
+function isAlternativeEditionPriceOutlier(book, groupBooks = []) {
+  const price = Number(book?.currentPrice);
+  if (!Number.isFinite(price) || price <= 0) return false;
+  const regularPrices = groupBooks
+    .filter((item) => !isAlternativeEditionSeriesItem(item))
+    .map((item) => Number(item.currentPrice))
+    .filter((value) => Number.isFinite(value) && value > 0);
+  const reference = medianNumber(regularPrices);
+  return Number.isFinite(reference) && reference > 0 && price >= reference * 1.35;
+}
+
+function normalizeAvailableSeriesExpectedCount(books = []) {
+  const available = books.filter((book) => book?.asin).length;
+  if (available <= 0) return 0;
+  const regularName = canonicalRegularSeriesName(books);
+  for (const book of books) {
+    if (Number(book.seriesExpectedCount || 0) !== available) {
+      book.seriesExpectedCount = available;
+    }
+    if (regularName && book.seriesName !== regularName) {
+      book.seriesName = regularName;
+    }
+  }
+  return available;
+}
+
+function canonicalRegularSeriesName(books = []) {
+  const counts = new Map();
+  for (const book of books) {
+    if (isAlternativeEditionSeriesItem(book)) continue;
+    const titleName = cleanStoredSeriesName(book.title);
+    if (!titleName || isGenericSeriesName(titleName) || isAlternativeEditionSeriesItem({ title: titleName })) continue;
+    counts.set(titleName, (counts.get(titleName) || 0) + 1);
+  }
+  return [...counts.entries()].sort((left, right) => {
+    if (left[1] !== right[1]) return right[1] - left[1];
+    if (left[0].length !== right[0].length) return left[0].length - right[0].length;
+    return left[0].localeCompare(right[0], 'ja');
+  })[0]?.[0] || '';
 }
 
 function repairStoredSeriesNames(store, options = {}) {
@@ -2235,6 +2429,14 @@ function shouldCanonicalizeStoredSeriesBookTitle(book = {}) {
 function storedBookVolume(book = {}) {
   const volume = Number(book.volume);
   return Number.isFinite(volume) && volume > 0 ? volume : seriesItemVolume(book);
+}
+
+function repairSeriesBookVolumeFromTitle(book = {}) {
+  if (!isSeriesBookRecord(book)) return false;
+  const volume = nonAlternativeTitleVolume(book);
+  if (!volume || String(book.volume || '') === String(volume)) return false;
+  book.volume = volume;
+  return true;
 }
 
 function isDirtyAmazonSeriesText(value) {
@@ -4795,6 +4997,7 @@ function applyCheckResultToStore(store, bookRef, snapshotResult, now, options = 
 
   const snapshot = snapshotResult.snapshot;
   book.title = preferSnapshotText(snapshot.title, book.title);
+  repairSeriesBookVolumeFromTitle(book);
   book.author = snapshot.author || book.author;
   book.publisher = snapshot.publisher || book.publisher;
   book.imageUrl = snapshot.imageUrl || book.imageUrl;
@@ -5196,6 +5399,7 @@ async function settleSnapshotWithUrl(asin, url, book = {}) {
 function applyMetadataSnapshotToBook(book, snapshot) {
   if (!book || !snapshot) return;
   book.title = preferSnapshotText(snapshot.title, book.title);
+  repairSeriesBookVolumeFromTitle(book);
   book.author = snapshot.author || book.author;
   book.publisher = snapshot.publisher || book.publisher;
   book.imageUrl = snapshot.imageUrl || book.imageUrl;
@@ -5291,6 +5495,10 @@ async function buildBookFromAsin(asin, options = {}) {
   if (snapshot.currentPrice == null && !lastError) {
     lastError = '価格を取得できませんでした';
   }
+  const seriesVolume =
+    options.importMode === 'kindle_series'
+      ? nonAlternativeTitleVolume(snapshot) || options.volume || seed.volume || ''
+      : options.volume || seed.volume || '';
 
   return {
     id: crypto.randomUUID(),
@@ -5300,7 +5508,7 @@ async function buildBookFromAsin(asin, options = {}) {
     publisher: snapshot.publisher,
     seriesKey: options.seriesKey || '',
     seriesName: options.seriesName || seed.seriesName || '',
-    volume: options.volume || seed.volume || '',
+    volume: seriesVolume,
     seriesExpectedCount: options.seriesExpectedCount || seed.seriesExpectedCount || '',
     imageUrl: snapshot.imageUrl,
     imageSource: snapshot.imageSource || seed.imageSource || snapshot.provider || '',
