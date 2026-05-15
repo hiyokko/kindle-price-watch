@@ -623,7 +623,7 @@ test('series snapshots accept unvalidated series prices after trusted sibling co
   assert.equal(snapshot.currentPrice, 759);
   assert.equal(snapshot.currentPoints, 28);
   assert.equal(snapshot.effectivePrice, 731);
-  assert.equal(snapshot.provider, 'sale_bon_series');
+  assert.equal(snapshot.provider, 'validated_series_fallback');
 });
 
 test('discounted prices are prioritized for expiry recheck after a day', () => {

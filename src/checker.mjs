@@ -2722,6 +2722,7 @@ function seriesPriceProviderRank(provider) {
   if (normalized === 'amazon_series_bulk') return 95;
   if (normalized === 'amazon_series_unit_price' || normalized === 'amazon_series_source_price') return 0;
   if (normalized === 'amazon_series_reader') return 70;
+  if (normalized === 'validated_series_fallback') return 83;
   if (normalized === 'efox') return 82;
   if (normalized === 'efox_series') return 79;
   if (normalized === 'sale_bon_series') return 80;
@@ -2743,6 +2744,7 @@ function isRefreshableSeriesPriceProvider(provider) {
     'listasin',
     'amazon_series_reader',
     'amazon_series_bulk',
+    'validated_series_fallback',
     'sale_bon_series',
     'efox',
     'efox_series',
@@ -5157,15 +5159,17 @@ export function seriesSnapshotFromKindleSeriesForBook(series, asin, book = {}, o
   const normalizedAsin = String(asin || '').toUpperCase();
   const item = (series?.items || []).find((candidate) => candidate?.asin === normalizedAsin);
   if (!item || item.currentPrice == null) return null;
-  if (
+  const validatedByTrustedSiblings =
     isUnvalidatedSeriesPriceProvider(item.provider) &&
-    !isSeriesItemValidatedByTrustedSiblings(series, item, book, options.store)
-  ) {
+    isSeriesItemValidatedByTrustedSiblings(series, item, book, options.store);
+  if (isUnvalidatedSeriesPriceProvider(item.provider) && !validatedByTrustedSiblings) {
     return null;
   }
   if (isUnverifiedFreeSeriesPriceProvider(item.provider, item.currentPrice)) return null;
 
-  const provider = item.provider || series?.provider || 'amazon_series_child';
+  const provider = validatedByTrustedSiblings
+    ? 'validated_series_fallback'
+    : item.provider || series?.provider || 'amazon_series_child';
   const currentPrice = Number(item.currentPrice);
   const currentPoints = Number(item.currentPoints || 0);
   const effectivePrice = item.effectivePrice ?? effectivePriceFromSeed(item);
