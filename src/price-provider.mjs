@@ -866,7 +866,7 @@ export function extractKindleSeriesItemsFromHtml(html) {
   const childItems = extractChildAsinListItems(value);
 
   const bulkOfferItems = extractLargestBulkOfferItems(value, { seriesName, seriesImageUrl });
-  if (bulkOfferItems.length > childItems.length) {
+  if (shouldUseBulkOfferItemsForSeries(bulkOfferItems, childItems)) {
     const childByAsin = new Map(childItems.map((item) => [item.asin, item]));
     return bulkOfferItems.map((item) => mergeBulkSeriesItem(item, childByAsin.get(item.asin)));
   }
@@ -910,6 +910,23 @@ export function extractKindleSeriesItemsFromHtml(html) {
   }
 
   return [...ordered.values()].filter((item) => isProbablyBookAsin(item.asin));
+}
+
+function shouldUseBulkOfferItemsForSeries(bulkItems = [], childItems = []) {
+  if (bulkItems.length <= childItems.length) return false;
+  if (bulkItemsLikelyDifferentEdition(bulkItems, childItems)) return false;
+  return true;
+}
+
+function bulkItemsLikelyDifferentEdition(bulkItems = [], childItems = []) {
+  if (childItems.length < 2) return false;
+
+  const bulkAsins = new Set(bulkItems.map((item) => item?.asin).filter(Boolean));
+  const childAsins = childItems.map((item) => item?.asin).filter(Boolean);
+  if (childAsins.length < 2) return false;
+
+  const overlap = childAsins.filter((asin) => bulkAsins.has(asin)).length;
+  return overlap < childAsins.length;
 }
 
 function extractExternalKindleSeriesItemsFromHtml(html, sourceAsin = '') {

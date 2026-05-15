@@ -53,6 +53,46 @@ test('Amazon series parser keeps bulk volume when child list repeats the first v
   assert.equal(fourth.title, '進撃の巨人 ４');
 });
 
+test('Amazon series parser ignores episode bulk forms when child list identifies collected volumes', () => {
+  const items = extractKindleSeriesItemsFromHtml(`
+    <meta property="og:title" content="トリリオンゲーム (11 book series)" />
+    <div id="series-childAsin-list">
+      <div id="series-childAsin-item_1" class="series-childAsin-item">
+        <a class="itemImageLink" title="トリリオンゲーム（１）" href="/gp/product/B08YJWRJ4V?storeType=ebooks">
+          <img alt="トリリオンゲーム（１）" src="https://m.media-amazon.com/images/I/51one._SY300_.jpg">
+        </a>
+        <span class="a-size-large a-color-price">￥759</span>
+        <span class="itemPoints">28pt</span>
+      </div>
+      <div id="series-childAsin-item_2" class="series-childAsin-item">
+        <a class="itemImageLink" title="トリリオンゲーム（２）" href="/gp/product/B0995RQYYJ?storeType=ebooks">
+          <img alt="トリリオンゲーム（２）" src="https://m.media-amazon.com/images/I/51two._SY300_.jpg">
+        </a>
+        <span class="a-size-large a-color-price">￥759</span>
+        <span class="itemPoints">28pt</span>
+      </div>
+    </div>
+    <form>
+      <input name="items[0].action.asin" value="B08WBQHWPK">
+      <input name="items[0].action.displayedPrice.value" value="224.00">
+      <input name="items[0].action.displayedPrice.currency" value="JPY">
+      <input name="items[1].action.asin" value="B08WBSWSS6">
+      <input name="items[1].action.displayedPrice.value" value="123.00">
+      <input name="items[1].action.displayedPrice.currency" value="JPY">
+      <input name="items[2].action.asin" value="B08WC7XM5R">
+      <input name="items[2].action.displayedPrice.value" value="105.00">
+      <input name="items[2].action.displayedPrice.currency" value="JPY">
+    </form>
+  `);
+
+  assert.equal(items.length, 2);
+  assert.equal(items[0].asin, 'B08YJWRJ4V');
+  assert.equal(items[0].currentPrice, 759);
+  assert.equal(items[0].currentPoints, 28);
+  assert.equal(items[0].provider, 'amazon_series_child');
+  assert.equal(items[1].asin, 'B0995RQYYJ');
+});
+
 test('Amazon HTML parser keeps explicit Kindle price separate from discount and points', () => {
   const snapshot = extractAmazonHtmlSnapshotFromHtml(productHtml({
     title: '火の鳥 3',

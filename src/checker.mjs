@@ -5109,9 +5109,10 @@ async function fetchSeriesPriceSnapshotForBook(asin, book = {}, options = {}) {
   if (!input) return null;
 
   try {
-    const series = await fetchKindleSeriesCandidate(input, {
+    const series = await fetchSeriesCandidates(input, {
       ...options,
-      allowIncomplete: true
+      allowIncomplete: true,
+      skipBackfill: true
     });
     return seriesSnapshotFromKindleSeriesForBook(series, asin, book);
   } catch {
@@ -5410,7 +5411,8 @@ function seriesSourceUrlFor(input, series = {}) {
 }
 
 function kindleSeriesUrlForAsin(asin) {
-  return amazonUrlForAsin(asin);
+  const host = process.env.AMAZON_HOST || 'www.amazon.co.jp';
+  return `https://${host}/kindle-dbs/product/${asin}`;
 }
 
 function kindleSeriesFetchUrlForAsin(asin) {
