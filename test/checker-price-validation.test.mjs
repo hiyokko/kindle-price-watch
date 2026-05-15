@@ -562,6 +562,70 @@ test('series snapshots reject unvalidated source-wide series prices', () => {
   );
 });
 
+test('series snapshots accept unvalidated series prices after trusted sibling confirmation', () => {
+  const series = {
+    items: [
+      {
+        asin: 'B08YJWRJ4V',
+        currentPrice: 759,
+        currentPoints: 28,
+        effectivePrice: 731,
+        provider: 'sale_bon_series'
+      },
+      {
+        asin: 'B0995RQYYJ',
+        currentPrice: 759,
+        currentPoints: 28,
+        effectivePrice: 731,
+        provider: 'sale_bon_series'
+      },
+      {
+        asin: 'B0DTT876R5',
+        currentPrice: 759,
+        currentPoints: 28,
+        effectivePrice: 731,
+        provider: 'sale_bon_series'
+      }
+    ]
+  };
+  const store = {
+    books: [
+      {
+        asin: 'B08YJWRJ4V',
+        seriesKey: 'series:asin:B0F4RMYRKN',
+        currentPrice: 759,
+        currentPoints: 28,
+        effectivePrice: 731,
+        provider: 'amazon_html'
+      },
+      {
+        asin: 'B0995RQYYJ',
+        seriesKey: 'series:asin:B0F4RMYRKN',
+        currentPrice: 759,
+        currentPoints: 28,
+        effectivePrice: 731,
+        provider: 'listasin'
+      }
+    ]
+  };
+
+  const snapshot = seriesSnapshotFromKindleSeriesForBook(
+    series,
+    'B0DTT876R5',
+    {
+      asin: 'B0DTT876R5',
+      seriesKey: 'series:asin:B0F4RMYRKN',
+      seriesName: 'トリリオンゲーム'
+    },
+    { store }
+  );
+
+  assert.equal(snapshot.currentPrice, 759);
+  assert.equal(snapshot.currentPoints, 28);
+  assert.equal(snapshot.effectivePrice, 731);
+  assert.equal(snapshot.provider, 'sale_bon_series');
+});
+
 test('discounted prices are prioritized for expiry recheck after a day', () => {
   const checkedAt = new Date(Date.UTC(2026, 4, 10, 0, 0, 0)).toISOString();
 

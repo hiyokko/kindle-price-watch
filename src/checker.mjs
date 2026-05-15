@@ -3105,6 +3105,7 @@ export async function repairBookPricesByAsins(asins, options = {}) {
         repairPriceSnapshotTimeoutMs(options),
         {
           seriesCandidateCache,
+          store: currentStore,
           seriesPriceFirst: options.seriesPriceFirst
         }
       );
@@ -4723,7 +4724,8 @@ async function checkOneBook(bookRef, options = {}) {
   const snapshotResult = await settleSnapshot(bookRef.asin, bookRef, {
     signal: options.signal,
     timeoutMs: options.timeoutMs,
-    seriesCandidateCache: options.seriesCandidateCache
+    seriesCandidateCache: options.seriesCandidateCache,
+    store
   });
   let applied = { checkedBook: null, events: [] };
 
@@ -5114,7 +5116,9 @@ async function fetchSeriesPriceSnapshotForBook(asin, book = {}, options = {}) {
       allowIncomplete: true,
       skipBackfill: true
     });
-    return seriesSnapshotFromKindleSeriesForBook(series, asin, book);
+    return seriesSnapshotFromKindleSeriesForBook(series, asin, book, {
+      store: options.store
+    });
   } catch {
     return null;
   }
@@ -5149,11 +5153,16 @@ function hasReusableStoredPriceAndDirectUrl(book = {}) {
   return price != null && price > 0 && Boolean(snapshotInputUrlForBook(book));
 }
 
-export function seriesSnapshotFromKindleSeriesForBook(series, asin, book = {}) {
+export function seriesSnapshotFromKindleSeriesForBook(series, asin, book = {}, options = {}) {
   const normalizedAsin = String(asin || '').toUpperCase();
   const item = (series?.items || []).find((candidate) => candidate?.asin === normalizedAsin);
   if (!item || item.currentPrice == null) return null;
-  if (isUnvalidatedSeriesPriceProvider(item.provider)) return null;
+  if (
+    isUnvalidatedSeriesPriceProvider(item.provider) &&
+    !isSeriesItemValidatedByTrustedSiblings(series, item, book, options.store)
+  ) {
+    return null;
+  }
   if (isUnverifiedFreeSeriesPriceProvider(item.provider, item.currentPrice)) return null;
 
   const provider = item.provider || series?.provider || 'amazon_series_child';
@@ -5173,6 +5182,49 @@ export function seriesSnapshotFromKindleSeriesForBook(series, asin, book = {}) {
     listPrice: trustedListPriceFor(currentPrice, item.listPrice, provider),
     provider
   };
+}
+
+function isSeriesItemValidatedByTrustedSiblings(series, item, book = {}, store = {}) {
+  if (!store || !Array.isArray(store.books)) return false;
+
+  const candidatesByAsin = new Map((series?.items || []).map((candidate) => [candidate?.asin, candidate]));
+  const requiredMatches = floorNumber(process.env.SERIES_UNVALIDATED_PRICE_MIN_MATCHES, 1, 2);
+  let matches = 0;
+
+  for (const sibling of store.books) {
+    if (!isSameSeriesBookForPriceValidation(sibling, book)) continue;
+    if (String(sibling.asin || '').toUpperCase() === String(item.asin || '').toUpperCase()) continue;
+    if (!hasTrustedCurrentPrice(sibling)) continue;
+
+    const candidate = candidatesByAsin.get(String(sibling.asin || '').toUpperCase());
+    if (!candidate || candidate.currentPrice == null) continue;
+    if (!seriesCandidatePriceMatchesBook(candidate, sibling)) return false;
+
+    matches += 1;
+    if (matches >= requiredMatches) return true;
+  }
+
+  return false;
+}
+
+function isSameSeriesBookForPriceValidation(candidate = {}, book = {}) {
+  if (book.seriesKey && candidate.seriesKey === book.seriesKey) return true;
+  if (book.sourceUrl && candidate.sourceUrl && isSameSeriesSource(candidate.sourceUrl, book.sourceUrl, extractAsin(book.sourceUrl))) {
+    return true;
+  }
+  return Boolean(book.seriesName && candidate.seriesName === book.seriesName);
+}
+
+function seriesCandidatePriceMatchesBook(candidate = {}, book = {}) {
+  const candidatePrice = nullableNumber(candidate.currentPrice);
+  const bookPrice = nullableNumber(book.currentPrice);
+  if (candidatePrice == null || bookPrice == null || candidatePrice !== bookPrice) return false;
+
+  const candidateEffective = nullableNumber(candidate.effectivePrice ?? effectivePriceFromSeed(candidate));
+  const bookEffective = nullableNumber(book.effectivePrice ?? effectivePriceFromSeed(book));
+  if (candidateEffective != null && bookEffective != null && candidateEffective !== bookEffective) return false;
+
+  return true;
 }
 
 async function settleSnapshotWithUrl(asin, url, book = {}) {
