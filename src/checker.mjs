@@ -4778,9 +4778,7 @@ async function checkOneBook(bookRef, options = {}) {
   let applied = { checkedBook: null, events: [] };
 
   await updateStore((store) => {
-    applied = applyCheckResultToStore(store, bookRef, snapshotResult, now, {
-      updateCursor: options.updateCursor
-    });
+    applied = applyCheckResultToStore(store, bookRef, snapshotResult, now, checkResultApplyOptions(options));
     return store;
   });
 
@@ -4797,14 +4795,22 @@ async function checkOneBookInStore(store, bookRef, options = {}) {
     seriesCandidateCache: options.seriesCandidateCache,
     store
   });
-  const applied = applyCheckResultToStore(store, bookRef, snapshotResult, now, {
-    updateCursor: options.updateCursor
-  });
+  const applied = applyCheckResultToStore(store, bookRef, snapshotResult, now, checkResultApplyOptions(options));
   const sent = await sendCheckNotifications(applied.checkedBook, applied.events, {
     ...options,
     notificationStore: store
   });
   return checkResultPayload(applied.checkedBook, snapshotResult, applied.events, sent);
+}
+
+function checkResultApplyOptions(options = {}) {
+  return {
+    updateCursor: options.updateCursor,
+    recordNotifications: options.recordNotifications,
+    deferSeriesNotifications: options.deferSeriesNotifications,
+    seriesNotificationBaselines: options.seriesNotificationBaselines,
+    seriesFreshAfter: options.seriesFreshAfter
+  };
 }
 
 async function retryCachedSeriesCheckFailuresInStore(store, candidates = [], options = {}) {

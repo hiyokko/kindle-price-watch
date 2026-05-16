@@ -123,6 +123,25 @@ test('series total label includes per-book average price', () => {
   assert.match(label, /合計 ¥800 \/ 平均 ¥400/);
 });
 
+test('series meta uses representative author, publisher, and series ASIN', () => {
+  const { seriesMetaLabel } = loadAppSortContext();
+
+  assert.equal(
+    seriesMetaLabel({
+      sourceUrl: 'https://www.amazon.co.jp/dp/B074C597F1?ref_=dbs_s_ks_series_rwt',
+      seriesKey: '',
+      books: [
+        {
+          author: '三浦建太郎',
+          publisher: '白泉社',
+          asin: 'B00E3RA01K'
+        }
+      ]
+    }),
+    '三浦建太郎 / 白泉社 / B074C597F1'
+  );
+});
+
 test('registration sort uses the latest checked time for a fully checked series', () => {
   const { groupCheckedSortTime, compareGroupsByQueueOrder } = loadAppSortContext();
   const laterSeriesCheck = groupCheckedSortTime([

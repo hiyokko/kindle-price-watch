@@ -584,6 +584,7 @@ function createSeriesNode(group) {
   const seriesTotal = seriesTotalLabel(group);
   const registeredCount = group.expectedCount > group.books.length ? `${group.books.length}/${group.expectedCount}冊` : `${group.books.length}冊`;
   const seriesStatus = seriesStatusLabel(group);
+  const seriesMeta = seriesMetaLabel(group);
   const seriesBadge = isGroupAtBestEver(group) ? '<span class="badge best series-badge">過去最安</span>' : '';
   const section = document.createElement('section');
   section.className = 'series-card';
@@ -606,6 +607,7 @@ function createSeriesNode(group) {
         <strong>${escapeHtml(group.title)}</strong>
         ${seriesBadge}
       </span>
+      ${seriesMeta ? `<span class="book-meta series-source-meta">${escapeHtml(seriesMeta)}</span>` : ''}
       <span class="series-total">${escapeHtml(seriesTotal)}</span>
       <span class="book-meta">${escapeHtml(registeredCount)} / ${group.checkedCount}冊確認済み / 最終確認 ${relativeTime(group.lastCheckedAt)} / ${escapeHtml(seriesStatus)} / ${selectedCount}冊選択中</span>
     </span>
@@ -1092,6 +1094,20 @@ function seriesTitle(book) {
     .replace(/^ASIN\s+[A-Z0-9]{10}$/i, '')
     .trim();
   return cleaned || 'Kindle シリーズ';
+}
+
+function seriesMetaLabel(group) {
+  const representative = representativeSeriesBook(group);
+  const asin = extractAsinFromInput(group.sourceUrl) || extractAsinFromInput(group.seriesKey) || representative?.asin || '';
+  return [cleanMeta(representative?.author), cleanMeta(representative?.publisher), asin].filter(Boolean).join(' / ');
+}
+
+function representativeSeriesBook(group) {
+  return (
+    group?.books?.find((book) => cleanMeta(book.author) || cleanMeta(book.publisher) || book.asin) ||
+    group?.books?.[0] ||
+    null
+  );
 }
 
 function displayBookTitle(book) {
