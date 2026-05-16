@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  canUseCachedSeriesPriceSnapshotForBook,
   needsDiscountExpiryRecheck,
   isFutureReleaseDate,
   priceIntegrityIssueForBook,
@@ -624,6 +625,46 @@ test('series snapshots accept unvalidated series prices after trusted sibling co
   assert.equal(snapshot.currentPoints, 28);
   assert.equal(snapshot.effectivePrice, 731);
   assert.equal(snapshot.provider, 'validated_series_fallback');
+});
+
+test('cached series prices can skip per-book network pacing only after the series candidate is resolved', () => {
+  const book = {
+    id: 'book-1',
+    asin: 'B00TEST001',
+    title: 'キャッシュ確認 1',
+    importMode: 'kindle_series',
+    sourceUrl: 'series-input',
+    currentPrice: 500,
+    effectivePrice: 500,
+    provider: 'amazon_series_bulk'
+  };
+  const series = {
+    items: [
+      {
+        asin: 'B00TEST001',
+        currentPrice: 500,
+        currentPoints: 0,
+        effectivePrice: 500,
+        provider: 'amazon_series_bulk'
+      }
+    ]
+  };
+
+  assert.equal(
+    canUseCachedSeriesPriceSnapshotForBook(book, {
+      seriesCandidateCache: new Map([['series:series-input', series]]),
+      store: { books: [book] }
+    }),
+    true
+  );
+
+  assert.equal(
+    canUseCachedSeriesPriceSnapshotForBook(book, {
+      seriesCandidateCache: new Map([['series:series-input', Promise.resolve(series)]]),
+      store: { books: [book] }
+    }),
+    false
+  );
 });
 
 test('discounted prices are prioritized for expiry recheck after a day', () => {

@@ -925,9 +925,27 @@ async function fetchKindleSeriesCandidate(input, options = {}) {
   const key = seriesCandidateCacheKey(input, options);
   if (cache.has(key)) return cache.get(key);
 
-  const promise = fetchKindleSeriesItems(input, options);
+  const promise = fetchKindleSeriesItems(input, options).then(
+    (series) => {
+      cache.set(key, series);
+      return series;
+    },
+    (error) => {
+      cache.delete(key);
+      throw error;
+    }
+  );
   cache.set(key, promise);
   return promise;
+}
+
+function cachedKindleSeriesCandidate(input, options = {}) {
+  const cache = options.seriesCandidateCache;
+  if (!cache || typeof cache.get !== 'function') return null;
+
+  const value = cache.get(seriesCandidateCacheKey(input, options));
+  if (!value || typeof value.then === 'function') return null;
+  return value;
 }
 
 function seriesCandidateCacheKey(input, options = {}) {
@@ -3397,7 +3415,15 @@ export async function runDueChecks(options = {}) {
         break;
       }
 
-      if (!(await waitBeforeCheck(pacing, results.length, startedAt, maxRuntimeMs, saveReserveMs))) {
+      const book = plan.books[index];
+      const canUseCachedSeriesPrice = canUseCachedSeriesPriceSnapshotForBook(book, {
+        seriesCandidateCache,
+        store
+      });
+      if (
+        !canUseCachedSeriesPrice &&
+        !(await waitBeforeCheck(pacing, results.length, startedAt, maxRuntimeMs, saveReserveMs))
+      ) {
         stoppedByRuntimeLimit = true;
         break;
       }
@@ -3407,7 +3433,6 @@ export async function runDueChecks(options = {}) {
         break;
       }
 
-      const book = plan.books[index];
       const runtime = runtimeAbortOptions(startedAt, maxRuntimeMs, {
         reserveMs: saveReserveMs,
         capMs: checkBookMaxRuntimeMs()
@@ -5116,7 +5141,8 @@ async function fetchSeriesPriceSnapshotForBook(asin, book = {}, options = {}) {
     const series = await fetchSeriesCandidates(input, {
       ...options,
       allowIncomplete: true,
-      skipBackfill: true
+      skipBackfill: true,
+      skipExternalFallback: options.skipExternalFallback ?? true
     });
     return seriesSnapshotFromKindleSeriesForBook(series, asin, book, {
       store: options.store
@@ -5124,6 +5150,23 @@ async function fetchSeriesPriceSnapshotForBook(asin, book = {}, options = {}) {
   } catch {
     return null;
   }
+}
+
+export function canUseCachedSeriesPriceSnapshotForBook(book = {}, options = {}) {
+  if (!shouldUseSeriesPriceSnapshot(book, options)) return false;
+
+  const input = seriesDiscoveryInput(book.sourceUrl, book.seriesKey);
+  if (!input) return false;
+
+  const series = cachedKindleSeriesCandidate(input, options);
+  if (!series) return false;
+
+  const snapshot = seriesSnapshotFromKindleSeriesForBook(series, book.asin, book, {
+    store: options.store
+  });
+  if (!snapshot || snapshot.currentPrice == null) return false;
+
+  return !suspiciousSnapshotReason(book, snapshot);
 }
 
 function shouldUseSeriesPriceSnapshot(book = {}, options = {}) {
