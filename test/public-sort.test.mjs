@@ -123,6 +123,27 @@ test('series total label includes per-book average price', () => {
   assert.match(label, /合計 ¥800 \/ 平均 ¥400/);
 });
 
+test('registration sort uses the latest checked time for a fully checked series', () => {
+  const { groupCheckedSortTime, compareGroupsByQueueOrder } = loadAppSortContext();
+  const laterSeriesCheck = groupCheckedSortTime([
+    { lastCheckedAt: '2026-05-15T12:00:00.000Z' },
+    { lastCheckedAt: '2026-05-16T12:00:00.000Z' }
+  ]);
+  const earlierSeriesCheck = groupCheckedSortTime([
+    { lastCheckedAt: '2026-05-15T18:00:00.000Z' },
+    { lastCheckedAt: '2026-05-15T19:00:00.000Z' }
+  ]);
+
+  assert.equal(laterSeriesCheck, Date.parse('2026-05-16T12:00:00.000Z'));
+  assert.equal(
+    compareGroupsByQueueOrder(
+      { title: 'later', sortCheckedAt: laterSeriesCheck, sortRegisteredAt: 0, order: 0 },
+      { title: 'earlier', sortCheckedAt: earlierSeriesCheck, sortRegisteredAt: 0, order: 1 }
+    ) > 0,
+    true
+  );
+});
+
 test('last cron new releases are inferred from series discovery additions', () => {
   const { newReleaseBooksFromLastCron } = loadAppSortContext();
   const automation = {

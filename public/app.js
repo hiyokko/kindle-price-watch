@@ -1021,7 +1021,7 @@ function groupCheckedSortTime(books) {
     .map((book) => (book.lastCheckedAt ? new Date(book.lastCheckedAt).getTime() : 0))
     .filter((time) => Number.isFinite(time) && time > 0);
   if (times.length < books.length) return null;
-  return Math.min(...times);
+  return Math.max(...times);
 }
 
 function groupRegistrationSortTime(books) {
