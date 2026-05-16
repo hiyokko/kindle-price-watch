@@ -3067,7 +3067,7 @@ export async function checkBookById(id, options = {}) {
     error.status = 404;
     throw error;
   }
-  return checkOneBook(book, options);
+  return checkOneBook(book, { ...options, store });
 }
 
 export async function repairBookPricesByAsins(asins, options = {}) {
@@ -3408,6 +3408,7 @@ export async function runDueChecks(options = {}) {
     const results = [];
     let stoppedByRuntimeLimit = false;
     const processedBookIds = new Set();
+    const cachedSeriesRetryCandidates = [];
     let transientErrorStreak = 0;
     for (let index = 0; index < plan.books.length; index += 1) {
       if (shouldStopBeforeNextBookCheck(startedAt, maxRuntimeMs, saveReserveMs)) {
@@ -3454,6 +3455,13 @@ export async function runDueChecks(options = {}) {
       }
       results.push(result);
       processedBookIds.add(book.id);
+      if (shouldRetryCheckWithCachedSeriesPrice(book, result)) {
+        cachedSeriesRetryCandidates.push({
+          index: results.length - 1,
+          bookId: book.id,
+          originalError: checkResultErrorMessage(result)
+        });
+      }
 
       if (discoverCheckedSeries) {
         if (shouldStopBeforeSeriesDiscovery(startedAt, maxRuntimeMs, saveReserveMs)) {
@@ -3500,6 +3508,18 @@ export async function runDueChecks(options = {}) {
         stoppedByRuntimeLimit = true;
         break;
       }
+    }
+
+    const cachedSeriesRetries = await retryCachedSeriesCheckFailuresInStore(store, cachedSeriesRetryCandidates, {
+      ...options,
+      getWebhookUrls,
+      deferSeriesNotifications: true,
+      seriesNotificationBaselines,
+      seriesFreshAfter,
+      seriesCandidateCache
+    });
+    for (const retry of cachedSeriesRetries) {
+      results[retry.index] = retry.result;
     }
 
     const priceIntegrityAudit = shouldRunPriceIntegrityAudit(source, options)
@@ -4748,11 +4768,12 @@ function isValidDiscordWebhookUrl(value) {
 
 async function checkOneBook(bookRef, options = {}) {
   const now = new Date().toISOString();
+  const referenceStore = options.store || await readStoreWithPriceRepairs();
   const snapshotResult = await settleSnapshot(bookRef.asin, bookRef, {
     signal: options.signal,
     timeoutMs: options.timeoutMs,
     seriesCandidateCache: options.seriesCandidateCache,
-    store
+    store: referenceStore
   });
   let applied = { checkedBook: null, events: [] };
 
@@ -4773,7 +4794,8 @@ async function checkOneBookInStore(store, bookRef, options = {}) {
   const snapshotResult = await settleSnapshot(bookRef.asin, bookRef, {
     signal: options.signal,
     timeoutMs: options.timeoutMs,
-    seriesCandidateCache: options.seriesCandidateCache
+    seriesCandidateCache: options.seriesCandidateCache,
+    store
   });
   const applied = applyCheckResultToStore(store, bookRef, snapshotResult, now, {
     updateCursor: options.updateCursor
@@ -4783,6 +4805,56 @@ async function checkOneBookInStore(store, bookRef, options = {}) {
     notificationStore: store
   });
   return checkResultPayload(applied.checkedBook, snapshotResult, applied.events, sent);
+}
+
+async function retryCachedSeriesCheckFailuresInStore(store, candidates = [], options = {}) {
+  if (!Array.isArray(candidates) || candidates.length === 0) return [];
+
+  const retries = [];
+  const seenBookIds = new Set();
+  for (const candidate of candidates) {
+    const bookId = candidate?.bookId;
+    if (!bookId || seenBookIds.has(bookId)) continue;
+    seenBookIds.add(bookId);
+
+    const book = store.books.find((item) => item.id === bookId);
+    if (!book) continue;
+
+    const snapshotResult = cachedSeriesSnapshotResultForBook(book, {
+      seriesCandidateCache: options.seriesCandidateCache,
+      store
+    });
+    if (!snapshotResult?.ok) continue;
+
+    const now = new Date().toISOString();
+    const applied = applyCheckResultToStore(store, book, snapshotResult, now, {
+      updateCursor: false,
+      deferSeriesNotifications: options.deferSeriesNotifications,
+      seriesNotificationBaselines: options.seriesNotificationBaselines,
+      seriesFreshAfter: options.seriesFreshAfter
+    });
+    const sent = await sendCheckNotifications(applied.checkedBook, applied.events, {
+      ...options,
+      notificationStore: store
+    });
+
+    retries.push({
+      index: candidate.index,
+      result: {
+        ...checkResultPayload(applied.checkedBook, snapshotResult, applied.events, sent),
+        retry: 'cached_series_price',
+        originalError: candidate.originalError || ''
+      }
+    });
+  }
+
+  return retries;
+}
+
+function shouldRetryCheckWithCachedSeriesPrice(book = {}, result = {}) {
+  if (!book?.id || !shouldUseSeriesPriceSnapshot(book)) return false;
+  const error = checkResultErrorMessage(result);
+  return Boolean(error && isTransientSnapshotError(error));
 }
 
 function applyCheckResultToStore(store, bookRef, snapshotResult, now, options = {}) {
@@ -5153,20 +5225,33 @@ async function fetchSeriesPriceSnapshotForBook(asin, book = {}, options = {}) {
 }
 
 export function canUseCachedSeriesPriceSnapshotForBook(book = {}, options = {}) {
-  if (!shouldUseSeriesPriceSnapshot(book, options)) return false;
+  return Boolean(cachedSeriesSnapshotResultForBook(book, options)?.ok);
+}
+
+function cachedSeriesSnapshotResultForBook(book = {}, options = {}) {
+  if (!shouldUseSeriesPriceSnapshot(book, options)) return null;
 
   const input = seriesDiscoveryInput(book.sourceUrl, book.seriesKey);
-  if (!input) return false;
+  if (!input) return null;
 
   const series = cachedKindleSeriesCandidate(input, options);
-  if (!series) return false;
+  if (!series) return null;
 
   const snapshot = seriesSnapshotFromKindleSeriesForBook(series, book.asin, book, {
     store: options.store
   });
-  if (!snapshot || snapshot.currentPrice == null) return false;
+  if (!snapshot || snapshot.currentPrice == null) return null;
 
-  return !suspiciousSnapshotReason(book, snapshot);
+  const suspiciousReason = suspiciousSnapshotReason(book, snapshot);
+  if (suspiciousReason) {
+    return {
+      ok: false,
+      snapshot,
+      error: `疑わしい価格を無視しました (${suspiciousReason})`
+    };
+  }
+
+  return { ok: true, snapshot };
 }
 
 function shouldUseSeriesPriceSnapshot(book = {}, options = {}) {
