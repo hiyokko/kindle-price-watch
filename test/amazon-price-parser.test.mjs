@@ -93,6 +93,49 @@ test('Amazon series parser ignores episode bulk forms when child list identifies
   assert.equal(items[1].asin, 'B0995RQYYJ');
 });
 
+test('Amazon series parser prefers collected-volume bulk form over episode bulk form', () => {
+  const items = extractKindleSeriesItemsFromHtml(`
+    <meta property="og:title" content="ＷＨＩＴＥ ＮＯＴＥ ＰＡＤ (全2巻) Kindle版" />
+    <span id="collection-masthead__size">全2巻 | 全6話</span>
+    <h5><span class="a-heading-text">まとめ買い (話)</span></h5>
+    <form>
+      <input name="items[0].action.asin" value="B086G55CDG">
+      <input name="items[0].action.displayedPrice.value" value="154">
+      <input name="items[0].action.displayedPrice.currency" value="JPY">
+      <input name="items[1].action.asin" value="B086GLN8HZ">
+      <input name="items[1].action.displayedPrice.value" value="154">
+      <input name="items[1].action.displayedPrice.currency" value="JPY">
+      <input name="items[2].action.asin" value="B086GJYWNL">
+      <input name="items[2].action.displayedPrice.value" value="154">
+      <input name="items[2].action.displayedPrice.currency" value="JPY">
+      <input name="items[3].action.asin" value="B086GJ2BLT">
+      <input name="items[3].action.displayedPrice.value" value="154">
+      <input name="items[3].action.displayedPrice.currency" value="JPY">
+      <input name="items[4].action.asin" value="B086GQ8KGN">
+      <input name="items[4].action.displayedPrice.value" value="154">
+      <input name="items[4].action.displayedPrice.currency" value="JPY">
+      <input name="items[5].action.asin" value="B086GMYN4Z">
+      <input name="items[5].action.displayedPrice.value" value="154">
+      <input name="items[5].action.displayedPrice.currency" value="JPY">
+    </form>
+    <h5><span class="a-heading-text">まとめ買い (巻)</span></h5>
+    <form>
+      <input name="items[0].action.asin" value="B0191356AU">
+      <input name="items[0].action.displayedPrice.value" value="462">
+      <input name="items[0].action.displayedPrice.currency" value="JPY">
+      <input name="items[1].action.asin" value="B01NCLNN5C">
+      <input name="items[1].action.displayedPrice.value" value="462">
+      <input name="items[1].action.displayedPrice.currency" value="JPY">
+    </form>
+  `);
+
+  assert.equal(items.length, 2);
+  assert.equal(items[0].asin, 'B0191356AU');
+  assert.equal(items[0].currentPrice, 462);
+  assert.equal(items[0].provider, 'amazon_series_bulk');
+  assert.equal(items[1].asin, 'B01NCLNN5C');
+});
+
 test('Amazon HTML parser keeps explicit Kindle price separate from discount and points', () => {
   const snapshot = extractAmazonHtmlSnapshotFromHtml(productHtml({
     title: '火の鳥 3',

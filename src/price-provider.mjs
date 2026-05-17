@@ -2972,17 +2972,28 @@ function extractLargestBulkOfferItems(html, options = {}) {
   let result = [];
 
   for (const match of value.matchAll(/<form\b[\s\S]*?<\/form>/gi)) {
-    const items = extractBulkOfferItemsFromFragment(match[0], options);
+    const items = extractBulkOfferItemsFromFragment(match[0], {
+      ...options,
+      seriesFormatKind: bulkOfferContextKind(value, match.index, match[0])
+    });
     if (isBetterBulkOfferCandidate(items, result)) result = items;
   }
 
-  const wholePageItems = extractBulkOfferItemsFromFragment(value, options);
+  const wholePageItems = extractBulkOfferItemsFromFragment(value, {
+    ...options,
+    seriesFormatKind: bulkOfferContextKind(value, 0, value)
+  });
   if (isBetterBulkOfferCandidate(wholePageItems, result)) result = wholePageItems;
 
   for (const match of value.matchAll(/\bdata-offer-asins=["']([^"']+)["']/gi)) {
     const items = match[1]
       .split(',')
-      .map((asin, index) => bulkOfferItemFromAsin(asin.trim().toUpperCase(), index, options))
+      .map((asin, index) =>
+        bulkOfferItemFromAsin(asin.trim().toUpperCase(), index, {
+          ...options,
+          seriesFormatKind: bulkOfferContextKind(value, match.index, match[0])
+        })
+      )
       .filter(Boolean);
     if (isBetterBulkOfferCandidate(items, result)) result = items;
   }
@@ -3043,14 +3054,55 @@ function bulkOfferItemFromAsin(asin, index, options = {}) {
     imageSource: options.seriesImageUrl ? 'series_fallback' : '',
     amazonUrl: amazonUrlForAsin(normalized),
     volume,
+    seriesFormatKind: options.seriesFormatKind || '',
     provider: 'amazon_series_bulk'
   };
 }
 
 function isBetterBulkOfferCandidate(candidate, current) {
   if (!candidate.length) return false;
+  const candidateRank = bulkOfferSeriesFormatRank(candidate);
+  const currentRank = bulkOfferSeriesFormatRank(current);
+  if (candidateRank !== currentRank) return candidateRank > currentRank;
   if (candidate.length !== current.length) return candidate.length > current.length;
   return countPricedItems(candidate) > countPricedItems(current);
+}
+
+function bulkOfferSeriesFormatRank(items = []) {
+  const kind = String(items.find((item) => item?.seriesFormatKind)?.seriesFormatKind || '');
+  if (kind === 'volume') return 3;
+  if (kind === 'unknown') return 2;
+  if (kind === 'mixed') return 1;
+  if (kind === 'episode') return 0;
+  return items.length ? 2 : -1;
+}
+
+function bulkOfferContextKind(pageHtml, index, fragment = '') {
+  const value = String(pageHtml || '');
+  const before = value.slice(Math.max(0, Number(index) - 12000), Math.max(0, Number(index)));
+  const label = lastBulkOfferLabelKind(before);
+  if (label) return label;
+
+  const text = cleanText(fragment || value);
+  const volumeMarkers = countMatches(text, /まとめ買い\s*[（(]\s*巻\s*[）)]|シリーズの巻|全\s*[0-9０-９]{1,4}\s*巻/u);
+  const episodeMarkers = countMatches(text, /まとめ買い\s*[（(]\s*話\s*[）)]|シリーズの話|全\s*[0-9０-９]{1,4}\s*話|単話|分冊/u);
+  if (volumeMarkers > 0 && episodeMarkers === 0) return 'volume';
+  if (episodeMarkers > 0 && volumeMarkers === 0) return 'episode';
+  if (volumeMarkers > 0 && episodeMarkers > 0) return 'mixed';
+  return 'unknown';
+}
+
+function lastBulkOfferLabelKind(value) {
+  const labels = [...String(value || '').matchAll(/まとめ買い\s*[（(]\s*(話|巻)\s*[）)]/gu)];
+  const label = labels.at(-1)?.[1];
+  if (label === '巻') return 'volume';
+  if (label === '話') return 'episode';
+  return '';
+}
+
+function countMatches(value, pattern) {
+  const regex = pattern.global ? pattern : new RegExp(pattern.source, `${pattern.flags}g`);
+  return [...String(value || '').matchAll(regex)].length;
 }
 
 function countPricedItems(items) {
