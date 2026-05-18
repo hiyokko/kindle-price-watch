@@ -802,7 +802,7 @@ async function refreshExistingSingleBookFromInput(id, input) {
     book.currentPrice = snapshot.currentPrice;
     book.currentPoints = snapshot.currentPoints;
     book.effectivePrice = snapshot.effectivePrice;
-    book.listPrice = mergedSnapshotListPrice(snapshot, book.listPrice);
+    applyMergedSnapshotListPrice(book, snapshot);
     applySnapshotPriceEvidence(book, snapshot);
     book.lowestPrice =
       snapshot.currentPrice == null
@@ -1702,8 +1702,14 @@ function updateExistingSeriesBook(book, item, options) {
       book.lowestEffectivePrice =
         book.lowestEffectivePrice == null ? effectivePrice : Math.min(book.lowestEffectivePrice, effectivePrice);
     }
-    if (shouldIgnoreListPriceForProvider(book.currentPrice, book.listPrice, provider)) book.listPrice = null;
-    if (listPrice != null && book.listPrice == null) book.listPrice = listPrice;
+    if (shouldIgnoreListPriceForProvider(book.currentPrice, book.listPrice, listPriceProviderForBook(book))) {
+      book.listPrice = null;
+      book.listPriceProvider = '';
+    }
+    if (listPrice != null && book.listPrice == null) {
+      book.listPrice = listPrice;
+      book.listPriceProvider = provider;
+    }
     if (item.provider) book.provider = item.provider;
     book.lastCheckedAt = book.lastCheckedAt || options.now;
     book.lastError = '';
@@ -1973,7 +1979,8 @@ function repairSuspiciousPriceState(book, store, options = {}) {
       book.currentPoints = latest.points || 0;
       book.effectivePrice = latest.effectivePrice ?? effectivePriceFromSeed(latest);
       book.provider = latest.provider || book.provider;
-      book.listPrice = trustedListPriceFor(book.currentPrice, latest.listPrice, book.provider);
+      book.listPrice = trustedListPriceFor(book.currentPrice, latest.listPrice, latest.listPriceProvider || book.provider);
+      book.listPriceProvider = book.listPrice == null ? '' : latest.listPriceProvider || book.provider;
       book.lastCheckedAt = latest.checkedAt || book.lastCheckedAt;
       currentRestored = true;
       changed = true;
@@ -2549,8 +2556,9 @@ function hasSuspiciousStoredPriceFloor(book) {
 }
 
 function clearUnreliableStoredListPrice(book) {
-  if (!shouldIgnoreListPriceForProvider(book.currentPrice, book.listPrice, book.provider)) return false;
+  if (!shouldIgnoreListPriceForProvider(book.currentPrice, book.listPrice, listPriceProviderForBook(book))) return false;
   book.listPrice = null;
+  book.listPriceProvider = '';
   return true;
 }
 
@@ -2558,14 +2566,16 @@ function clearStaleSeriesDerivedListPrice(book, store) {
   const listPrice = nullableNumber(book?.listPrice);
   if (listPrice == null) return false;
 
+  const listPriceProvider = listPriceProviderForBook(book);
   const shouldClear =
-    isSeriesDerivedPriceProvider(book.provider) ||
-    hasSeriesDerivedListPriceHistory(book, store, listPrice);
+    isSeriesDerivedPriceProvider(listPriceProvider) ||
+    (!book.listPriceProvider && hasSeriesDerivedListPriceHistory(book, store, listPrice));
   if (!shouldClear) return false;
 
   let changed = false;
   if (book.listPrice != null) {
     book.listPrice = null;
+    book.listPriceProvider = '';
     changed = true;
   }
 
@@ -2586,8 +2596,9 @@ function clearSeriesDerivedListPricesFromHistory(store) {
   let cleared = 0;
   for (const entry of history) {
     if (entry?.listPrice == null) continue;
-    if (!isSeriesDerivedPriceProvider(entry.provider)) continue;
+    if (!isSeriesDerivedPriceProvider(entry.listPriceProvider || entry.provider)) continue;
     entry.listPrice = null;
+    entry.listPriceProvider = '';
     cleared += 1;
   }
   return cleared;
@@ -2599,7 +2610,7 @@ function hasSeriesDerivedListPriceHistory(book, store, listPrice) {
     (entry) =>
       isPriceHistoryEntryForBook(entry, book) &&
       nullableNumber(entry.listPrice) === listPrice &&
-      isSeriesDerivedPriceProvider(entry.provider)
+      isSeriesDerivedPriceProvider(entry.listPriceProvider || entry.provider)
   );
 }
 
@@ -2612,6 +2623,20 @@ function isPriceHistoryEntryForBook(entry, book) {
 
 function trustedListPriceFor(currentPrice, listPrice, provider) {
   return shouldIgnoreListPriceForProvider(currentPrice, listPrice, provider) ? null : listPrice ?? null;
+}
+
+function listPriceProviderForBook(book = {}) {
+  return book.listPriceProvider || book.provider || '';
+}
+
+function applyMergedSnapshotListPrice(book, snapshot) {
+  const listPrice = mergedSnapshotListPrice(snapshot, book.listPrice);
+  book.listPrice = listPrice;
+  if (listPrice == null) {
+    book.listPriceProvider = '';
+  } else if (snapshot?.listPrice != null) {
+    book.listPriceProvider = snapshot.provider || book.listPriceProvider || book.provider || '';
+  }
 }
 
 function mergedSnapshotListPrice(snapshot, existingListPrice) {
@@ -3525,6 +3550,16 @@ export async function runDueChecks(options = {}) {
       results[retry.index] = retry.result;
     }
 
+    const listPriceChallenge = shouldRunListPriceChallenge(source, options)
+      ? await runListPriceChallengeInStore(store, results, {
+          startedAt,
+          maxRuntimeMs,
+          saveReserveMs,
+          settings,
+          pacing
+        })
+      : null;
+
     const priceIntegrityAudit = shouldRunPriceIntegrityAudit(source, options)
       ? await runPriceIntegrityAudit(store, results, {
           ...options,
@@ -3556,6 +3591,7 @@ export async function runDueChecks(options = {}) {
       executionBoundaryAt: scheduleIntent?.executionBoundaryAt || '',
       importQueue,
       seriesDiscovery,
+      listPriceChallenge,
       priceIntegrityAudit,
       checkErrorSummary,
       seriesNotifications,
@@ -3588,6 +3624,13 @@ export async function runDueChecks(options = {}) {
           lastSeriesDiscoverySkipped: seriesDiscovery?.skippedNoRun || 0,
           lastSeriesDiscoveryDeferred: seriesDiscovery?.deferred || 0,
           lastSeriesDiscoveryErrors: seriesDiscovery?.errors?.length || 0,
+          lastListPriceChallengeEligible: listPriceChallenge?.eligible || 0,
+          lastListPriceChallengeAttempted: listPriceChallenge?.attempted || 0,
+          lastListPriceChallengeUpdated: listPriceChallenge?.updated || 0,
+          lastListPriceChallengeNotFound: listPriceChallenge?.notFound || 0,
+          lastListPriceChallengeRejected: listPriceChallenge?.rejected || 0,
+          lastListPriceChallengeErrors: listPriceChallenge?.errors?.length || 0,
+          lastListPriceChallengeStoppedByRuntimeLimit: Boolean(listPriceChallenge?.stoppedByRuntimeLimit),
           lastPriceIntegrityAuditChecked: priceIntegrityAudit?.checked || 0,
           lastPriceIntegrityAuditSuspicious: priceIntegrityAudit?.suspicious || 0,
           lastPriceIntegrityAuditWarnings: priceIntegrityAudit?.warnings || 0,
@@ -3598,7 +3641,13 @@ export async function runDueChecks(options = {}) {
         }
       : null;
 
-    if (processedBookIds.size > 0 || cronFields || hasSeriesDiscoveryWork(seriesDiscovery) || hasImportQueueWork(importQueue)) {
+    if (
+      processedBookIds.size > 0 ||
+      cronFields ||
+      hasSeriesDiscoveryWork(seriesDiscovery) ||
+      hasImportQueueWork(importQueue) ||
+      hasListPriceChallengeWork(listPriceChallenge)
+    ) {
       await persistBulkCheckStore({
         store,
         cronFields
@@ -4623,6 +4672,7 @@ export async function saveSettings(settings) {
     secondCheckExecutionHourJst: 15,
     secondCheckExecutionMinuteJst: 54,
     batchSize: floorNumber(settings.batchSize, 1, 50),
+    listPriceChallengeBatchSize: clampNumber(settings.listPriceChallengeBatchSize, 0, 50, 50),
     notifyOnPriceDrop: Boolean(settings.notifyOnPriceDrop),
     notifyOnBestEver: Boolean(settings.notifyOnBestEver)
   };
@@ -4866,6 +4916,201 @@ function shouldRetryCheckWithCachedSeriesPrice(book = {}, result = {}) {
   return Boolean(error && isTransientSnapshotError(error));
 }
 
+function shouldRunListPriceChallenge(source, options = {}) {
+  if (options.listPriceChallenge === false) return false;
+  if (options.listPriceChallenge === true) return true;
+  return source === 'cron' || source === 'scheduler';
+}
+
+async function runListPriceChallengeInStore(store, results = [], options = {}) {
+  const limit = clampNumber(options.settings?.listPriceChallengeBatchSize, 0, 50, 50);
+  const { books, eligible } = selectListPriceChallengeCandidates(store, results, limit);
+  const summary = {
+    eligible,
+    limit,
+    attempted: 0,
+    updated: 0,
+    notFound: 0,
+    rejected: 0,
+    skippedByLimit: Math.max(0, eligible - books.length),
+    stoppedByRuntimeLimit: false,
+    rejectionBreakdown: [],
+    errors: []
+  };
+  if (limit <= 0 || books.length === 0) return summary;
+
+  const pacing = options.pacing || checkPacing();
+  const now = new Date().toISOString();
+  for (const book of books) {
+    if (shouldStopBeforeListPriceChallenge(options.startedAt, options.maxRuntimeMs, options.saveReserveMs)) {
+      summary.stoppedByRuntimeLimit = true;
+      break;
+    }
+    if (!(await waitBeforeCheck(pacing, summary.attempted, options.startedAt, options.maxRuntimeMs, options.saveReserveMs))) {
+      summary.stoppedByRuntimeLimit = true;
+      break;
+    }
+
+    const runtime = runtimeAbortOptions(options.startedAt, options.maxRuntimeMs, {
+      reserveMs: options.saveReserveMs,
+      capMs: listPriceChallengeSnapshotTimeoutMs()
+    });
+    summary.attempted += 1;
+    try {
+      const snapshot = await fetchAmazonHtmlSnapshot(book.asin, amazonUrlForAsin(book.asin), {
+        ...book,
+        signal: runtime.signal,
+        timeoutMs: listPriceChallengeSnapshotTimeoutMs(),
+        allowAmazonExtendedFallback: false,
+        allowAmazonSearchFallback: false,
+        preferListasinFallback: false
+      });
+      const listPrice = trustedListPriceFor(book.currentPrice, snapshot.listPrice, snapshot.provider);
+      if (listPrice == null) {
+        summary.notFound += 1;
+        continue;
+      }
+
+      const validation = validateListPriceChallengeCandidate(book, listPrice, store);
+      if (!validation.ok) {
+        summary.rejected += 1;
+        incrementListPriceChallengeRejection(summary, validation.reason);
+        continue;
+      }
+
+      applyListPriceChallengeResult(book, listPrice, snapshot.provider, now);
+      summary.updated += 1;
+    } catch (error) {
+      pushListPriceChallengeError(summary, book, error);
+    } finally {
+      runtime.cleanup();
+    }
+  }
+
+  return summary;
+}
+
+export function selectListPriceChallengeCandidates(store = {}, results = [], limit = 50) {
+  const booksById = new Map((store.books || []).map((book) => [book.id, book]));
+  const seen = new Set();
+  const candidates = [];
+
+  for (const result of results || []) {
+    const id = result?.book?.id;
+    if (!result?.ok || !id || seen.has(id)) continue;
+    seen.add(id);
+
+    const book = booksById.get(id);
+    if (!book) continue;
+    if (!hasTrustedCurrentPrice(book)) continue;
+    if (hasDirectStoredListPrice(book)) continue;
+    candidates.push(book);
+  }
+
+  const normalizedLimit = clampNumber(limit, 0, 50, 50);
+  return {
+    eligible: candidates.length,
+    books: candidates.slice(0, normalizedLimit)
+  };
+}
+
+function hasDirectStoredListPrice(book = {}) {
+  const listPrice = nullableNumber(book.listPrice);
+  if (listPrice == null) return false;
+  return !shouldIgnoreListPriceForProvider(book.currentPrice, listPrice, listPriceProviderForBook(book));
+}
+
+export function validateListPriceChallengeCandidate(book = {}, listPrice, store = {}) {
+  const candidate = nullableNumber(listPrice);
+  if (candidate == null || candidate <= 0) return { ok: false, reason: 'list_price_missing' };
+
+  const currentPrice = nullableNumber(book.currentPrice);
+  if (currentPrice == null || currentPrice < 0) return { ok: false, reason: 'current_price_missing' };
+  if (candidate <= currentPrice) return { ok: false, reason: 'not_above_current_price' };
+
+  const history = listPriceChallengeHistoryContext(book, store);
+  if (history.maxObserved != null && history.hasMeaningfulCeiling) {
+    if (candidate > history.maxObserved * 1.8 && candidate - history.maxObserved >= 1000) {
+      return { ok: false, reason: 'above_price_history' };
+    }
+    if (candidate < history.maxObserved * 0.55 && history.maxObserved - candidate >= 500) {
+      return { ok: false, reason: 'below_price_history' };
+    }
+  }
+
+  return { ok: true, reason: '' };
+}
+
+function listPriceChallengeHistoryContext(book = {}, store = {}) {
+  const values = [];
+  const push = (value) => {
+    const number = nullableNumber(value);
+    if (number != null && number > 0) values.push(number);
+  };
+
+  push(book.currentPrice);
+  push(book.effectivePrice);
+  for (const entry of store.priceHistory || []) {
+    if (!isPriceHistoryEntryForBook(entry, book)) continue;
+    if (isUnvalidatedSeriesPriceHistoryEntry(entry)) continue;
+    if (isSuspiciousHistoryEntry(entry, book)) continue;
+    push(entry.price);
+    push(entry.effectivePrice);
+  }
+
+  if (values.length === 0) {
+    return { maxObserved: null, hasMeaningfulCeiling: false };
+  }
+
+  const maxObserved = Math.max(...values);
+  const currentPrice = nullableNumber(book.currentPrice);
+  const hasMeaningfulCeiling =
+    currentPrice != null &&
+    maxObserved >= currentPrice * 1.25 &&
+    maxObserved - currentPrice >= 100;
+  return { maxObserved, hasMeaningfulCeiling };
+}
+
+function applyListPriceChallengeResult(book, listPrice, provider, now) {
+  book.listPrice = listPrice;
+  book.listPriceProvider = provider || 'amazon_html';
+  book.updatedAt = now;
+}
+
+function incrementListPriceChallengeRejection(summary, reason) {
+  const normalized = reason || 'rejected';
+  const existing = summary.rejectionBreakdown.find((entry) => entry.reason === normalized);
+  if (existing) {
+    existing.count += 1;
+  } else {
+    summary.rejectionBreakdown.push({ reason: normalized, count: 1 });
+  }
+}
+
+function pushListPriceChallengeError(summary, book, error) {
+  if (summary.errors.length >= 10) return;
+  summary.errors.push({
+    asin: book.asin || '',
+    title: truncateSummaryText(book.title || '', 80),
+    error: truncateSummaryText(error?.message || String(error), 120)
+  });
+}
+
+function listPriceChallengeSnapshotTimeoutMs() {
+  return floorNumber(process.env.LIST_PRICE_CHALLENGE_SNAPSHOT_TIMEOUT_MS, 1000, 20000);
+}
+
+function shouldStopBeforeListPriceChallenge(startedAt, maxRuntimeMs, reserveMs = 0) {
+  if (shouldStopForRuntimeLimit(startedAt, maxRuntimeMs, 0, reserveMs)) return true;
+  return maxRuntimeMs > 0 && remainingRuntimeMs(startedAt, maxRuntimeMs, reserveMs) <= minimumUsefulListPriceChallengeRuntimeMs();
+}
+
+function minimumUsefulListPriceChallengeRuntimeMs() {
+  const configured = floorNumber(process.env.LIST_PRICE_CHALLENGE_MIN_RUNTIME_MS, 0, 0);
+  if (configured > 0) return configured;
+  return Math.max(30000, listPriceChallengeSnapshotTimeoutMs() + 10000);
+}
+
 function applyCheckResultToStore(store, bookRef, snapshotResult, now, options = {}) {
   const settings = mergedRuntimeSettings(store.settings);
   const book = store.books.find((item) => item.id === bookRef.id);
@@ -4914,7 +5159,7 @@ function applyCheckResultToStore(store, bookRef, snapshotResult, now, options = 
   book.currentPrice = snapshot.currentPrice;
   book.currentPoints = snapshot.currentPoints;
   book.effectivePrice = snapshot.effectivePrice;
-  book.listPrice = mergedSnapshotListPrice(snapshot, book.listPrice);
+  applyMergedSnapshotListPrice(book, snapshot);
   applySnapshotPriceEvidence(book, snapshot);
   book.provider = snapshot.provider;
   book.lastCheckedAt = now;
@@ -5152,6 +5397,20 @@ function cronSummaryPayload(result, context = {}) {
           deferred: result.seriesDiscovery.deferred || 0,
           markedNoRun: result.seriesDiscovery.markedNoRun || 0,
           errors: result.seriesDiscovery.errors?.length || 0
+        }
+      : null,
+    listPriceChallenge: result.listPriceChallenge
+      ? {
+          eligible: result.listPriceChallenge.eligible || 0,
+          limit: result.listPriceChallenge.limit || 0,
+          attempted: result.listPriceChallenge.attempted || 0,
+          updated: result.listPriceChallenge.updated || 0,
+          notFound: result.listPriceChallenge.notFound || 0,
+          rejected: result.listPriceChallenge.rejected || 0,
+          skippedByLimit: result.listPriceChallenge.skippedByLimit || 0,
+          stoppedByRuntimeLimit: Boolean(result.listPriceChallenge.stoppedByRuntimeLimit),
+          errors: result.listPriceChallenge.errors?.length || 0,
+          rejectionBreakdown: result.listPriceChallenge.rejectionBreakdown || []
         }
       : null,
     priceIntegrityAudit: result.priceIntegrityAudit
@@ -5643,6 +5902,7 @@ function historyEntry(book, checkedAt) {
     points: book.currentPoints || 0,
     effectivePrice: book.effectivePrice,
     listPrice: book.listPrice,
+    listPriceProvider: book.listPrice == null ? '' : listPriceProviderForBook(book),
     provider: book.provider,
     explicitPriceDisplay: Boolean(book.explicitPriceDisplay),
     explicitFreeKindlePrice: Boolean(book.explicitFreeKindlePrice),
@@ -6929,6 +7189,18 @@ function hasImportQueueWork(importQueue = null) {
   );
 }
 
+function hasListPriceChallengeWork(listPriceChallenge = null) {
+  if (!listPriceChallenge) return false;
+  return Boolean(
+    listPriceChallenge.attempted > 0 ||
+      listPriceChallenge.updated > 0 ||
+      listPriceChallenge.rejected > 0 ||
+      listPriceChallenge.notFound > 0 ||
+      listPriceChallenge.stoppedByRuntimeLimit ||
+      (Array.isArray(listPriceChallenge.errors) && listPriceChallenge.errors.length > 0)
+  );
+}
+
 function hasSeriesDiscoveryWork(seriesDiscovery = null) {
   if (!seriesDiscovery) return false;
   return Boolean(
@@ -6953,6 +7225,7 @@ function mergedRuntimeSettings(settings = {}) {
     secondCheckExecutionHourJst: schedule.secondCheckExecutionHourJst,
     secondCheckExecutionMinuteJst: schedule.secondCheckExecutionMinuteJst,
     batchSize: floorNumber(settings.batchSize, 1, 50),
+    listPriceChallengeBatchSize: clampNumber(settings.listPriceChallengeBatchSize, 0, 50, 50),
     notifyOnPriceDrop: settings.notifyOnPriceDrop !== false,
     notifyOnBestEver: settings.notifyOnBestEver !== false
   };

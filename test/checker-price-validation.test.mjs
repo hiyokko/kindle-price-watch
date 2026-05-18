@@ -8,12 +8,14 @@ import {
   isFutureReleaseDate,
   priceIntegrityIssueForBook,
   repairStorePriceState,
+  selectListPriceChallengeCandidates,
   seriesAggregateSnapshot,
   seriesSnapshotFromKindleSeriesForBook,
   snapshotInputUrlForBook,
   summarizeCheckResultErrors,
   suspiciousSnapshotReason,
-  suspiciousPriceReason
+  suspiciousPriceReason,
+  validateListPriceChallengeCandidate
 } from '../src/checker.mjs';
 
 test('price validation rejects tiny Amazon HTML prices without a prior reference', () => {
@@ -717,4 +719,69 @@ test('discounted prices are prioritized for expiry recheck after a day', () => {
     }, Date.UTC(2026, 4, 11, 1, 0, 0)),
     false
   );
+});
+
+test('list price challenge only targets successful current-price checks without direct list price', () => {
+  const store = {
+    books: [
+      {
+        id: 'target',
+        asin: 'B000000001',
+        currentPrice: 330,
+        effectivePrice: 327,
+        provider: 'validated_series_fallback'
+      },
+      {
+        id: 'already',
+        asin: 'B000000002',
+        currentPrice: 330,
+        effectivePrice: 327,
+        listPrice: 660,
+        listPriceProvider: 'amazon_html',
+        provider: 'validated_series_fallback'
+      },
+      {
+        id: 'failed',
+        asin: 'B000000003',
+        currentPrice: 330,
+        effectivePrice: 327,
+        provider: 'amazon_html'
+      }
+    ]
+  };
+
+  const selected = selectListPriceChallengeCandidates(
+    store,
+    [
+      { ok: true, book: { id: 'target' } },
+      { ok: true, book: { id: 'already' } },
+      { ok: false, book: { id: 'failed' }, error: 'タイムアウト' }
+    ],
+    50
+  );
+
+  assert.equal(selected.eligible, 1);
+  assert.deepEqual(selected.books.map((book) => book.id), ['target']);
+});
+
+test('list price challenge rejects candidates far above established price history', () => {
+  const book = {
+    id: 'book-1',
+    asin: 'B000000001',
+    currentPrice: 500,
+    effectivePrice: 495,
+    provider: 'amazon_html'
+  };
+  const store = {
+    priceHistory: [
+      { bookId: 'book-1', asin: 'B000000001', price: 500, effectivePrice: 495, provider: 'amazon_html' },
+      { bookId: 'book-1', asin: 'B000000001', price: 900, effectivePrice: 891, provider: 'amazon_html' }
+    ]
+  };
+
+  assert.deepEqual(validateListPriceChallengeCandidate(book, 1200, store), { ok: true, reason: '' });
+  assert.deepEqual(validateListPriceChallengeCandidate(book, 3000, store), {
+    ok: false,
+    reason: 'above_price_history'
+  });
 });

@@ -34,3 +34,20 @@ test('public book output keeps direct Amazon HTML list prices', () => {
   assert.equal(book.listPrice, 594);
   assert.equal(book.discountRate, 82);
 });
+
+test('public book output keeps direct list price source when current price came from series', () => {
+  const book = publicBook({
+    id: 'book-3',
+    asin: 'B009KYC6S6',
+    title: '進撃の巨人 1',
+    currentPrice: 110,
+    currentPoints: 1,
+    effectivePrice: 109,
+    listPrice: 594,
+    listPriceProvider: 'amazon_html',
+    provider: 'validated_series_fallback'
+  });
+
+  assert.equal(book.listPrice, 594);
+  assert.equal(book.discountRate, 82);
+});

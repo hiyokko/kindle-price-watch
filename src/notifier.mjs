@@ -134,6 +134,13 @@ export function buildCronSummaryNotification(summary = {}) {
           inline: false
         }
       : null,
+    summary.listPriceChallenge
+      ? {
+          name: 'listPrice補完',
+          value: listPriceChallengeSummaryText(summary.listPriceChallenge),
+          inline: false
+        }
+      : null,
     summary.priceIntegrityAudit
       ? {
           name: '価格監査',
@@ -160,6 +167,40 @@ export function buildCronSummaryNotification(summary = {}) {
       }
     ]
   };
+}
+
+function listPriceChallengeSummaryText(summary = {}) {
+  const parts = [
+    `対象 ${Number(summary.eligible || 0).toLocaleString('ja-JP')}`,
+    `試行 ${Number(summary.attempted || 0).toLocaleString('ja-JP')}`,
+    `保存 ${Number(summary.updated || 0).toLocaleString('ja-JP')}`,
+    `未検出 ${Number(summary.notFound || 0).toLocaleString('ja-JP')}`,
+    `除外 ${Number(summary.rejected || 0).toLocaleString('ja-JP')}`,
+    `エラー ${Number(summary.errors || 0).toLocaleString('ja-JP')}`
+  ];
+  if (Number(summary.skippedByLimit || 0) > 0) {
+    parts.push(`上限超過 ${Number(summary.skippedByLimit || 0).toLocaleString('ja-JP')}`);
+  }
+  if (summary.stoppedByRuntimeLimit) parts.push('時間切れ');
+
+  const rejectionText = Array.isArray(summary.rejectionBreakdown) && summary.rejectionBreakdown.length > 0
+    ? `\n除外内訳: ${summary.rejectionBreakdown
+        .slice(0, 3)
+        .map((entry) => `${listPriceChallengeRejectionLabel(entry.reason)} ${Number(entry.count || 0).toLocaleString('ja-JP')}`)
+        .join(' / ')}`
+    : '';
+  return `${parts.join(' / ')}${rejectionText}`;
+}
+
+function listPriceChallengeRejectionLabel(reason = '') {
+  const labels = {
+    list_price_missing: 'listPriceなし',
+    current_price_missing: '現在価格なし',
+    not_above_current_price: '現在価格以下',
+    above_price_history: '履歴上限超過',
+    below_price_history: '履歴下限割れ'
+  };
+  return labels[reason] || reason || '除外';
 }
 
 function formatPriceLine(book) {

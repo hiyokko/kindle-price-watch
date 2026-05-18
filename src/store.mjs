@@ -18,6 +18,7 @@ const defaultStore = {
     secondCheckExecutionHourJst: 15,
     secondCheckExecutionMinuteJst: 54,
     batchSize: 50,
+    listPriceChallengeBatchSize: 50,
     notifyOnPriceDrop: true,
     notifyOnBestEver: true,
     discordWebhookUrls: null
@@ -53,7 +54,14 @@ const defaultStore = {
     lastPriceIntegrityAuditWarnings: 0,
     lastPriceIntegrityAuditRepaired: 0,
     lastPriceIntegrityAuditUnresolved: 0,
-    lastPriceIntegrityAuditFindings: []
+    lastPriceIntegrityAuditFindings: [],
+    lastListPriceChallengeEligible: 0,
+    lastListPriceChallengeAttempted: 0,
+    lastListPriceChallengeUpdated: 0,
+    lastListPriceChallengeNotFound: 0,
+    lastListPriceChallengeRejected: 0,
+    lastListPriceChallengeErrors: 0,
+    lastListPriceChallengeStoppedByRuntimeLimit: false
   },
   checkCursor: {
     lastBookId: '',
@@ -188,7 +196,7 @@ export function publicBook(book) {
 }
 
 function publicListPrice(book) {
-  if (!book || isSeriesDerivedPriceProvider(book.provider)) return null;
+  if (!book || isSeriesDerivedPriceProvider(book.listPriceProvider || book.provider)) return null;
   return book.listPrice;
 }
 

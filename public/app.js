@@ -28,6 +28,7 @@ const els = {
   thresholdInput: document.getElementById('thresholdInput'),
   scheduleDisplay: document.getElementById('scheduleDisplay'),
   batchInput: document.getElementById('batchInput'),
+  listPriceChallengeInput: document.getElementById('listPriceChallengeInput'),
   testNotifyButton: document.getElementById('testNotifyButton'),
   sortInput: document.getElementById('sortInput'),
   selectAllInput: document.getElementById('selectAllInput'),
@@ -97,6 +98,7 @@ els.settingsForm.addEventListener('submit', async (event) => {
   const payload = {
     notificationThreshold: Number(els.thresholdInput.value),
     batchSize: Number(els.batchInput.value),
+    listPriceChallengeBatchSize: Number(els.listPriceChallengeInput.value),
     notifyOnPriceDrop: true,
     notifyOnBestEver: true
   };
@@ -235,6 +237,7 @@ async function loadSettings() {
   els.thresholdInput.value = String(data.settings.notificationThreshold);
   els.scheduleDisplay.textContent = fixedScheduleLabel(data.settings);
   els.batchInput.value = String(data.settings.batchSize);
+  els.listPriceChallengeInput.value = String(data.settings.listPriceChallengeBatchSize ?? 50);
   renderSummary();
   renderBooks();
   renderBulkControls();
