@@ -45,7 +45,10 @@ const PRICE_INTEGRITY_SERIES_OUTLIER_RATIO = 0.55;
 export async function listBooks() {
   const store = await readStoreWithPriceRepairs();
   const seriesHistory = seriesHistorySummaries(store);
-  return store.books.map((book) => publicBookWithSeriesHistory(book, seriesHistory)).sort(sortBooks);
+  const discountReferences = observedDiscountReferenceSummaries(store);
+  return store.books
+    .map((book) => publicBookWithSeriesHistory(book, seriesHistory, discountReferences))
+    .sort(sortBooks);
 }
 
 async function readStoreWithPriceRepairs(options = {}) {
@@ -5811,8 +5814,8 @@ function nullableNumber(value) {
   return Number.isFinite(number) ? number : null;
 }
 
-function publicBookWithSeriesHistory(book, seriesHistory) {
-  const result = publicBook(book);
+function publicBookWithSeriesHistory(book, seriesHistory, discountReferences = new Map()) {
+  const result = publicBookWithObservedDiscountReference(book, discountReferences);
   const scope = notificationSeriesScope(book);
   const summary = scope ? seriesHistory.get(scope.key) : null;
   if (!summary) return result;
@@ -5826,6 +5829,68 @@ function publicBookWithSeriesHistory(book, seriesHistory) {
     seriesObservedBookCount: summary.bookCount,
     seriesObservedHistoryCount: summary.historyCount
   };
+}
+
+function publicBookWithObservedDiscountReference(book, discountReferences = new Map()) {
+  const result = publicBook(book);
+  if (result.listPrice != null) return result;
+
+  const reference = observedDiscountReferenceForBook(book, discountReferences);
+  if (!reference || reference.price == null) return result;
+
+  return {
+    ...result,
+    discountReferencePrice: reference.price,
+    discountReferenceSource: reference.source,
+    discountRate: discountRateForReference(result.effectivePrice, reference.price)
+  };
+}
+
+function observedDiscountReferenceForBook(book, references) {
+  if (!book || !references) return null;
+  return references.get(book.id) || references.get(`asin:${book.asin}`) || null;
+}
+
+function observedDiscountReferenceSummaries(store) {
+  const references = new Map();
+  const booksById = new Map((store.books || []).map((book) => [book.id, book]));
+  const booksByAsin = new Map((store.books || []).map((book) => [String(book.asin || ''), book]).filter(([asin]) => asin));
+
+  const add = (book, price, source) => {
+    const referencePrice = nullableNumber(price);
+    if (!book?.id || referencePrice == null || referencePrice <= 0) return;
+    setObservedDiscountReference(references, book.id, referencePrice, source);
+    if (book.asin) setObservedDiscountReference(references, `asin:${book.asin}`, referencePrice, source);
+  };
+
+  for (const book of store.books || []) {
+    if (isUnvalidatedSeriesPriceProvider(book.provider) || isUnverifiedFreeSeriesPriceProvider(book.provider, book.currentPrice)) {
+      continue;
+    }
+    add(book, book.currentPrice, 'current_observed');
+  }
+
+  for (const entry of store.priceHistory || []) {
+    const book = (entry.bookId && booksById.get(entry.bookId)) || (entry.asin && booksByAsin.get(String(entry.asin))) || null;
+    if (!book) continue;
+    if (isUnvalidatedSeriesPriceHistoryEntry(entry) || isSuspiciousHistoryEntry(entry, book)) continue;
+    add(book, entry.price, 'history_observed');
+  }
+
+  return references;
+}
+
+function setObservedDiscountReference(references, key, price, source) {
+  const current = references.get(key);
+  if (current && current.price >= price) return;
+  references.set(key, { price, source });
+}
+
+function discountRateForReference(effectivePrice, referencePrice) {
+  const current = nullableNumber(effectivePrice);
+  const reference = nullableNumber(referencePrice);
+  if (current == null || reference == null || reference <= 0) return null;
+  return Math.max(0, Math.round(((reference - current) / reference) * 100));
 }
 
 function seriesHistorySummaries(store) {

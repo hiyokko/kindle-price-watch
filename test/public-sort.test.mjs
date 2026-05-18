@@ -187,6 +187,39 @@ test('sale badge ignores ordinary point-only discounts', () => {
   );
 });
 
+test('sale badge and series discount use observed reference prices when list price is absent', () => {
+  const { bookDiscountRate, isBelowList, seriesTotalMetrics } = loadAppSortContext();
+  const book = {
+    currentPrice: 396,
+    currentPoints: 4,
+    effectivePrice: 392,
+    listPrice: null,
+    discountReferencePrice: 440,
+    discountRate: 11
+  };
+
+  assert.equal(isBelowList(book), true);
+  assert.equal(bookDiscountRate(book), 11);
+
+  const metrics = seriesTotalMetrics({
+    books: [
+      book,
+      {
+        currentPrice: 440,
+        currentPoints: 4,
+        effectivePrice: 436,
+        listPrice: null,
+        discountReferencePrice: 440,
+        discountRate: 1
+      }
+    ],
+    expectedCount: 2
+  });
+
+  assert.equal(metrics.listTotal, 880);
+  assert.equal(metrics.discountRate, 6);
+});
+
 test('registration sort uses the latest checked time for a fully checked series', () => {
   const { groupCheckedSortTime, compareGroupsByQueueOrder } = loadAppSortContext();
   const laterSeriesCheck = groupCheckedSortTime([

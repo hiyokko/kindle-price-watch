@@ -1213,7 +1213,7 @@ function seriesTotalMetrics(group) {
     (sum, book) => sum + Number(book.effectivePrice ?? Math.max(0, (book.currentPrice || 0) - (book.currentPoints || 0))),
     0
   );
-  const listTotal = discountBooks.reduce((sum, book) => sum + Number(book.listPrice || 0), 0);
+  const listTotal = discountBooks.reduce((sum, book) => sum + Number(bookDiscountReferencePrice(book) || 0), 0);
   const discountEffectiveTotal = discountBooks.reduce((sum, book) => sum + Number(book.effectivePrice || 0), 0);
   const missing = group.books.length - pricedBooks.length;
   const unregistered = Math.max(0, (group.expectedCount || group.books.length) - group.books.length);
@@ -1362,9 +1362,13 @@ function calculateDiscountRate(effectivePrice, listPrice) {
   return Math.max(0, Math.round(((list - effective) / list) * 100));
 }
 
+function bookDiscountReferencePrice(book) {
+  return book?.listPrice ?? book?.discountReferencePrice ?? null;
+}
+
 function bookDiscountRate(book) {
   if (book?.discountRate != null) return Number(book.discountRate);
-  return calculateDiscountRate(book?.effectivePrice, book?.listPrice);
+  return calculateDiscountRate(book?.effectivePrice, bookDiscountReferencePrice(book));
 }
 
 function discountRateLabel(value) {
@@ -1373,7 +1377,7 @@ function discountRateLabel(value) {
 
 function isBelowList(book) {
   const current = Number(book?.currentPrice);
-  const list = Number(book?.listPrice);
+  const list = Number(bookDiscountReferencePrice(book));
   if (!Number.isFinite(current) || !Number.isFinite(list) || list <= 0) return false;
   if (current < list) return true;
   return Number(bookDiscountRate(book)) >= MEANINGFUL_EFFECTIVE_DISCOUNT_RATE;

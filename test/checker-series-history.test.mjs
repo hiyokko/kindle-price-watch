@@ -25,3 +25,14 @@ test('deferred series notifications skip scopes that were removed during the run
     /async function sendDeferredSeriesNotifications[\s\S]+if \(!isActiveSeriesAggregateSnapshot\(baseline\)\) continue[\s\S]+if \(!isActiveSeriesAggregateSnapshot\(after\)\) continue/
   );
 });
+
+test('book listing adds observed discount references without overwriting list price', () => {
+  assert.match(
+    checkerSource,
+    /const discountReferences = observedDiscountReferenceSummaries\(store\)[\s\S]+publicBookWithSeriesHistory\(book, seriesHistory, discountReferences\)/
+  );
+  assert.match(
+    checkerSource,
+    /function publicBookWithObservedDiscountReference[\s\S]+if \(result\.listPrice != null\) return result[\s\S]+discountReferencePrice: reference\.price/
+  );
+});
