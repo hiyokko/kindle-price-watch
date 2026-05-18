@@ -1378,13 +1378,14 @@ async function fetchFromAmazonHtml(asin, inputUrl = '', options = {}) {
   const errors = [];
   let amazonBlocked = false;
   let listasinTried = false;
+  const allowExternalPriceFallback = options.allowExternalPriceFallback !== false;
 
   for (const url of amazonProductCandidateUrls(asin, inputUrl, options)) {
     try {
       const html = await fetchAmazonHtml(url, options);
       const snapshot = isAmazonSearchUrl(url)
-        ? extractAmazonSearchSnapshotFromHtml(html, asin, url, 'amazon_html')
-        : extractAmazonHtmlSnapshotFromHtml(html, asin, url, 'amazon_html');
+        ? extractAmazonSearchSnapshotFromHtml(html, asin, url, 'amazon_html', options)
+        : extractAmazonHtmlSnapshotFromHtml(html, asin, url, 'amazon_html', options);
       if (snapshot.currentPrice != null) return snapshot;
       lastSnapshot = snapshot;
     } catch (error) {
@@ -1397,7 +1398,7 @@ async function fetchFromAmazonHtml(asin, inputUrl = '', options = {}) {
     }
   }
 
-  if (shouldUseEarlyListasinFallback(options)) {
+  if (allowExternalPriceFallback && shouldUseEarlyListasinFallback(options)) {
     listasinTried = true;
     try {
       const snapshot = await fetchFromListasin(asin, snapshotSeedFromOptions(asin, options, lastSnapshot), options);
@@ -1407,7 +1408,7 @@ async function fetchFromAmazonHtml(asin, inputUrl = '', options = {}) {
     }
   }
 
-  if (!amazonBlocked && shouldUseAmazonReaderFallback()) {
+  if (!amazonBlocked && options.allowAmazonReaderFallback !== false && shouldUseAmazonReaderFallback()) {
     try {
       const snapshot = await fetchFromAmazonReader(asin, inputUrl, options);
       if (snapshot.currentPrice != null && !shouldDeferAmazonReaderPrice(snapshot, options)) {
@@ -1421,20 +1422,22 @@ async function fetchFromAmazonHtml(asin, inputUrl = '', options = {}) {
     }
   }
 
-  try {
-    const snapshot = await fetchFromKintyaku(asin, snapshotSeedFromOptions(asin, options, lastSnapshot), options);
-    if (snapshot.currentPrice != null) return lastSnapshot ? mergeSnapshotLike(lastSnapshot, snapshot) : snapshot;
-    lastSnapshot = lastSnapshot ? mergeSnapshotLike(lastSnapshot, snapshot) : snapshot;
-  } catch (error) {
-    errors.push(`Kintyaku: ${error.message}`);
-  }
-
-  if (!listasinTried) {
+  if (allowExternalPriceFallback) {
     try {
-      const snapshot = await fetchFromListasin(asin, snapshotSeedFromOptions(asin, options, lastSnapshot), options);
-      return lastSnapshot ? mergeSnapshotLike(lastSnapshot, snapshot) : snapshot;
+      const snapshot = await fetchFromKintyaku(asin, snapshotSeedFromOptions(asin, options, lastSnapshot), options);
+      if (snapshot.currentPrice != null) return lastSnapshot ? mergeSnapshotLike(lastSnapshot, snapshot) : snapshot;
+      lastSnapshot = lastSnapshot ? mergeSnapshotLike(lastSnapshot, snapshot) : snapshot;
     } catch (error) {
-      errors.push(`listasIn: ${error.message}`);
+      errors.push(`Kintyaku: ${error.message}`);
+    }
+
+    if (!listasinTried) {
+      try {
+        const snapshot = await fetchFromListasin(asin, snapshotSeedFromOptions(asin, options, lastSnapshot), options);
+        return lastSnapshot ? mergeSnapshotLike(lastSnapshot, snapshot) : snapshot;
+      } catch (error) {
+        errors.push(`listasIn: ${error.message}`);
+      }
     }
   }
 
@@ -2147,13 +2150,13 @@ function compactFetchErrors(errors) {
   return [...new Set([...unique.slice(0, readerError ? 2 : 3), searchError, readerError, kintyakuError, listasinError].filter(Boolean))].join(' / ');
 }
 
-export function extractAmazonHtmlSnapshotFromHtml(html, asin, url, provider = 'amazon_html') {
+export function extractAmazonHtmlSnapshotFromHtml(html, asin, url, provider = 'amazon_html', options = {}) {
   assertKindleBookProductPage(html);
   const base = extractAmazonHtmlSnapshotBase(html, asin, url, provider);
   const kindleOffer = extractKindlePurchaseOffer(html, asin);
   const allPrices = extractPrices(html);
   let currentPrice = kindleOffer.price ?? chooseLikelyKindlePrice(allPrices, html);
-  let listPrice = extractListPrice(html, currentPrice);
+  let listPrice = extractListPrice(html, listPriceReferencePrice(currentPrice, options));
   const inferredPrice = inferDiscountedKindlePrice(html, listPrice);
   if (shouldPreferInferredDiscountPrice({ currentPrice, inferredPrice, listPrice, html, explicitOffer: isExplicitKindleOffer(kindleOffer) })) {
     currentPrice = inferredPrice;
@@ -2165,7 +2168,7 @@ export function extractAmazonHtmlSnapshotFromHtml(html, asin, url, provider = 'a
   const corrected = correctImplausibleKindlePrice({ currentPrice, currentPoints, listPrice, prices: allPrices, html });
   currentPrice = corrected.currentPrice;
   currentPoints = corrected.currentPoints;
-  listPrice = extractListPrice(html, currentPrice) ?? listPrice;
+  listPrice = extractListPrice(html, listPriceReferencePrice(currentPrice, options)) ?? listPrice;
   const explicitPriceDisplay = currentPrice != null && hasExplicitPriceDisplay(html, currentPrice);
   const explicitFreeKindlePrice = currentPrice === 0 && (explicitPriceDisplay || hasExplicitFreeKindlePrice(html));
 
@@ -2179,7 +2182,7 @@ export function extractAmazonHtmlSnapshotFromHtml(html, asin, url, provider = 'a
   });
 }
 
-function extractAmazonSearchSnapshotFromHtml(html, asin, url, provider) {
+function extractAmazonSearchSnapshotFromHtml(html, asin, url, provider, options = {}) {
   const fragment = extractAmazonSearchResultFragment(html, asin);
   if (!fragment) throw new Error('Amazon検索結果に商品が見つかりません');
   assertKindleBookProductPage(fragment);
@@ -2192,7 +2195,7 @@ function extractAmazonSearchSnapshotFromHtml(html, asin, url, provider) {
     extractItemTitle(fragment, asin);
   const imageUrl = extractItemImage(fragment);
   const productUrl = absoluteAmazonHref(extractAsinHref(fragment, asin)) || amazonUrlForAsin(asin);
-  let listPrice = extractListPrice(fragment, currentPrice);
+  let listPrice = extractListPrice(fragment, listPriceReferencePrice(currentPrice, options));
   const inferredPrice = inferDiscountedKindlePrice(fragment, listPrice);
   if (shouldPreferInferredDiscountPrice({ currentPrice, inferredPrice, listPrice, html: fragment })) {
     currentPrice = inferredPrice;
@@ -2201,7 +2204,7 @@ function extractAmazonSearchSnapshotFromHtml(html, asin, url, provider) {
   const corrected = correctImplausibleKindlePrice({ currentPrice, currentPoints, listPrice, prices, html: fragment });
   currentPrice = corrected.currentPrice;
   currentPoints = corrected.currentPoints;
-  listPrice = extractListPrice(fragment, currentPrice) ?? listPrice;
+  listPrice = extractListPrice(fragment, listPriceReferencePrice(currentPrice, options)) ?? listPrice;
   const explicitPriceDisplay = currentPrice != null && hasExplicitPriceDisplay(fragment, currentPrice);
   const explicitFreeKindlePrice = currentPrice === 0 && (explicitPriceDisplay || hasExplicitFreeKindlePrice(fragment));
 
@@ -4361,6 +4364,14 @@ function extractListPrice(html, currentPrice) {
   }
   const higher = candidates.filter((price) => currentPrice == null || price > currentPrice);
   return higher.sort((a, b) => a - b)[0] ?? null;
+}
+
+function listPriceReferencePrice(currentPrice, options = {}) {
+  const current = nullableNumber(currentPrice);
+  const explicitFloor = nullableNumber(options.minimumListPriceExclusive);
+  if (current == null) return explicitFloor;
+  if (explicitFloor == null) return current;
+  return Math.max(current, explicitFloor);
 }
 
 function isSeriesBundleListPriceContext(text, index, radius = 900) {

@@ -4803,7 +4803,10 @@ async function runListPriceChallengeInStore(store, results = [], options = {}) {
         timeoutMs: listPriceChallengeSnapshotTimeoutMs(),
         allowAmazonExtendedFallback: false,
         allowAmazonSearchFallback: false,
-        preferListasinFallback: false
+        allowAmazonReaderFallback: false,
+        allowExternalPriceFallback: false,
+        preferListasinFallback: false,
+        minimumListPriceExclusive: book.currentPrice
       });
       const listPrice = trustedListPriceFor(book.currentPrice, snapshot.listPrice, snapshot.provider);
       if (listPrice == null) {

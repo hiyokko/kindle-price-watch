@@ -164,6 +164,61 @@ test('Amazon HTML parser does not invent a deep discount price from percent text
   assert.equal(snapshot.listPrice, null);
 });
 
+test('Amazon HTML parser does not use the known current price as a list price floor candidate', () => {
+  const snapshot = extractAmazonHtmlSnapshotFromHtml(`
+    <html>
+      <head><meta property="og:title" content="List floor candidate"></head>
+      <body>
+        <span id="productTitle">List floor candidate</span>
+        <div id="tmm-grid-swatch-KINDLE">Kindle版</div>
+        <div id="corePriceDisplay_desktop_feature_div">
+          <span class="a-price" data-a-color="price">
+            <span class="a-offscreen">￥33</span>
+            <span class="a-price-whole">33</span>
+          </span>
+          <span class="a-price a-text-price">
+            <span class="a-offscreen">￥792</span>
+          </span>
+          <span>33%オフ 30ポイント</span>
+        </div>
+      </body>
+    </html>
+  `, 'B00TEST001', 'https://www.amazon.co.jp/dp/B00TEST001', 'amazon_html', {
+    minimumListPriceExclusive: 792
+  });
+
+  assert.equal(snapshot.listPrice, null);
+});
+
+test('Amazon HTML parser keeps a struck list price above the known current price floor', () => {
+  const snapshot = extractAmazonHtmlSnapshotFromHtml(`
+    <html>
+      <head><meta property="og:title" content="List floor candidate"></head>
+      <body>
+        <span id="productTitle">List floor candidate</span>
+        <div id="tmm-grid-swatch-KINDLE">Kindle版</div>
+        <div id="corePriceDisplay_desktop_feature_div">
+          <span class="a-price" data-a-color="price">
+            <span class="a-offscreen">￥33</span>
+            <span class="a-price-whole">33</span>
+          </span>
+          <span class="a-price a-text-price">
+            <span class="a-offscreen">￥792</span>
+          </span>
+          <span class="a-price a-text-price">
+            <span class="a-offscreen">￥880</span>
+          </span>
+          <span>33%オフ 30ポイント</span>
+        </div>
+      </body>
+    </html>
+  `, 'B00TEST002', 'https://www.amazon.co.jp/dp/B00TEST002', 'amazon_html', {
+    minimumListPriceExclusive: 792
+  });
+
+  assert.equal(snapshot.listPrice, 880);
+});
+
 test('Amazon HTML parser accepts genuinely small explicit yen prices', () => {
   const snapshot = extractAmazonHtmlSnapshotFromHtml(`
     <html>
