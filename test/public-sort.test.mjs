@@ -142,6 +142,51 @@ test('series meta uses representative author, publisher, and series ASIN', () =>
   );
 });
 
+test('sale badge ignores ordinary point-only discounts', () => {
+  const { isBelowList, badgeFor } = loadAppSortContext();
+
+  assert.equal(
+    isBelowList({
+      currentPrice: 440,
+      currentPoints: 4,
+      effectivePrice: 436,
+      listPrice: 440,
+      discountRate: 1
+    }),
+    false
+  );
+  assert.equal(
+    badgeFor({
+      currentPrice: 440,
+      currentPoints: 4,
+      effectivePrice: 436,
+      listPrice: 440,
+      discountRate: 1
+    }).label,
+    '通常'
+  );
+  assert.equal(
+    isBelowList({
+      currentPrice: 396,
+      currentPoints: 4,
+      effectivePrice: 392,
+      listPrice: 440,
+      discountRate: 11
+    }),
+    true
+  );
+  assert.equal(
+    isBelowList({
+      currentPrice: 440,
+      currentPoints: 50,
+      effectivePrice: 390,
+      listPrice: 440,
+      discountRate: 11
+    }),
+    true
+  );
+});
+
 test('registration sort uses the latest checked time for a fully checked series', () => {
   const { groupCheckedSortTime, compareGroupsByQueueOrder } = loadAppSortContext();
   const laterSeriesCheck = groupCheckedSortTime([

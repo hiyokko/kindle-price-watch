@@ -16,6 +16,8 @@ const state = {
   sortMode: readSavedSortMode()
 };
 
+const MEANINGFUL_EFFECTIVE_DISCOUNT_RATE = 5;
+
 const els = {
   addForm: document.getElementById('addForm'),
   bookInput: document.getElementById('bookInput'),
@@ -1370,7 +1372,11 @@ function discountRateLabel(value) {
 }
 
 function isBelowList(book) {
-  return book.effectivePrice != null && book.listPrice != null && book.effectivePrice < book.listPrice;
+  const current = Number(book?.currentPrice);
+  const list = Number(book?.listPrice);
+  if (!Number.isFinite(current) || !Number.isFinite(list) || list <= 0) return false;
+  if (current < list) return true;
+  return Number(bookDiscountRate(book)) >= MEANINGFUL_EFFECTIVE_DISCOUNT_RATE;
 }
 
 function isAtBestEver(book) {
