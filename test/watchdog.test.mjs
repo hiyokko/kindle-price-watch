@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { selectWatchdogTarget } from '../scripts/check-watchdog.mjs';
+import { selectWatchdogTarget, workflowDispatchInputs } from '../scripts/check-watchdog.mjs';
 
 test('watchdog targets the 15:54 JST window after the minimum lag', () => {
   const target = selectWatchdogTarget(new Date('2026-05-18T07:20:00.000Z').getTime(), {
@@ -42,4 +42,12 @@ test('watchdog targets the 03:54 JST window in the morning', () => {
   assert.equal(target.label, '03:54 JST');
   assert.equal(target.cron, '54 18 * * *');
   assert.equal(target.skipReason, undefined);
+});
+
+test('watchdog dispatches the price-check workflow as a backup without force-all', () => {
+  assert.deepEqual(workflowDispatchInputs({ cron: '54 6 * * *' }), {
+    force_all: 'false',
+    schedule_cron: '54 6 * * *',
+    backup: 'true'
+  });
 });

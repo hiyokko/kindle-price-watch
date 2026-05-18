@@ -1,7 +1,7 @@
-import { pathToFileURL } from 'node:url';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { loadEnv } from '../src/env.mjs';
-import { cronWindowCompletionState, recordCronRun, resolveCronScheduleIntent, runDueChecks } from '../src/checker.mjs';
+import { cronWindowCompletionState, resolveCronScheduleIntent } from '../src/checker.mjs';
 import { readStore } from '../src/store.mjs';
 
 const EXECUTION_WINDOWS = [
@@ -18,8 +18,6 @@ async function main() {
   validateActionEnvironment();
 
   const startedAt = Date.now();
-  const scriptStartedAt = new Date(startedAt).toISOString();
-  const hardTimeoutMs = checkHardTimeoutMs();
   const target = selectWatchdogTarget(startedAt, {
     minLagMinutes: readNumberEnv('CHECK_WATCHDOG_MIN_LAG_MINUTES', 20),
     maxLagMinutes: readNumberEnv('CHECK_WATCHDOG_MAX_LAG_MINUTES', 360)
@@ -65,41 +63,65 @@ async function main() {
     return;
   }
 
-  const forcedExitState = { recording: false };
-  const watchdog = hardTimeoutMs > 0
-    ? setTimeout(() => {
-        void recordForcedExit('CHECK_HARD_TIMEOUT_MS elapsed', 124, {
-          hardTimeoutMs,
-          scriptStartedAt,
-          scheduleIntent,
-          forcedExitState
-        });
-      }, hardTimeoutMs)
-    : null;
+  const dispatch = await dispatchPriceCheckWorkflow(target);
+  console.log(JSON.stringify({
+    watchdog: true,
+    dispatched: true,
+    target,
+    dispatch
+  }, null, 2));
+}
 
-  process.once('SIGTERM', () => {
-    void recordForcedExit('SIGTERM received', 143, {
-      scriptStartedAt,
-      scheduleIntent,
-      forcedExitState
-    });
-  });
+export function workflowDispatchInputs(target) {
+  return {
+    force_all: 'false',
+    schedule_cron: target.cron,
+    backup: 'true'
+  };
+}
 
-  try {
-    const result = await runDueChecks({
-      notify: true,
-      source: 'cron',
-      backup: true,
-      scheduleCron: target.cron
-    });
-    console.log(JSON.stringify({
-      watchdog: true,
-      target,
-      result
-    }, null, 2));
-  } finally {
-    if (watchdog) clearTimeout(watchdog);
+async function dispatchPriceCheckWorkflow(target) {
+  const repository = process.env.GITHUB_REPOSITORY || 'hiyokko/kindle-price-watch';
+  const ref = process.env.GITHUB_REF_NAME || process.env.GITHUB_REF?.replace(/^refs\/heads\//, '') || 'main';
+  const token = String(process.env.GITHUB_TOKEN || '').trim();
+  if (!token) {
+    throw new Error('GITHUB_TOKEN is not set. The watchdog needs Actions write permission to dispatch kindle-price-check.yml.');
   }
+
+  const response = await fetch(
+    `https://api.github.com/repos/${repository}/actions/workflows/kindle-price-check.yml/dispatches`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/vnd.github+json',
+        'Content-Type': 'application/json',
+        'X-GitHub-Api-Version': '2022-11-28'
+      },
+      body: JSON.stringify({
+        ref,
+        inputs: workflowDispatchInputs(target)
+      })
+    }
+  );
+
+  if (!response.ok) {
+    let detail = '';
+    try {
+      const body = await response.json();
+      detail = body.message ? `: ${body.message}` : '';
+    } catch {
+      detail = '';
+    }
+    throw new Error(`Failed to dispatch kindle-price-check.yml (${response.status})${detail}`);
+  }
+
+  return {
+    repository,
+    ref,
+    workflow: 'kindle-price-check.yml',
+    inputs: workflowDispatchInputs(target)
+  };
 }
 
 export function selectWatchdogTarget(now = Date.now(), options = {}) {
@@ -171,47 +193,6 @@ function validateActionEnvironment() {
       'BLOB_READ_WRITE_TOKEN is malformed. Paste only the raw token value, for example vercel_blob_rw_..., without "BLOB_READ_WRITE_TOKEN=", quotes, or extra text.'
     );
   }
-}
-
-function checkHardTimeoutMs() {
-  const configured = Number(process.env.CHECK_HARD_TIMEOUT_MS);
-  if (Number.isFinite(configured) && configured > 0) return Math.round(configured);
-
-  const maxRuntimeMs = Number(process.env.CHECK_MAX_RUNTIME_MS);
-  if (Number.isFinite(maxRuntimeMs) && maxRuntimeMs > 0) return Math.round(maxRuntimeMs + 5 * 60 * 1000);
-
-  return 0;
-}
-
-async function recordForcedExit(error, exitCode, context) {
-  if (context.forcedExitState.recording) return;
-  context.forcedExitState.recording = true;
-
-  const finishedAt = new Date().toISOString();
-  console.error(JSON.stringify({
-    error,
-    hardTimeoutMs: context.hardTimeoutMs,
-    finishedAt
-  }));
-
-  try {
-    await recordCronRun({
-      lastCronStartedAt: context.scriptStartedAt,
-      lastCronFinishedAt: finishedAt,
-      lastCronExecutionBoundaryAt: context.scheduleIntent.executionBoundaryAt,
-      lastCronSchedule: context.scheduleIntent.scheduleCron,
-      lastCronBackup: true,
-      lastCronStoppedByRuntimeLimit: true,
-      lastCronError: error
-    });
-  } catch (recordError) {
-    console.error(JSON.stringify({
-      error: 'Failed to record forced cron exit',
-      cause: recordError.message || String(recordError)
-    }));
-  }
-
-  process.exit(exitCode);
 }
 
 function readNumberEnv(name, fallback) {

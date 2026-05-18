@@ -11,6 +11,10 @@ concurrency:
   group: kindle-price-check
   cancel-in-progress: false
 
+permissions:
+  actions: write
+  contents: read
+
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
@@ -46,6 +50,7 @@ jobs:
       HTTP_FETCH_RETRY_DELAY_MS: "1200"
       LISTASIN_EARLY_FALLBACK: "true"
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+      GITHUB_TOKEN: ${{ github.token }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4

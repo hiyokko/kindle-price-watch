@@ -8,6 +8,16 @@ on:
         required: false
         type: boolean
         default: true
+      schedule_cron:
+        description: "バックアップ実行時に対象枠を解決するGitHub cron式"
+        required: false
+        type: string
+        default: ""
+      backup:
+        description: "対象枠のバックアップ実行として扱う"
+        required: false
+        type: boolean
+        default: false
   schedule:
     # Daily at 03:54 and 15:54 JST. GitHub cron uses UTC.
     - cron: "54 18 * * *"
@@ -60,9 +70,9 @@ jobs:
       HTTP_AMAZON_FETCH_RETRIES: "1"
       HTTP_FETCH_RETRY_DELAY_MS: "1200"
       LISTASIN_EARLY_FALLBACK: "true"
-      FORCE_CHECK_ALL: ${{ github.event_name == 'workflow_dispatch' && inputs.force_all }}
-      CHECK_SCHEDULE_CRON: ${{ github.event.schedule }}
-      CHECK_BACKUP_RUN: ${{ github.event_name == 'schedule' && github.event.schedule != '54 18 * * *' && github.event.schedule != '54 6 * * *' }}
+      FORCE_CHECK_ALL: ${{ github.event_name == 'workflow_dispatch' && (inputs.force_all == true || inputs.force_all == 'true') }}
+      CHECK_SCHEDULE_CRON: ${{ github.event_name == 'schedule' && github.event.schedule || inputs.schedule_cron }}
+      CHECK_BACKUP_RUN: ${{ (github.event_name == 'schedule' && github.event.schedule != '54 18 * * *' && github.event.schedule != '54 6 * * *') || (github.event_name == 'workflow_dispatch' && (inputs.backup == true || inputs.backup == 'true')) }}
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
     steps:
       - name: Checkout
