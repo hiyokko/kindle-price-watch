@@ -4,9 +4,11 @@ import test from 'node:test';
 import {
   canUseCachedSeriesPriceSnapshotForBook,
   needsDiscountExpiryRecheck,
+  isActiveSeriesAggregateSnapshot,
   isFutureReleaseDate,
   priceIntegrityIssueForBook,
   repairStorePriceState,
+  seriesAggregateSnapshot,
   seriesSnapshotFromKindleSeriesForBook,
   snapshotInputUrlForBook,
   summarizeCheckResultErrors,
@@ -119,6 +121,28 @@ test('snapshot validation does not reject series prices against stale stored lis
     ),
     ''
   );
+});
+
+test('series aggregate snapshot treats removed series scopes as inactive', () => {
+  const snapshot = seriesAggregateSnapshot(
+    {
+      books: [],
+      seriesPriceHistory: []
+    },
+    {
+      key: 'series:asin:B0F7T7ZR2Q',
+      seriesKey: 'series:asin:B0F7T7ZR2Q',
+      sourceUrl: 'https://www.amazon.co.jp/kindle-dbs/product/B0F7T7ZR2Q'
+    },
+    { freshAfter: '2026-05-18T00:00:00.000Z' }
+  );
+
+  assert.equal(snapshot.bookCount, 0);
+  assert.equal(snapshot.representativeBook, null);
+  assert.equal(snapshot.observedFrom, '');
+  assert.equal(snapshot.observedTo, '');
+  assert.equal(snapshot.currentPointsTotal, null);
+  assert.equal(isActiveSeriesAggregateSnapshot(snapshot), false);
 });
 
 test('snapshot validation keeps trusted series bulk prices over weak single-page HTML prices', () => {

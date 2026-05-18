@@ -14,3 +14,14 @@ test('bulk checks forward deferred series notification options for history recor
     /function checkResultApplyOptions[\s\S]+deferSeriesNotifications: options\.deferSeriesNotifications[\s\S]+seriesNotificationBaselines: options\.seriesNotificationBaselines[\s\S]+seriesFreshAfter: options\.seriesFreshAfter/
   );
 });
+
+test('deferred series notifications skip scopes that were removed during the run', () => {
+  assert.match(
+    checkerSource,
+    /function captureSeriesNotificationBaseline[\s\S]+if \(!isActiveSeriesAggregateSnapshot\(baseline\)\) return null/
+  );
+  assert.match(
+    checkerSource,
+    /async function sendDeferredSeriesNotifications[\s\S]+if \(!isActiveSeriesAggregateSnapshot\(baseline\)\) continue[\s\S]+if \(!isActiveSeriesAggregateSnapshot\(after\)\) continue/
+  );
+});

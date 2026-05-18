@@ -4951,6 +4951,9 @@ function notificationEventsForCheckedBook(store, book, context = {}) {
   if (context.seriesScope) {
     if (context.options?.deferSeriesNotifications) return [];
     const after = seriesAggregateSnapshot(store, context.seriesScope);
+    if (!isActiveSeriesAggregateSnapshot(context.seriesBaseline) || !isActiveSeriesAggregateSnapshot(after)) {
+      return [];
+    }
     return detectSeriesEvents({
       before: context.seriesBaseline,
       after,
@@ -4974,12 +4977,14 @@ function captureSeriesNotificationBaseline(store, seriesScope, options = {}) {
     if (existing) return existing;
 
     const baseline = seriesAggregateSnapshot(store, seriesScope);
+    if (!isActiveSeriesAggregateSnapshot(baseline)) return null;
     baseline.freshAfter = options.seriesFreshAfter || '';
     options.seriesNotificationBaselines.set(seriesScope.key, baseline);
     return baseline;
   }
 
-  return seriesAggregateSnapshot(store, seriesScope);
+  const baseline = seriesAggregateSnapshot(store, seriesScope);
+  return isActiveSeriesAggregateSnapshot(baseline) ? baseline : null;
 }
 
 async function sendDeferredSeriesNotifications(store, baselines, options = {}) {
@@ -4990,9 +4995,12 @@ async function sendDeferredSeriesNotifications(store, baselines, options = {}) {
   const settings = mergedRuntimeSettings(store.settings);
   const now = new Date().toISOString();
   for (const baseline of baselines.values()) {
+    if (!isActiveSeriesAggregateSnapshot(baseline)) continue;
     let after = seriesAggregateSnapshot(store, baseline.scope, { freshAfter: baseline.freshAfter });
+    if (!isActiveSeriesAggregateSnapshot(after)) continue;
     appendSeriesPriceHistoryEntry(store, after, now);
     after = seriesAggregateSnapshot(store, baseline.scope, { freshAfter: baseline.freshAfter });
+    if (!isActiveSeriesAggregateSnapshot(after)) continue;
     const representativeBook = after.representativeBook || baseline.representativeBook;
     if (!representativeBook) continue;
 
@@ -5853,7 +5861,7 @@ function notificationSeriesScope(book) {
   return { key, seriesKey, sourceUrl };
 }
 
-function seriesAggregateSnapshot(store, scope, options = {}) {
+export function seriesAggregateSnapshot(store, scope, options = {}) {
   const books = seriesBooksForNotification(store, scope);
   const representativeBook = books[0] || null;
   const seriesName =
@@ -5868,6 +5876,7 @@ function seriesAggregateSnapshot(store, scope, options = {}) {
     .map((book) => timestampMs(book.lastCheckedAt))
     .filter((time) => time > 0)
     .sort((left, right) => left - right);
+  const hasCompleteCheckedTimes = checkedTimes.length > 0 && checkedTimes.length === books.length;
   const freshAfterMs = new Date(options.freshAfter || 0).getTime();
   const requiresFreshCheck = Number.isFinite(freshAfterMs) && freshAfterMs > 0;
   const freshCheckedCount = requiresFreshCheck
@@ -5890,10 +5899,11 @@ function seriesAggregateSnapshot(store, scope, options = {}) {
     freshCheckedCount,
     requiresFreshCheck,
     currentPriceTotal: sumWhenComplete(currentPrices),
-    currentPointsTotal: currentPrices.every((value) => value != null) ? sumNumbers(currentPoints) : null,
+    currentPointsTotal:
+      books.length > 0 && currentPrices.every((value) => value != null) ? sumNumbers(currentPoints) : null,
     currentEffectiveTotal: sumWhenComplete(currentEffectivePrices),
-    observedFrom: checkedTimes.length === books.length ? new Date(checkedTimes[0]).toISOString() : '',
-    observedTo: checkedTimes.length === books.length ? new Date(checkedTimes[checkedTimes.length - 1]).toISOString() : ''
+    observedFrom: hasCompleteCheckedTimes ? new Date(checkedTimes[0]).toISOString() : '',
+    observedTo: hasCompleteCheckedTimes ? new Date(checkedTimes[checkedTimes.length - 1]).toISOString() : ''
   };
 
   const observed = seriesObservedPriceStats(store, snapshot);
@@ -5910,6 +5920,10 @@ function seriesAggregateSnapshot(store, scope, options = {}) {
     nullableNumber(observed.latest.effectivePriceTotal) === nullableNumber(snapshot.currentEffectiveTotal);
 
   return snapshot;
+}
+
+export function isActiveSeriesAggregateSnapshot(snapshot) {
+  return Boolean(snapshot && snapshot.bookCount > 0 && snapshot.representativeBook);
 }
 
 function seriesAggregateFreshAfter(now = Date.now(), settings = {}) {
