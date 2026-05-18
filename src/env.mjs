@@ -40,7 +40,6 @@ function normalizeRuntimeEnv() {
     'DISCORD_WEBHOOK_URLS',
     'APP_PASSWORD',
     'APP_SESSION_SECRET',
-    'CRON_SECRET',
     'KEEPA_API_KEY'
   ];
 
@@ -63,12 +62,6 @@ function normalizeEnvValue(value, key = '') {
     normalized = normalized.slice(1, -1);
   }
   return normalized;
-}
-
-export function readBooleanEnv(name, fallback) {
-  const value = process.env[name];
-  if (value == null || value === '') return fallback;
-  return ['1', 'true', 'yes', 'on'].includes(value.toLowerCase());
 }
 
 export function readNumberEnv(name, fallback) {

@@ -58,7 +58,7 @@ vercel blob put data/store.json --pathname kindle-price-watch/store.json --acces
 
 ### 4. GitHub Actionsで定期実行
 
-Vercel Cronは使わず、`.github/workflows/kindle-price-check.yml` で価格チェックとシリーズ新刊探索をGitHub Actions上で実行します。VercelはWeb GUIとAPI、Vercel Blobはデータ保存先として使います。Vercel上の常駐スケジューラは `AUTO_CHECK_ENABLED=false` のままにしてください。GitHub Actionsは毎日JST 03:54と15:54に起動し、GitHub側の欠落・遅延対策として04:07/04:37/05:17と16:07/16:37/17:17にもバックアップ起動します。各GitHub scheduleは対象の実行枠をアプリに渡し、同じ実行枠の完了記録があり、かつ `lastCronError` が空の場合だけ価格チェックを行わずに終了します。GitHub側で起動が遅れても、次の実行枠に入る前であれば対象枠のチェックとして実行します。
+Vercel Cronやアプリ常駐スケジューラは使わず、`.github/workflows/kindle-price-check.yml` で価格チェックとシリーズ新刊探索をGitHub Actions上で実行します。VercelはWeb GUIとAPI、Vercel Blobはデータ保存先として使います。GitHub Actionsは毎日JST 03:54と15:54に起動し、GitHub側の欠落・遅延対策として04:07/04:37/05:17と16:07/16:37/17:17にもバックアップ起動します。各GitHub scheduleは対象の実行枠をアプリに渡し、同じ実行枠の完了記録があり、かつ `lastCronError` が空の場合だけ価格チェックを行わずに終了します。GitHub側で起動が遅れても、次の実行枠に入る前であれば対象枠のチェックとして実行します。
 
 チェック対象は未取得・未検証シリーズ価格の破棄後・シリーズ内の未取得巻を優先します。Amazon側の一時エラーやブロック直後の本は短時間の再試行を避け、アクセス回数を増やさずに取得済み件数を戻す方針です。価格通知は、単巻価格ではなくシリーズ全巻の直近取得が揃った場合にシリーズ合計で判定します。シリーズの過去最安合計は各巻の過去最安の寄せ集めではなく、`seriesPriceHistory` に実際に観測したシリーズ合計を保存し、その最安で判定します。大型シリーズで数冊だけ未取得のまま残ることを避けるため、チェック計画では同一シリーズの未取得・古い巻を同じバッチに寄せ、直近 `SERIES_TOTAL_OBSERVATION_RUNS` 回の実行枠内に全巻が揃った場合も同一観測として扱います。
 

@@ -235,7 +235,7 @@ async function loadSettings() {
   state.discordWebhookTotalCount = data.discordWebhookTotalCount || state.discordWebhookCount;
   state.discordWebhookPausedCount = data.discordWebhookPausedCount || 0;
   els.thresholdInput.value = String(data.settings.notificationThreshold);
-  els.scheduleDisplay.textContent = fixedScheduleLabel(data.settings);
+  els.scheduleDisplay.textContent = fixedScheduleLabel();
   els.batchInput.value = String(data.settings.batchSize);
   els.listPriceChallengeInput.value = String(data.settings.listPriceChallengeBatchSize ?? 50);
   renderSummary();
@@ -243,14 +243,8 @@ async function loadSettings() {
   renderBulkControls();
 }
 
-function fixedScheduleLabel(settings = {}) {
-  const first = formatScheduleTime(settings.checkExecutionHourJst ?? 3, settings.checkExecutionMinuteJst ?? 54);
-  const second = formatScheduleTime(settings.secondCheckExecutionHourJst ?? 15, settings.secondCheckExecutionMinuteJst ?? 54);
-  return `${first} / ${second}`;
-}
-
-function formatScheduleTime(hour, minute) {
-  return `${String(Number(hour || 0)).padStart(2, '0')}:${String(Number(minute || 0)).padStart(2, '0')}`;
+function fixedScheduleLabel() {
+  return '03:54 / 15:54';
 }
 
 async function loadBooks() {

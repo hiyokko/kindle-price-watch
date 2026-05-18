@@ -11,12 +11,6 @@ const defaultStore = {
   version: 1,
   settings: {
     notificationThreshold: 10,
-    checkRunsPerDay: 2,
-    checkIntervalHours: 24,
-    checkExecutionHourJst: 3,
-    checkExecutionMinuteJst: 54,
-    secondCheckExecutionHourJst: 15,
-    secondCheckExecutionMinuteJst: 54,
     batchSize: 50,
     listPriceChallengeBatchSize: 50,
     notifyOnPriceDrop: true,
@@ -114,19 +108,20 @@ function mergeStore(store) {
 }
 
 function mergeSettings(settings = {}) {
-  const merged = {
+  const {
+    checkRunsPerDay,
+    checkIntervalHours,
+    checkExecutionHourJst,
+    checkExecutionMinuteJst,
+    secondCheckExecutionHourJst,
+    secondCheckExecutionMinuteJst,
+    ...currentSettings
+  } = settings || {};
+
+  return {
     ...defaultStore.settings,
-    ...(settings || {})
+    ...currentSettings
   };
-
-  merged.checkRunsPerDay = 2;
-  merged.checkIntervalHours = 24;
-  merged.checkExecutionHourJst = 3;
-  merged.checkExecutionMinuteJst = 54;
-  merged.secondCheckExecutionHourJst = 15;
-  merged.secondCheckExecutionMinuteJst = 54;
-
-  return merged;
 }
 
 export async function readStore() {

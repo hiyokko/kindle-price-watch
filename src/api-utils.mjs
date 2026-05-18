@@ -31,14 +31,3 @@ export function requireMethod(req, res, allowed) {
   sendJson(res, 405, { error: 'Method not allowed' });
   return false;
 }
-
-export function requireCronAuth(req, res) {
-  const secret = process.env.CRON_SECRET;
-  if (!secret) return true;
-
-  const authorization = req.headers.authorization || '';
-  if (authorization === `Bearer ${secret}`) return true;
-
-  sendJson(res, 401, { error: 'Unauthorized' });
-  return false;
-}

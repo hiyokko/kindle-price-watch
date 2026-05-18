@@ -1,2 +1,2 @@
 # Add one Amazon Kindle URL or ASIN per line.
-# Cron imports unfinished entries during the JST 16:00 GitHub Actions run.
+# GitHub Actions imports unfinished entries during the next scheduled run.

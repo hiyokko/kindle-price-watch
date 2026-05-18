@@ -99,7 +99,6 @@ function parseArgs(args) {
   const options = {
     all: false,
     dryRun: false,
-    legacy: false,
     progress: false,
     summaryOnly: false,
     abortFailureRate: null,
@@ -117,7 +116,6 @@ function parseArgs(args) {
     const arg = args[index];
     if (arg === '--all') options.all = true;
     else if (arg === '--dry-run') options.dryRun = true;
-    else if (arg === '--legacy') options.legacy = true;
     else if (arg === '--progress') options.progress = true;
     else if (arg === '--summary-only') options.summaryOnly = true;
     else if (arg === '--no-series-price-first') options.seriesPriceFirst = false;
@@ -152,13 +150,11 @@ function selectBooks(books, options) {
   const hasExplicitFilters = Boolean(
     options.asins.length ||
     options.series.length ||
-    options.providers.length ||
-    options.legacy
+    options.providers.length
   );
   const selected = books.filter((book) => {
     if (options.all) return true;
     if (options.asins.includes(String(book.asin || '').toUpperCase())) return true;
-    if (options.legacy && book.provider === 'legacy_provider_removed') return true;
     if (options.providers.includes(book.provider)) return true;
     if (options.series.some((name) => String(book.seriesName || book.title || '').includes(name))) return true;
     if (hasExplicitFilters) return false;

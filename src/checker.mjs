@@ -63,160 +63,6 @@ async function readStoreWithPriceRepairs(options = {}) {
   });
 }
 
-export async function addBook(input) {
-  const asin = extractAsin(input);
-  if (!asin) {
-    const error = new Error('Amazon URL または ASIN を入力してください');
-    error.status = 400;
-    throw error;
-  }
-  if (!isProbablyBookAsin(asin)) {
-    const error = new Error('Kindle本のASIN（Bで始まる10桁）またはKindle商品URLを入力してください');
-    error.status = 400;
-    throw error;
-  }
-
-  const existing = await findBookByAsin(asin);
-  if (existing) {
-    const error = new Error('この本は既に登録されています');
-    error.status = 409;
-    error.book = publicBook(existing);
-    throw error;
-  }
-
-  const book = await buildBookFromAsin(asin, {
-    fetchDetails: true,
-    inputUrl: input,
-    sourceUrl: String(input || '').trim()
-  });
-  if (isPermanentSnapshotError(book.lastError)) {
-    const error = new Error(book.lastError);
-    error.status = 400;
-    throw error;
-  }
-  const now = book.createdAt;
-
-  await updateStore((store) => {
-    store.books.push(book);
-    appendPriceHistoryEntry(store, book, now);
-    return store;
-  });
-
-  return publicBook(book);
-}
-
-export async function addBooksFromInput(input) {
-  const explicitSeriesUrl = isKindleSeriesUrl(input);
-  let asins = [];
-  let series;
-
-  if (explicitSeriesUrl) {
-    series = await fetchSeriesCandidates(input, { allowIncomplete: true });
-    if (!series) {
-      const error = new Error('シリーズ内のKindle ASINを取得できませんでした');
-      error.status = 422;
-      throw error;
-    }
-    asins = series.items.map((item) => item.asin);
-  } else {
-    series = await detectCollectionSeries(input);
-    asins = series?.items?.map((item) => item.asin) || [];
-  }
-
-  if (explicitSeriesUrl && (!series || asins.length === 0)) {
-    const error = new Error('シリーズ内のKindle ASINを取得できませんでした');
-    error.status = 422;
-    throw error;
-  }
-
-  if (!series || asins.length === 0) {
-    const asin = extractAsin(input);
-    const existing = asin ? await findBookByAsin(asin) : null;
-    if (existing) {
-      const refreshed = await refreshExistingSingleBookFromInput(existing.id, input);
-      return {
-        mode: 'single',
-        imported: 0,
-        skippedDuplicates: 1,
-        updatedDuplicates: refreshed.updated ? 1 : 0,
-        books: [refreshed.book],
-        book: refreshed.book,
-        errors: refreshed.book.lastError ? [refreshed.book.lastError] : []
-      };
-    }
-
-    const book = await addBook(input);
-    return {
-      mode: 'single',
-      imported: 1,
-      skippedDuplicates: 0,
-      books: [book],
-      book,
-      errors: []
-    };
-  }
-
-  const fetchDetails = String(process.env.SERIES_IMPORT_FETCH_DETAILS || '').toLowerCase() === 'true';
-  const now = new Date().toISOString();
-  let result;
-  await updateStore(async (store) => {
-    result = await importSeriesIntoStore(store, input, series, { fetchDetails, now });
-    return store;
-  });
-
-  return result;
-}
-
-export async function addBooksFromInputs(inputs, options = {}) {
-  const queue = Array.isArray(inputs)
-    ? inputs.map((input) => String(input || '').trim()).filter(Boolean)
-    : parseBookImportInputs(inputs);
-  const deduped = [...new Map(queue.map((input) => [bookImportQueueKey(input), input])).values()];
-  const summary = {
-    mode: 'batch',
-    total: deduped.length,
-    processed: 0,
-    imported: 0,
-    skippedDuplicates: 0,
-    updatedDuplicates: 0,
-    results: [],
-    errors: []
-  };
-  if (deduped.length === 0) return summary;
-
-  const now = options.now || new Date().toISOString();
-  await updateStore(async (store) => {
-    for (const input of deduped) {
-      try {
-        const result = await addBooksFromInputInStore(store, input, { ...options, now });
-        const entry = {
-          input,
-          mode: result.mode || '',
-          imported: Number(result.imported || 0),
-          skippedDuplicates: Number(result.skippedDuplicates || 0),
-          updatedDuplicates: Number(result.updatedDuplicates || 0),
-          seriesCompleted: Boolean(result.seriesCompleted),
-          errors: result.errors || []
-        };
-        summary.processed += 1;
-        summary.imported += entry.imported;
-        summary.skippedDuplicates += entry.skippedDuplicates;
-        summary.updatedDuplicates += entry.updatedDuplicates;
-        summary.results.push(entry);
-      } catch (error) {
-        summary.processed += 1;
-        summary.errors.push({
-          input,
-          error: error.message || String(error)
-        });
-      }
-    }
-    return store;
-  });
-
-  return summary;
-}
-
 export async function addSeriesImports(imports, options = {}) {
   const queue = Array.isArray(imports) ? imports : [];
   const summary = {
@@ -3318,7 +3164,7 @@ export async function runDueChecks(options = {}) {
     const seriesCandidateCache = options.seriesCandidateCache || new Map();
     let store = await readStoreWithPriceRepairs();
     let settings = mergedRuntimeSettings(store.settings);
-    scheduleIntent = resolveCronScheduleIntent(options.scheduleCron || process.env.CHECK_SCHEDULE_CRON, startedAt, settings);
+    scheduleIntent = resolveCronScheduleIntent(options.scheduleCron || process.env.CHECK_SCHEDULE_CRON, startedAt);
     const forceAll = options.force === true || readEnvBoolean('FORCE_CHECK_ALL', false);
     isBackupRun = source === 'cron' && (options.backup === true || scheduleIntent?.backup === true);
     const scheduleNow = scheduleIntent?.executionBoundaryMs || startedAt;
@@ -3326,7 +3172,7 @@ export async function runDueChecks(options = {}) {
     if (!forceAll && source === 'cron' && scheduleIntent?.stale) {
       return {
         checked: 0,
-        remainingDue: countDueBooks(store.books, startedAt, settings),
+        remainingDue: countDueBooks(store.books, startedAt),
         cursor: store.checkCursor,
         overlapped: 0,
         stoppedByRuntimeLimit: false,
@@ -3343,9 +3189,9 @@ export async function runDueChecks(options = {}) {
       };
     }
 
-    if (!forceAll && shouldWaitForScheduledExecutionWindow(source, { ...options, scheduleIntent }, startedAt, settings)) {
-      const remainingDue = countDueBooks(store.books, startedAt, settings);
-      const nextRunAtMs = nextJstExecutionBoundaryMs(startedAt, settings);
+    if (!forceAll && shouldWaitForScheduledExecutionWindow(source, { ...options, scheduleIntent }, startedAt)) {
+      const remainingDue = countDueBooks(store.books, startedAt);
+      const nextRunAtMs = nextJstExecutionBoundaryMs(startedAt);
       const result = {
         checked: 0,
         remainingDue,
@@ -3364,11 +3210,11 @@ export async function runDueChecks(options = {}) {
     }
 
     if (!forceAll && source === 'cron' && scheduleIntent) {
-      const completionSkip = cronWindowCompletionState(store.automation, scheduleIntent.executionBoundaryMs, settings);
+      const completionSkip = cronWindowCompletionState(store.automation, scheduleIntent.executionBoundaryMs);
       if (completionSkip.shouldSkip) {
         return {
           checked: 0,
-          remainingDue: countDueBooks(store.books, scheduleIntent.executionBoundaryMs, settings),
+          remainingDue: countDueBooks(store.books, scheduleIntent.executionBoundaryMs),
           cursor: store.checkCursor,
           overlapped: 0,
           stoppedByRuntimeLimit: false,
@@ -3390,11 +3236,11 @@ export async function runDueChecks(options = {}) {
         };
       }
     } else if (!forceAll && isBackupRun) {
-      const backupSkip = backupCronSkipState(store.automation, startedAt, settings);
+      const backupSkip = backupCronSkipState(store.automation, startedAt);
       if (backupSkip.shouldSkip) {
         return {
           checked: 0,
-          remainingDue: countDueBooks(store.books, startedAt, settings),
+          remainingDue: countDueBooks(store.books, startedAt),
           cursor: store.checkCursor,
           overlapped: 0,
           stoppedByRuntimeLimit: false,
@@ -3431,7 +3277,7 @@ export async function runDueChecks(options = {}) {
     const pacing = checkPacing();
     const getWebhookUrls = options.notify === false ? null : sharedWebhookUrlLoader();
     const seriesNotificationBaselines = new Map();
-    const seriesFreshAfter = seriesAggregateFreshAfter(scheduleNow, settings).toISOString();
+    const seriesFreshAfter = seriesAggregateFreshAfter(scheduleNow).toISOString();
 
     const results = [];
     let stoppedByRuntimeLimit = false;
@@ -3576,7 +3422,7 @@ export async function runDueChecks(options = {}) {
       ...options,
       getWebhookUrls
     });
-    const remainingDue = countDueBooks(store.books, scheduleNow, settings);
+    const remainingDue = countDueBooks(store.books, scheduleNow);
     const finishedAt = new Date().toISOString();
     const result = {
       checked: results.length,
@@ -3749,7 +3595,7 @@ function shouldRunPriceIntegrityAudit(source, options = {}) {
   if (options.priceIntegrityAudit === false) return false;
   if (options.priceIntegrityAudit === true) return true;
   if (readEnvBoolean('PRICE_INTEGRITY_AUDIT_ENABLED', true) === false) return false;
-  return source === 'cron' || source === 'scheduler';
+  return source === 'cron';
 }
 
 async function runPriceIntegrityAudit(store, results = [], options = {}) {
@@ -4122,28 +3968,28 @@ function seriesDiscoveryKeys(seriesDiscovery = null) {
 function shouldRunSeriesDiscovery(source, options = {}, store = {}, settings = {}, now = Date.now()) {
   if (options.discoverSeries === true) return true;
   if (options.discoverSeries === false) return false;
-  if (source !== 'cron' && source !== 'scheduler') return false;
+  if (source !== 'cron') return false;
 
   const intervalHours = floorNumber(process.env.SERIES_DISCOVERY_INTERVAL_HOURS, 1, 24);
   const intervalDays = Math.max(1, Math.round(intervalHours / 24));
   const lastCheckedAt = new Date(store.seriesDiscoveryCursor?.checkedAt || 0).getTime();
   if (!Number.isFinite(lastCheckedAt) || lastCheckedAt <= 0) return true;
 
-  const boundary = latestJstExecutionBoundaryMs(now, settings);
-  const lastBoundary = latestJstExecutionBoundaryMs(lastCheckedAt, settings);
+  const boundary = latestJstExecutionBoundaryMs(now);
+  const lastBoundary = latestJstExecutionBoundaryMs(lastCheckedAt);
   return boundary - lastBoundary >= intervalDays * 24 * 60 * 60 * 1000;
 }
 
 function shouldRunCheckedBookSeriesDiscovery(source, options = {}) {
   if (options.discoverCheckedSeries === true) return true;
   if (options.discoverCheckedSeries === false || options.discoverSeries === false) return false;
-  return source === 'cron' || source === 'scheduler';
+  return source === 'cron';
 }
 
 function shouldRunBookImportQueue(source, options = {}) {
   if (options.importQueue === true) return true;
   if (options.importQueue === false) return false;
-  return source === 'cron' || source === 'scheduler';
+  return source === 'cron';
 }
 
 async function processBookImportQueueInStore(store, options = {}) {
@@ -4665,12 +4511,6 @@ function importQueueSummary(queue = {}) {
 export async function saveSettings(settings) {
   const cleaned = {
     notificationThreshold: clampNumber(settings.notificationThreshold, 0, 95, 10),
-    checkRunsPerDay: 2,
-    checkIntervalHours: 24,
-    checkExecutionHourJst: 3,
-    checkExecutionMinuteJst: 54,
-    secondCheckExecutionHourJst: 15,
-    secondCheckExecutionMinuteJst: 54,
     batchSize: floorNumber(settings.batchSize, 1, 50),
     listPriceChallengeBatchSize: clampNumber(settings.listPriceChallengeBatchSize, 0, 50, 50),
     notifyOnPriceDrop: Boolean(settings.notifyOnPriceDrop),
@@ -4919,7 +4759,7 @@ function shouldRetryCheckWithCachedSeriesPrice(book = {}, result = {}) {
 function shouldRunListPriceChallenge(source, options = {}) {
   if (options.listPriceChallenge === false) return false;
   if (options.listPriceChallenge === true) return true;
-  return source === 'cron' || source === 'scheduler';
+  return source === 'cron';
 }
 
 async function runListPriceChallengeInStore(store, results = [], options = {}) {
@@ -5344,7 +5184,7 @@ function publicNotificationEvent(event) {
 
 async function sendCronSummaryNotification(result, context = {}) {
   if (context.options?.notify === false) return null;
-  if (context.source !== 'cron' && context.source !== 'scheduler') return null;
+  if (context.source !== 'cron') return null;
   if (result.skipped) return null;
   if (!shouldPersistCronRun(result)) return null;
 
@@ -5683,11 +5523,6 @@ function normalizeImageUrl(value) {
   } catch {
     return text.replace(/\?.*$/, '');
   }
-}
-
-async function findBookByAsin(asin) {
-  const store = await readStore();
-  return store.books.find((book) => book.asin === asin);
 }
 
 async function findBookById(id) {
@@ -6251,16 +6086,16 @@ export function isActiveSeriesAggregateSnapshot(snapshot) {
   return Boolean(snapshot && snapshot.bookCount > 0 && snapshot.representativeBook);
 }
 
-function seriesAggregateFreshAfter(now = Date.now(), settings = {}) {
+function seriesAggregateFreshAfter(now = Date.now()) {
   const timestamp = Number(now);
   const base = Number.isFinite(timestamp) ? timestamp : Date.now();
-  return new Date(recentJstExecutionBoundaryMs(base, settings, seriesAggregateObservationRuns()));
+  return new Date(recentJstExecutionBoundaryMs(base, seriesAggregateObservationRuns()));
 }
 
-function recentJstExecutionBoundaryMs(now, settings = {}, runCount = 5) {
+function recentJstExecutionBoundaryMs(now, runCount = 5) {
   const count = floorNumber(runCount, 1, 5);
   const dayMs = 24 * 60 * 60 * 1000;
-  const times = scheduledExecutionTimes(settings).sort(
+  const times = scheduledExecutionTimes().sort(
     (left, right) => left.hour * 60 + left.minute - (right.hour * 60 + right.minute)
   );
   const boundaries = [];
@@ -6273,7 +6108,7 @@ function recentJstExecutionBoundaryMs(now, settings = {}, runCount = 5) {
     }
   }
 
-  return boundaries[count - 1] ?? latestJstExecutionBoundaryMs(now, settings);
+  return boundaries[count - 1] ?? latestJstExecutionBoundaryMs(now);
 }
 
 function seriesAggregateObservationRuns() {
@@ -6564,7 +6399,7 @@ function planDueChecks(store, settings, now, options = {}) {
 
   const dueBefore = Number.isFinite(options.dueCutoffMs)
     ? options.dueCutoffMs
-    : scheduledDueCutoffMs(now, settings);
+    : scheduledDueCutoffMs(now);
   const dueBooks = rotatedBooks.filter((book) => isAutoCheckCandidate(book, dueBefore) && !isCheckRetryCoolingDown(book, now));
   const orderedDueBooks = orderCheckCandidates(dueBooks, priorityContext, now);
   const selected = selectCheckCandidatesWithSeriesCompletion(orderedDueBooks, rotatedBooks, priorityContext, now, settings.batchSize);
@@ -6631,7 +6466,7 @@ function seriesCompletionBooksForPlan(book, allBooks, context, now, selectedIds)
 function checkPriorityContext(books, now, settings = {}) {
   const series = new Map();
   const rotatedIndex = new Map();
-  const seriesFreshAfterMs = seriesAggregateFreshAfter(now, settings).getTime();
+  const seriesFreshAfterMs = seriesAggregateFreshAfter(now).getTime();
 
   for (const [index, book] of books.entries()) {
     rotatedIndex.set(book.id, index);
@@ -6770,8 +6605,8 @@ function rotateAfterCursor(books, lastBookId = '') {
   return [...books.slice(cursorIndex + 1), ...books.slice(0, cursorIndex + 1)];
 }
 
-function countDueBooks(books, now, settings) {
-  const dueBefore = scheduledDueCutoffMs(now, settings);
+function countDueBooks(books, now) {
+  const dueBefore = scheduledDueCutoffMs(now);
   return books.filter((book) => isBookDue(book, dueBefore)).length;
 }
 
@@ -6781,18 +6616,18 @@ function isBookDue(book, dueBefore) {
   return !Number.isFinite(checkedAt) || checkedAt <= dueBefore;
 }
 
-function scheduledDueCutoffMs(now, settings = {}) {
-  return latestJstExecutionBoundaryMs(now, settings);
+function scheduledDueCutoffMs(now) {
+  return latestJstExecutionBoundaryMs(now);
 }
 
-function shouldWaitForScheduledExecutionWindow(source, options = {}, now = Date.now(), settings = {}) {
+function shouldWaitForScheduledExecutionWindow(source, options = {}, now = Date.now()) {
   if (options.ignoreExecutionWindow === true) return false;
-  if (source !== 'cron' && source !== 'scheduler') return false;
+  if (source !== 'cron') return false;
   if (options.scheduleIntent) return false;
-  const firstBoundary = todayJstExecutionBoundaryMs(now, scheduledExecutionTimes(settings)[0]);
+  const firstBoundary = todayJstExecutionBoundaryMs(now, scheduledExecutionTimes()[0]);
   if (now < firstBoundary) return true;
 
-  const latestBoundary = latestJstExecutionBoundaryMs(now, settings);
+  const latestBoundary = latestJstExecutionBoundaryMs(now);
   return now - latestBoundary > scheduledExecutionGraceMs();
 }
 
@@ -6811,7 +6646,7 @@ const DAILY_CRON_EXECUTION_WINDOWS = new Map([
   ['7 10 * * *', { targetIndex: 1, backup: true }]
 ]);
 
-export function resolveCronScheduleIntent(scheduleCron, now = Date.now(), settings = {}) {
+export function resolveCronScheduleIntent(scheduleCron, now = Date.now()) {
   const normalized = normalizeScheduleCron(scheduleCron);
   if (!normalized) return null;
 
@@ -6824,14 +6659,14 @@ export function resolveCronScheduleIntent(scheduleCron, now = Date.now(), settin
   const nowMs = Number(now);
   if (!Number.isFinite(nowMs)) return null;
 
-  const times = scheduledExecutionTimes(settings);
+  const times = scheduledExecutionTimes();
   const target = times[definition.targetIndex];
   if (!target) return null;
 
   const nominalMs = latestDailyUtcCronOccurrenceMs(nowMs, parsed.hour, parsed.minute);
   const nominalJstDayStartMs = jstDayStartUtcMs(nominalMs);
   const executionBoundaryMs = nominalJstDayStartMs + target.hour * 60 * 60 * 1000 + target.minute * 60 * 1000;
-  const nextExecutionBoundaryMs = nextJstExecutionBoundaryAfterMs(executionBoundaryMs, settings);
+  const nextExecutionBoundaryMs = nextJstExecutionBoundaryAfterMs(executionBoundaryMs);
 
   return {
     scheduleCron: normalized,
@@ -6845,15 +6680,15 @@ export function resolveCronScheduleIntent(scheduleCron, now = Date.now(), settin
   };
 }
 
-function latestJstExecutionBoundaryMs(now, settings = {}) {
-  const todayBoundaries = scheduledExecutionTimes(settings).map((time) => todayJstExecutionBoundaryMs(now, time));
+function latestJstExecutionBoundaryMs(now) {
+  const todayBoundaries = scheduledExecutionTimes().map((time) => todayJstExecutionBoundaryMs(now, time));
   const latestToday = [...todayBoundaries].reverse().find((boundary) => now >= boundary);
   if (latestToday != null) return latestToday;
   return todayBoundaries[todayBoundaries.length - 1] - 24 * 60 * 60 * 1000;
 }
 
-function nextJstExecutionBoundaryMs(now, settings = {}) {
-  const todayBoundaries = scheduledExecutionTimes(settings).map((time) => todayJstExecutionBoundaryMs(now, time));
+function nextJstExecutionBoundaryMs(now) {
+  const todayBoundaries = scheduledExecutionTimes().map((time) => todayJstExecutionBoundaryMs(now, time));
   return todayBoundaries.find((boundary) => now < boundary) || todayBoundaries[0] + 24 * 60 * 60 * 1000;
 }
 
@@ -6862,7 +6697,7 @@ function todayJstExecutionBoundaryMs(now, time) {
   return jstDayStartUtc + time.hour * 60 * 60 * 1000 + time.minute * 60 * 1000;
 }
 
-function scheduledExecutionTimes(settings = {}) {
+function scheduledExecutionTimes() {
   return [
     { hour: 3, minute: 54 },
     { hour: 15, minute: 54 }
@@ -6873,14 +6708,14 @@ function scheduledExecutionGraceMs() {
   return floorNumber(process.env.CHECK_EXECUTION_GRACE_MINUTES, 1, 180) * 60 * 1000;
 }
 
-function backupCronSkipState(automation = {}, now = Date.now(), settings = {}, executionBoundaryMs = null) {
+function backupCronSkipState(automation = {}, now = Date.now(), executionBoundaryMs = null) {
   const boundaryMs = Number.isFinite(executionBoundaryMs)
     ? executionBoundaryMs
-    : latestJstExecutionBoundaryMs(now, settings);
-  return cronWindowCompletionState(automation, boundaryMs, settings);
+    : latestJstExecutionBoundaryMs(now);
+  return cronWindowCompletionState(automation, boundaryMs);
 }
 
-export function cronWindowCompletionState(automation = {}, executionBoundaryMs, settings = {}) {
+export function cronWindowCompletionState(automation = {}, executionBoundaryMs) {
   const boundaryMs = Number(executionBoundaryMs);
   if (!Number.isFinite(boundaryMs)) {
     return {
@@ -6899,7 +6734,7 @@ export function cronWindowCompletionState(automation = {}, executionBoundaryMs, 
   const lastBoundaryMs = timestampMs(automation?.lastCronExecutionBoundaryAt);
   const lastCronError = String(automation?.lastCronError || '').trim();
   const lastCronStoppedByRuntimeLimit = Boolean(automation?.lastCronStoppedByRuntimeLimit);
-  const nextBoundaryMs = nextJstExecutionBoundaryAfterMs(boundaryMs, settings);
+  const nextBoundaryMs = nextJstExecutionBoundaryAfterMs(boundaryMs);
   const hasExplicitSameWindow = lastBoundaryMs === boundaryMs;
   const hasLegacySameWindow =
     !lastBoundaryMs && lastFinishedMs >= boundaryMs && lastFinishedMs < nextBoundaryMs;
@@ -6945,9 +6780,9 @@ function latestDailyUtcCronOccurrenceMs(now, hour, minute) {
   return todayMs <= nowMs ? todayMs : todayMs - dayMs;
 }
 
-function nextJstExecutionBoundaryAfterMs(boundaryMs, settings = {}) {
+function nextJstExecutionBoundaryAfterMs(boundaryMs) {
   const dayMs = 24 * 60 * 60 * 1000;
-  const sameDayBoundaries = scheduledExecutionTimes(settings)
+  const sameDayBoundaries = scheduledExecutionTimes()
     .map((time) => todayJstExecutionBoundaryMs(boundaryMs, time))
     .sort((left, right) => left - right);
   return sameDayBoundaries.find((candidate) => candidate > boundaryMs) || sameDayBoundaries[0] + dayMs;
@@ -7215,29 +7050,12 @@ function hasSeriesDiscoveryWork(seriesDiscovery = null) {
 }
 
 function mergedRuntimeSettings(settings = {}) {
-  const schedule = runtimeScheduleSettings(settings);
   return {
     notificationThreshold: clampNumber(settings.notificationThreshold, 0, 95, 10),
-    checkRunsPerDay: schedule.checkRunsPerDay,
-    checkIntervalHours: 24,
-    checkExecutionHourJst: schedule.checkExecutionHourJst,
-    checkExecutionMinuteJst: schedule.checkExecutionMinuteJst,
-    secondCheckExecutionHourJst: schedule.secondCheckExecutionHourJst,
-    secondCheckExecutionMinuteJst: schedule.secondCheckExecutionMinuteJst,
     batchSize: floorNumber(settings.batchSize, 1, 50),
     listPriceChallengeBatchSize: clampNumber(settings.listPriceChallengeBatchSize, 0, 50, 50),
     notifyOnPriceDrop: settings.notifyOnPriceDrop !== false,
     notifyOnBestEver: settings.notifyOnBestEver !== false
-  };
-}
-
-function runtimeScheduleSettings(settings = {}) {
-  return {
-    checkRunsPerDay: 2,
-    checkExecutionHourJst: 3,
-    checkExecutionMinuteJst: 54,
-    secondCheckExecutionHourJst: 15,
-    secondCheckExecutionMinuteJst: 54
   };
 }
 
@@ -7262,33 +7080,6 @@ function floorNumber(value, min, fallback) {
   const number = Number(value);
   if (!Number.isFinite(number)) return fallback;
   return Math.max(min, Math.round(number));
-}
-
-function normalizeCheckRunsPerDay(value, fallback = 2) {
-  const number = Number(value);
-  return number === 1 || number === 2 ? number : fallback;
-}
-
-function normalizeCheckIntervalHours(value, fallback = 24) {
-  const allowed = [24, 48, 72];
-  const number = Number(value);
-  if (!Number.isFinite(number)) return fallback;
-  const rounded = Math.round(number);
-  return allowed.includes(rounded) ? rounded : fallback;
-}
-
-function normalizeCheckExecutionHourJst(value, fallback = 15) {
-  const number = Number(value);
-  if (!Number.isFinite(number)) return fallback;
-  const rounded = Math.round(number);
-  return rounded >= 0 && rounded <= 23 ? rounded : fallback;
-}
-
-function normalizeCheckExecutionMinuteJst(value, fallback = 54) {
-  const number = Number(value);
-  if (!Number.isFinite(number)) return fallback;
-  const rounded = Math.round(number);
-  return rounded >= 0 && rounded <= 59 ? rounded : fallback;
 }
 
 function sortBooks(a, b) {

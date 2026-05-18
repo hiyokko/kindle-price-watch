@@ -3,8 +3,7 @@ import { promises as fs } from 'node:fs';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadEnv, readBooleanEnv, readNumberEnv } from './src/env.mjs';
-import { requireCronAuth } from './src/api-utils.mjs';
+import { loadEnv, readNumberEnv } from './src/env.mjs';
 import {
   addBooksPayload,
   checkBookPayload,
@@ -14,7 +13,6 @@ import {
   historyPayload,
   importQueuePayload,
   listBooksPayload,
-  repairBookPricesPayload,
   runChecksPayload,
   saveSettingsPayload,
   saveImportQueuePayload,
@@ -23,7 +21,6 @@ import {
   testNotificationPayload,
   webhooksPayload
 } from './src/app-api.mjs';
-import { runDueChecks } from './src/checker.mjs';
 
 loadEnv();
 
@@ -32,8 +29,6 @@ const publicDir = path.join(__dirname, 'public');
 const port = readNumberEnv('PORT', 4173);
 const sessionCookieName = 'kw_session';
 const sessionMaxAgeSeconds = 60 * 60 * 24 * 30;
-
-let schedulerRunning = false;
 
 const server = createServer(async (req, res) => {
   try {
@@ -51,7 +46,7 @@ const server = createServer(async (req, res) => {
     }
 
     if (url.pathname.startsWith('/api/')) {
-      if (requiresAppAuth(url) && !isAuthenticated(req)) {
+      if (!isAuthenticated(req)) {
         sendJson(res, 401, { error: 'ログインが必要です' });
         return;
       }
@@ -76,9 +71,6 @@ const server = createServer(async (req, res) => {
 
 server.listen(port, () => {
   console.log(`Kindle Price Watch: http://localhost:${port}`);
-  if (readBooleanEnv('AUTO_CHECK_ENABLED', false)) {
-    startScheduler();
-  }
 });
 
 async function handleApi(req, res, url) {
@@ -105,11 +97,6 @@ async function handleApi(req, res, url) {
     return;
   }
 
-  if (method === 'POST' && url.pathname === '/api/books/repair-prices') {
-    sendJson(res, 200, await repairBookPricesPayload(await readBody(req)));
-    return;
-  }
-
   if (method === 'GET' && url.pathname === '/api/import-queue') {
     sendJson(res, 200, await importQueuePayload());
     return;
@@ -117,12 +104,6 @@ async function handleApi(req, res, url) {
 
   if ((method === 'PUT' || method === 'POST') && url.pathname === '/api/import-queue') {
     sendJson(res, 200, await saveImportQueuePayload(await readBody(req)));
-    return;
-  }
-
-  if ((method === 'GET' || method === 'POST') && url.pathname === '/api/cron/check') {
-    if (!requireCronAuth(req, res)) return;
-    sendJson(res, 200, await runChecksPayload());
     return;
   }
 
@@ -229,10 +210,6 @@ async function readBody(req) {
 
 function isAuthEnabled() {
   return Boolean(process.env.APP_PASSWORD);
-}
-
-function requiresAppAuth(url) {
-  return url.pathname !== '/api/cron/check';
 }
 
 function isAuthenticated(req) {
@@ -497,25 +474,4 @@ function contentType(filePath) {
     '.svg': 'image/svg+xml'
   };
   return types[ext] || 'application/octet-stream';
-}
-
-function startScheduler() {
-  const intervalMs = 10 * 60 * 1000;
-  const tick = async () => {
-    if (schedulerRunning) return;
-    schedulerRunning = true;
-    try {
-      const result = await runDueChecks({ notify: true, source: 'scheduler' });
-      if (result.checked > 0) {
-        console.log(`Auto check completed: ${result.checked} books`);
-      }
-    } catch (error) {
-      console.error('Auto check failed:', error);
-    } finally {
-      schedulerRunning = false;
-    }
-  };
-
-  setTimeout(tick, 5000);
-  setInterval(tick, intervalMs);
 }
