@@ -762,7 +762,7 @@ async function fetchSeriesCandidates(input, options = {}) {
     ? withSeriesReconciliation(merged)
     : await resolveSeriesCandidateDiffs(merged, usableCandidates, options);
   if (!isIncompleteSeriesCandidate(resolved)) return resolved;
-  return options.allowIncomplete && resolved.items.length > 1 ? resolved : null;
+  return options.allowIncomplete && isUsableIncompleteSeriesCandidate(resolved) ? resolved : null;
 }
 
 async function fetchKindleSeriesCandidate(input, options = {}) {
@@ -1061,6 +1061,45 @@ function isIncompleteSeriesCandidate(series) {
   const items = Array.isArray(series?.items) ? series.items : [];
   const expected = Math.max(Number(series?.expectedVolumeCount) || 0, maxSeriesItemVolume(items), items.length);
   return seriesCompletenessErrors(items, expected).length > 0;
+}
+
+function isUsableIncompleteSeriesCandidate(series) {
+  const items = Array.isArray(series?.items) ? series.items : [];
+  if (items.length <= 1) return false;
+
+  const expected = Math.max(Number(series?.expectedVolumeCount) || 0, maxSeriesItemVolume(items), items.length);
+  if (expected <= items.length) return true;
+
+  const coverage = items.length / expected;
+  const qualityCount = items.filter(hasUsableSeriesCandidateEvidence).length;
+  const hasPrefix = hasContiguousSeriesPrefix(items, Math.min(3, items.length));
+  const allUnresolved = items.every((item) => item.currentPrice == null && !item.imageUrl && isPlaceholderSeriesTitle(item.title));
+
+  if (allUnresolved) return false;
+  if (!hasPrefix && expected >= items.length + 5) return false;
+  if (qualityCount < Math.min(2, items.length)) return false;
+  if (coverage < 0.15 && expected >= 12) return false;
+  return true;
+}
+
+function hasUsableSeriesCandidateEvidence(item = {}) {
+  if (item.currentPrice != null) return true;
+  if (item.imageUrl) return true;
+  if (!isPlaceholderSeriesTitle(item.title)) return true;
+  return false;
+}
+
+function isPlaceholderSeriesTitle(value = '') {
+  return /^ASIN\s+[A-Z0-9]{10}$/i.test(String(value || '').trim());
+}
+
+function hasContiguousSeriesPrefix(items = [], requiredLength = 1) {
+  const required = Math.max(1, Number(requiredLength) || 1);
+  const volumes = new Set(items.map(seriesItemVolume).filter((volume) => Number.isFinite(volume) && volume > 0));
+  for (let volume = 1; volume <= required; volume += 1) {
+    if (!volumes.has(volume)) return false;
+  }
+  return true;
 }
 
 function mergeSeriesItemSeed(base, overlay) {

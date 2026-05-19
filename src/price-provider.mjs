@@ -866,7 +866,7 @@ export function extractKindleSeriesItemsFromHtml(html) {
   const childItems = extractChildAsinListItems(value);
 
   const bulkOfferItems = extractLargestBulkOfferItems(value, { seriesName, seriesImageUrl });
-  if (shouldUseBulkOfferItemsForSeries(bulkOfferItems, childItems)) {
+  if (shouldUseBulkOfferItemsForSeries(bulkOfferItems, childItems, value)) {
     const childByAsin = new Map(childItems.map((item) => [item.asin, item]));
     return bulkOfferItems.map((item) => mergeBulkSeriesItem(item, childByAsin.get(item.asin)));
   }
@@ -912,10 +912,22 @@ export function extractKindleSeriesItemsFromHtml(html) {
   return [...ordered.values()].filter((item) => isProbablyBookAsin(item.asin));
 }
 
-function shouldUseBulkOfferItemsForSeries(bulkItems = [], childItems = []) {
+function shouldUseBulkOfferItemsForSeries(bulkItems = [], childItems = [], html = '') {
   if (bulkItems.length <= childItems.length) return false;
   if (bulkItemsLikelyDifferentEdition(bulkItems, childItems)) return false;
+  if (childItems.length === 0 && !hasStandaloneBulkSeriesEvidence(html, bulkItems)) return false;
   return true;
+}
+
+function hasStandaloneBulkSeriesEvidence(html, bulkItems = []) {
+  const value = String(html || '');
+  if (!bulkItems.length) return false;
+  if (/id=["']series-childAsin-list["']|id=["']series-childAsin-item_\d+["']/i.test(value)) return true;
+  if (/hulk-buy-card|Kindle版\(電子書籍\)のシリーズを購入|まとめ買い\s*[（(]\s*巻\s*[）)]|シリーズの巻/i.test(value)) return true;
+
+  const expected = extractSeriesExpectedCount(value);
+  if (expected <= 1) return false;
+  return bulkItems.length >= Math.min(expected, 2);
 }
 
 function bulkItemsLikelyDifferentEdition(bulkItems = [], childItems = []) {
@@ -2852,11 +2864,15 @@ function isKindleCollectionPage(html, sourceAsin = '', items = []) {
     return true;
   }
 
-  return (
-    items.length > 1 &&
-    /hulk-buy-card|Kindle版\(電子書籍\)のシリーズを購入|data-offer-asins/i.test(value) &&
-    /全\s*[0-9０-９]+\s*巻|collection/i.test(cleanText(value.slice(0, 15000)))
-  );
+  if (items.length <= 1) return false;
+
+  const leadingText = cleanText(value.slice(0, 15000));
+  const hasSeriesCount = /全\s*[0-9０-９]+\s*巻|[0-9０-９]+\s+book\s+series|collection/i.test(leadingText);
+  const hasCollectionStructure =
+    /hulk-buy-card|Kindle版\(電子書籍\)のシリーズを購入|id=["']series-childAsin-list["']|id=["']series-childAsin-item_\d+["']|まとめ買い\s*[（(]\s*巻\s*[）)]|シリーズの巻/i.test(value);
+  const hasStructuredBulk = /data-offer-asins/i.test(value) && hasSeriesCount && hasStandaloneBulkSeriesEvidence(value, items);
+
+  return hasSeriesCount && (hasCollectionStructure || hasStructuredBulk);
 }
 
 function extractSeriesCollectionAsin(html, fallbackAsin = '', items = []) {

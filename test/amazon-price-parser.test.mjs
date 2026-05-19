@@ -53,6 +53,23 @@ test('Amazon series parser keeps bulk volume when child list repeats the first v
   assert.equal(fourth.title, '進撃の巨人 ４');
 });
 
+test('Amazon series parser ignores unrelated bulk offer ASINs on standalone product pages', () => {
+  const items = extractKindleSeriesItemsFromHtml(`
+    <html>
+      <head>
+        <meta property="og:title" content="おともだち 〈新装版〉 eBook : 高野文子: Kindleストア" />
+      </head>
+      <body>
+        <span id="productTitle">おともだち 〈新装版〉</span>
+        <div id="tmm-grid-swatch-KINDLE">Kindle版</div>
+        <div data-offer-asins="B0G82JFYSP,B0GSMRYHFJ,B0GQJC3J46,B0GX38YS48"></div>
+      </body>
+    </html>
+  `);
+
+  assert.equal(items.length, 0);
+});
+
 test('Amazon series parser ignores episode bulk forms when child list identifies collected volumes', () => {
   const items = extractKindleSeriesItemsFromHtml(`
     <meta property="og:title" content="トリリオンゲーム (11 book series)" />
