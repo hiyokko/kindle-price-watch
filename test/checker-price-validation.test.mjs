@@ -12,6 +12,7 @@ import {
   selectListPriceChallengeCandidates,
   seriesAggregateSnapshot,
   seriesSnapshotFromKindleSeriesForBook,
+  shouldRecheckCompletedSeriesGroup,
   snapshotInputUrlForBook,
   summarizeCheckResultErrors,
   suspiciousSnapshotReason,
@@ -805,4 +806,19 @@ test('large incomplete series candidates capped at 50 items are not usable', () 
     }),
     false
   );
+});
+
+test('completed series discovery becomes eligible for periodic recheck', () => {
+  const group = {
+    completed: true,
+    books: [
+      {
+        seriesCompletedAt: '2026-05-01T00:00:00.000Z',
+        seriesLastDiscoveredAt: '2026-05-01T00:00:00.000Z'
+      }
+    ]
+  };
+
+  assert.equal(shouldRecheckCompletedSeriesGroup(group, '2026-05-06T23:59:59.000Z'), false);
+  assert.equal(shouldRecheckCompletedSeriesGroup(group, '2026-05-08T00:00:00.000Z'), true);
 });

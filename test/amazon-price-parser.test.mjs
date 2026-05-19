@@ -562,6 +562,34 @@ test('Amazon series completion parser does not treat current volume count as com
   `), false);
 });
 
+test('Amazon series completion parser does not treat revival copy as completed', () => {
+  assert.equal(extractSeriesCompletionStatusFromHtml(`
+    <html>
+      <head><meta property="og:title" content="左ききのエレン"></head>
+      <body>
+        <div id="bookDescription_feature_div">
+          ジャンプ＋版の最終回から4年後の2026年を舞台にした復活連載。
+          新章の第25巻が配信中です。
+        </div>
+      </body>
+    </html>
+  `), false);
+});
+
+test('Amazon series completion parser does not treat part completion as full series completion', () => {
+  assert.equal(extractSeriesCompletionStatusFromHtml(`
+    <html>
+      <head><meta property="og:title" content="原作版 左ききのエレン (全40巻)"></head>
+      <body>
+        <div id="bookDescription_feature_div">
+          初の長編ストーリーマンガの第一部が、ここに堂々完結！
+          描き下ろし「左ききのエレン 2018」を収録。
+        </div>
+      </body>
+    </html>
+  `), false);
+});
+
 test('MangaZenkan completion parser requires matching title and volume count', () => {
   const html = `
     <div class="search-result-item book">

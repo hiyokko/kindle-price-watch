@@ -41,6 +41,7 @@ const AMAZON_HTML_TINY_PRICE_MAX = 10;
 const DISCOUNT_RECHECK_DEFAULT_HOURS = 24;
 const DISCOUNT_RECHECK_RATIO = 0.7;
 const PRICE_INTEGRITY_SERIES_OUTLIER_RATIO = 0.55;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 export async function listBooks() {
   const store = await readStoreWithPriceRepairs();
@@ -1054,6 +1055,9 @@ function applySeriesDiscoveryMetadata(book, options = {}) {
   if (options.completed) {
     book.seriesCompleted = true;
     book.seriesCompletedAt = book.seriesCompletedAt || now;
+  } else if (Object.hasOwn(options, 'completed') && book.seriesCompleted) {
+    book.seriesCompleted = false;
+    book.seriesCompletedAt = '';
   }
 }
 
@@ -4192,20 +4196,22 @@ function bookImportQueueKey(input) {
 function planSeriesDiscovery(store, options = {}) {
   const allGroups = seriesDiscoveryGroups(store.books);
   const completedGroups = allGroups.filter((group) => group.completed);
-  const markedNoRun = markNoRunSeriesDiscoveryGroups(store, completedGroups, {
+  const completedRecheckGroups = completedGroups.filter((group) => shouldRecheckCompletedSeriesGroup(group, options.now));
+  const completedNoRunGroups = completedGroups.filter((group) => !completedRecheckGroups.includes(group));
+  const markedNoRun = markNoRunSeriesDiscoveryGroups(store, completedNoRunGroups, {
     now: options.now,
     reason: 'completed'
   });
   const groups = rotateSeriesGroupsAfterCursor(
-    allGroups.filter((group) => !group.completed),
+    [...allGroups.filter((group) => !group.completed), ...completedRecheckGroups],
     store.seriesDiscoveryCursor?.lastSeriesKey
   );
   const limit = floorNumber(process.env.SERIES_DISCOVERY_BATCH_SIZE, 1, 50);
   return {
     groups: groups.slice(0, limit),
     totalEligible: groups.length,
-    skippedCompleted: completedGroups.length,
-    skippedNoRun: completedGroups.length,
+    skippedCompleted: completedNoRunGroups.length,
+    skippedNoRun: completedNoRunGroups.length,
     markedNoRun
   };
 }
@@ -4213,7 +4219,9 @@ function planSeriesDiscovery(store, options = {}) {
 function planSeriesDiscoveryForGroups(store, groups, options = {}) {
   const uniqueGroups = uniqueSeriesDiscoveryGroups(groups);
   const completedGroups = uniqueGroups.filter((group) => group.completed);
-  const markedNoRun = markNoRunSeriesDiscoveryGroups(store, completedGroups, {
+  const completedRecheckGroups = completedGroups.filter((group) => shouldRecheckCompletedSeriesGroup(group, options.now));
+  const completedNoRunGroups = completedGroups.filter((group) => !completedRecheckGroups.includes(group));
+  const markedNoRun = markNoRunSeriesDiscoveryGroups(store, completedNoRunGroups, {
     now: options.now,
     reason: 'completed'
   });
@@ -4222,14 +4230,29 @@ function planSeriesDiscoveryForGroups(store, groups, options = {}) {
     1,
     50
   );
-  const runnableGroups = uniqueGroups.filter((group) => !group.completed).slice(0, limit);
+  const runnableGroups = [...uniqueGroups.filter((group) => !group.completed), ...completedRecheckGroups].slice(0, limit);
   return {
     groups: runnableGroups,
     totalEligible: runnableGroups.length,
-    skippedCompleted: completedGroups.length,
-    skippedNoRun: completedGroups.length,
+    skippedCompleted: completedNoRunGroups.length,
+    skippedNoRun: completedNoRunGroups.length,
     markedNoRun
   };
+}
+
+export function shouldRecheckCompletedSeriesGroup(group = {}, now = new Date().toISOString()) {
+  if (!group.completed) return false;
+  const intervalDays = floorNumber(process.env.SERIES_COMPLETED_RECHECK_DAYS, 1, 7);
+  const nowMs = new Date(now || Date.now()).getTime();
+  if (!Number.isFinite(nowMs)) return false;
+
+  const checkedTimes = (group.books || [])
+    .flatMap((book) => [book.seriesCompletedAt, book.seriesLastDiscoveredAt])
+    .map((value) => new Date(value || 0).getTime())
+    .filter((value) => Number.isFinite(value) && value > 0);
+  if (checkedTimes.length === 0) return true;
+
+  return nowMs - Math.max(...checkedTimes) >= intervalDays * DAY_MS;
 }
 
 function seriesDiscoveryGroupForBook(store, checkedBook) {

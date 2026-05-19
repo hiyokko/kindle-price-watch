@@ -3499,7 +3499,10 @@ function hasSeriesCompletionEvidence(scope) {
 
 function hasSeriesCompletionNegation(scope) {
   const value = pageEvidenceText(scope);
-  return /(?:未完結|完結していない|完結ではない|完結予定|完結間近|完結へ)/.test(value);
+  return (
+    /(?:未完結|完結していない|完結ではない|完結予定|完結間近|完結へ|最終回から|復活連載|連載再開)/.test(value) ||
+    /(?:第\s*)?[一二三四五六七八九十0-9０-９]+\s*部.{0,32}完結/.test(value)
+  );
 }
 
 function completionKeywordScopes(html) {
