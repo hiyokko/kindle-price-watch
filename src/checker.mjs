@@ -6767,17 +6767,7 @@ function shouldWaitForScheduledExecutionWindow(source, options = {}, now = Date.
 
 const DAILY_CRON_EXECUTION_WINDOWS = new Map([
   ['54 18 * * *', { targetIndex: 0, backup: false }],
-  ['7 19 * * *', { targetIndex: 0, backup: true }],
-  ['37 19 * * *', { targetIndex: 0, backup: true }],
-  ['17 20 * * *', { targetIndex: 0, backup: true }],
-  ['7 21 * * *', { targetIndex: 0, backup: true }],
-  ['7 22 * * *', { targetIndex: 0, backup: true }],
-  ['54 6 * * *', { targetIndex: 1, backup: false }],
-  ['7 7 * * *', { targetIndex: 1, backup: true }],
-  ['37 7 * * *', { targetIndex: 1, backup: true }],
-  ['17 8 * * *', { targetIndex: 1, backup: true }],
-  ['7 9 * * *', { targetIndex: 1, backup: true }],
-  ['7 10 * * *', { targetIndex: 1, backup: true }]
+  ['54 6 * * *', { targetIndex: 1, backup: false }]
 ]);
 
 export function resolveCronScheduleIntent(scheduleCron, now = Date.now()) {

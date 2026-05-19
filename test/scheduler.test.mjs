@@ -3,39 +3,36 @@ import test from 'node:test';
 
 import { cronWindowCompletionState, resolveCronScheduleIntent } from '../src/checker.mjs';
 
-test('delayed evening backup still targets the 15:54 JST execution window', () => {
-  const now = Date.UTC(2026, 4, 10, 13, 21); // 2026-05-10 22:21 JST
-  const intent = resolveCronScheduleIntent('7 7 * * *', now);
+test('primary evening schedule targets the 15:54 JST execution window', () => {
+  const now = Date.UTC(2026, 4, 10, 7, 0); // 2026-05-10 16:00 JST
+  const intent = resolveCronScheduleIntent('54 6 * * *', now);
 
-  assert.equal(intent.backup, true);
+  assert.equal(intent.backup, false);
   assert.equal(intent.executionBoundaryAt, '2026-05-10T06:54:00.000Z');
   assert.equal(intent.nextExecutionBoundaryAt, '2026-05-10T18:54:00.000Z');
   assert.equal(intent.stale, false);
 });
 
-test('late evening backup still targets the 15:54 JST execution window', () => {
-  const now = Date.UTC(2026, 4, 10, 10, 9); // 2026-05-10 19:09 JST
-  const intent = resolveCronScheduleIntent('7 10 * * *', now);
+test('primary morning schedule targets the 03:54 JST execution window', () => {
+  const now = Date.UTC(2026, 4, 10, 19, 0); // 2026-05-11 04:00 JST
+  const intent = resolveCronScheduleIntent('54 18 * * *', now);
 
-  assert.equal(intent.backup, true);
-  assert.equal(intent.executionBoundaryAt, '2026-05-10T06:54:00.000Z');
-  assert.equal(intent.nextExecutionBoundaryAt, '2026-05-10T18:54:00.000Z');
-  assert.equal(intent.stale, false);
-});
-
-test('late morning backup still targets the 03:54 JST execution window', () => {
-  const now = Date.UTC(2026, 4, 10, 22, 9); // 2026-05-11 07:09 JST
-  const intent = resolveCronScheduleIntent('7 22 * * *', now);
-
-  assert.equal(intent.backup, true);
+  assert.equal(intent.backup, false);
   assert.equal(intent.executionBoundaryAt, '2026-05-10T18:54:00.000Z');
   assert.equal(intent.nextExecutionBoundaryAt, '2026-05-11T06:54:00.000Z');
   assert.equal(intent.stale, false);
 });
 
+test('obsolete backup schedule crons are no longer treated as price-check windows', () => {
+  const now = Date.UTC(2026, 4, 10, 22, 9); // 2026-05-11 07:09 JST
+  const intent = resolveCronScheduleIntent('7 22 * * *', now);
+
+  assert.equal(intent, null);
+});
+
 test('a scheduled run is stale after the next execution window begins', () => {
   const now = Date.UTC(2026, 4, 10, 19, 0); // 2026-05-11 04:00 JST
-  const intent = resolveCronScheduleIntent('7 7 * * *', now);
+  const intent = resolveCronScheduleIntent('54 6 * * *', now);
 
   assert.equal(intent.executionBoundaryAt, '2026-05-10T06:54:00.000Z');
   assert.equal(intent.nextExecutionBoundaryAt, '2026-05-10T18:54:00.000Z');

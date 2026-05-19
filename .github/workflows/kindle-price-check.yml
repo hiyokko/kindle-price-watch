@@ -22,17 +22,6 @@ on:
     # Daily at 03:54 and 15:54 JST. GitHub cron uses UTC.
     - cron: "54 18 * * *"
     - cron: "54 6 * * *"
-    # Backup retries only proceed when the target execution window did not complete.
-    - cron: "7 19 * * *"
-    - cron: "37 19 * * *"
-    - cron: "17 20 * * *"
-    - cron: "7 21 * * *"
-    - cron: "7 22 * * *"
-    - cron: "7 7 * * *"
-    - cron: "37 7 * * *"
-    - cron: "17 8 * * *"
-    - cron: "7 9 * * *"
-    - cron: "7 10 * * *"
 
 concurrency:
   group: kindle-price-check
@@ -69,7 +58,7 @@ jobs:
       LISTASIN_EARLY_FALLBACK: "true"
       FORCE_CHECK_ALL: ${{ github.event_name == 'workflow_dispatch' && (inputs.force_all == true || inputs.force_all == 'true') }}
       CHECK_SCHEDULE_CRON: ${{ github.event_name == 'schedule' && github.event.schedule || inputs.schedule_cron }}
-      CHECK_BACKUP_RUN: ${{ (github.event_name == 'schedule' && github.event.schedule != '54 18 * * *' && github.event.schedule != '54 6 * * *') || (github.event_name == 'workflow_dispatch' && (inputs.backup == true || inputs.backup == 'true')) }}
+      CHECK_BACKUP_RUN: ${{ github.event_name == 'workflow_dispatch' && (inputs.backup == true || inputs.backup == 'true') }}
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
     steps:
       - name: Checkout
