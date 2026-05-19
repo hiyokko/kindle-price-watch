@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 import { promises as fs } from 'node:fs';
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadEnv, readNumberEnv } from './src/env.mjs';
@@ -60,7 +60,7 @@ const server = createServer(async (req, res) => {
       return;
     }
 
-    await serveStatic(res, url.pathname);
+    await serveStatic(req, res, url.pathname);
   } catch (error) {
     sendJson(res, error.status || 500, {
       error: error.status ? error.message : 'サーバーエラーが発生しました'
@@ -78,7 +78,11 @@ async function handleApi(req, res, url) {
   const pathParts = url.pathname.split('/').filter(Boolean);
 
   if (method === 'GET' && url.pathname === '/api/books') {
-    sendJson(res, 200, await listBooksPayload());
+    sendJson(res, 200, await listBooksPayload(), {
+      req,
+      etag: true,
+      cacheControl: 'private, no-cache, max-age=0'
+    });
     return;
   }
 
@@ -432,7 +436,7 @@ function escapeHtml(value) {
     .replaceAll("'", '&#39;');
 }
 
-async function serveStatic(res, pathname) {
+async function serveStatic(req, res, pathname) {
   const cleanPath = pathname === '/' ? '/index.html' : pathname;
   const filePath = path.normalize(path.join(publicDir, cleanPath));
   if (!filePath.startsWith(publicDir)) {
@@ -442,27 +446,61 @@ async function serveStatic(res, pathname) {
 
   try {
     const body = await fs.readFile(filePath);
-    res.writeHead(200, {
-      'Content-Type': contentType(filePath),
-      'Cache-Control': 'no-store'
+    sendBody(res, 200, body, {
+      req,
+      contentType: contentType(filePath),
+      etag: true,
+      cacheControl: 'private, no-cache, max-age=0'
     });
-    res.end(body);
   } catch {
     const fallback = await fs.readFile(path.join(publicDir, 'index.html'));
-    res.writeHead(200, {
-      'Content-Type': 'text/html; charset=utf-8',
-      'Cache-Control': 'no-store'
+    sendBody(res, 200, fallback, {
+      req,
+      contentType: 'text/html; charset=utf-8',
+      etag: true,
+      cacheControl: 'private, no-cache, max-age=0'
     });
-    res.end(fallback);
   }
 }
 
-function sendJson(res, status, payload) {
-  res.writeHead(status, {
-    'Content-Type': 'application/json; charset=utf-8',
-    'Cache-Control': 'no-store'
+function sendJson(res, status, payload, options = {}) {
+  const body = Buffer.from(JSON.stringify(payload));
+  sendBody(res, status, body, {
+    ...options,
+    contentType: 'application/json; charset=utf-8'
   });
-  res.end(JSON.stringify(payload));
+}
+
+function sendBody(res, status, body, options = {}) {
+  const headers = {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': options.cacheControl || 'no-store'
+  };
+  if (options.contentType) headers['Content-Type'] = options.contentType;
+  if (options.etag) {
+    const etag = responseEtag(body);
+    headers.ETag = etag;
+    if (status === 200 && requestEtagMatches(options.req, etag)) {
+      res.writeHead(304, headers);
+      res.end();
+      return;
+    }
+  }
+  res.writeHead(status, headers);
+  res.end(body);
+}
+
+function responseEtag(body) {
+  return `"${createHash('sha256').update(body).digest('base64url')}"`;
+}
+
+function requestEtagMatches(req, etag) {
+  const value = String(req?.headers?.['if-none-match'] || '');
+  if (!value) return false;
+  return value
+    .split(',')
+    .map((item) => item.trim().replace(/^W\//, ''))
+    .includes(etag);
 }
 
 function contentType(filePath) {

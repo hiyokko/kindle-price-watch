@@ -17,6 +17,7 @@ const state = {
 };
 
 const MEANINGFUL_EFFECTIVE_DISCOUNT_RATE = 5;
+const apiResponseCache = new Map();
 
 const els = {
   addForm: document.getElementById('addForm'),
@@ -703,14 +704,14 @@ function createBookNode(book) {
   });
   cover.src = book.imageUrl || '';
   cover.alt = book.title;
-  coverLink.href = book.amazonUrl;
+  coverLink.href = bookAmazonUrl(book);
   title.textContent = displayBookTitle(book);
   meta.textContent = [cleanMeta(book.author), cleanMeta(book.publisher), book.asin].filter(Boolean).join(' / ');
   current.textContent = formatPrice(book);
   lowest.textContent = book.lowestEffectivePrice == null ? '-' : yen(book.lowestEffectivePrice);
   discount.textContent = discountRateLabel(bookDiscountRate(book));
   checked.textContent = relativeTime(book.lastCheckedAt);
-  amazon.href = book.amazonUrl;
+  amazon.href = bookAmazonUrl(book);
 
   const badgeInfo = badgeFor(book);
   badge.textContent = badgeInfo.label;
@@ -828,11 +829,18 @@ function renderChart(history) {
 }
 
 async function api(url, options = {}) {
+  const method = options.method || 'GET';
+  const cached = method === 'GET' ? apiResponseCache.get(url) : null;
+  const headers = options.body ? { 'Content-Type': 'application/json' } : {};
+  if (cached?.etag) headers['If-None-Match'] = cached.etag;
+
   const response = await fetch(url, {
-    method: options.method || 'GET',
-    headers: options.body ? { 'Content-Type': 'application/json' } : undefined,
+    method,
+    headers: Object.keys(headers).length ? headers : undefined,
     body: options.body ? JSON.stringify(options.body) : undefined
   });
+  if (response.status === 304 && cached) return cached.data;
+
   const data = await response.json();
   if (!response.ok) {
     const error = new Error(data.error || `HTTP ${response.status}`);
@@ -840,6 +848,9 @@ async function api(url, options = {}) {
     error.data = data;
     throw error;
   }
+  const etag = response.headers.get('etag');
+  if (method === 'GET' && etag) apiResponseCache.set(url, { etag, data });
+  if (method !== 'GET') apiResponseCache.clear();
   return data;
 }
 
@@ -1141,8 +1152,14 @@ function existingBookForInput(input) {
   const normalizedUrl = normalizeInputUrl(input);
   if (!normalizedUrl) return null;
   return state.books.find((book) => {
-    return [book.amazonUrl, book.sourceUrl].some((url) => normalizeInputUrl(url) === normalizedUrl);
+    return [bookAmazonUrl(book), book.sourceUrl].some((url) => normalizeInputUrl(url) === normalizedUrl);
   }) || null;
+}
+
+function bookAmazonUrl(book) {
+  if (book?.amazonUrl) return book.amazonUrl;
+  const asin = String(book?.asin || '').toUpperCase();
+  return /^B[A-Z0-9]{9}$/.test(asin) ? `https://www.amazon.co.jp/dp/${asin}` : '#';
 }
 
 function amazonUrlFromInput(input) {
