@@ -1063,7 +1063,7 @@ function isIncompleteSeriesCandidate(series) {
   return seriesCompletenessErrors(items, expected).length > 0;
 }
 
-function isUsableIncompleteSeriesCandidate(series) {
+export function isUsableIncompleteSeriesCandidate(series) {
   const items = Array.isArray(series?.items) ? series.items : [];
   if (items.length <= 1) return false;
 
@@ -1076,10 +1076,17 @@ function isUsableIncompleteSeriesCandidate(series) {
   const allUnresolved = items.every((item) => item.currentPrice == null && !item.imageUrl && isPlaceholderSeriesTitle(item.title));
 
   if (allUnresolved) return false;
+  if (isLikelyCappedSeriesPageCandidate(items, expected)) return false;
   if (!hasPrefix && expected >= items.length + 5) return false;
   if (qualityCount < Math.min(2, items.length)) return false;
   if (coverage < 0.15 && expected >= 12) return false;
   return true;
+}
+
+function isLikelyCappedSeriesPageCandidate(items = [], expected = 0) {
+  const count = items.length;
+  if (expected <= count || count < 50) return false;
+  return count % 50 === 0;
 }
 
 function hasUsableSeriesCandidateEvidence(item = {}) {

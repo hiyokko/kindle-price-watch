@@ -70,6 +70,23 @@ test('Amazon series parser ignores unrelated bulk offer ASINs on standalone prod
   assert.equal(items.length, 0);
 });
 
+test('Amazon series parser ignores capped bulk ASIN lists for larger known collections', () => {
+  const cappedAsins = Array.from({ length: 50 }, (_, index) => `B09FLC${String(index + 1).padStart(4, '0')}`).join(',');
+  const items = extractKindleSeriesItemsFromHtml(`
+    <html>
+      <head>
+        <meta property="og:title" content="モジャ公 藤子・Ｆ・不二雄大全集 (全118巻)" />
+      </head>
+      <body>
+        <div class="hulk-buy-card">Kindle版(電子書籍)のシリーズを購入</div>
+        <div data-offer-asins="${cappedAsins}"></div>
+      </body>
+    </html>
+  `);
+
+  assert.equal(items.length, 0);
+});
+
 test('Amazon series parser ignores episode bulk forms when child list identifies collected volumes', () => {
   const items = extractKindleSeriesItemsFromHtml(`
     <meta property="og:title" content="トリリオンゲーム (11 book series)" />

@@ -6,6 +6,7 @@ import {
   needsDiscountExpiryRecheck,
   isActiveSeriesAggregateSnapshot,
   isFutureReleaseDate,
+  isUsableIncompleteSeriesCandidate,
   priceIntegrityIssueForBook,
   repairStorePriceState,
   selectListPriceChallengeCandidates,
@@ -784,4 +785,24 @@ test('list price challenge rejects candidates far above established price histor
     ok: false,
     reason: 'above_price_history'
   });
+});
+
+test('large incomplete series candidates capped at 50 items are not usable', () => {
+  const items = Array.from({ length: 50 }, (_, index) => ({
+    asin: `B09FLC${String(index + 1).padStart(4, '0')}`,
+    title: `藤子・F・不二雄大全集 ${index + 1}`,
+    volume: index + 1,
+    currentPrice: 1000,
+    imageUrl: `https://m.media-amazon.com/images/I/${index + 1}.jpg`,
+    provider: 'amazon_series_child'
+  }));
+
+  assert.equal(
+    isUsableIncompleteSeriesCandidate({
+      seriesName: '藤子・F・不二雄大全集',
+      expectedVolumeCount: 118,
+      items
+    }),
+    false
+  );
 });

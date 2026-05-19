@@ -922,12 +922,13 @@ function shouldUseBulkOfferItemsForSeries(bulkItems = [], childItems = [], html 
 function hasStandaloneBulkSeriesEvidence(html, bulkItems = []) {
   const value = String(html || '');
   if (!bulkItems.length) return false;
+  const expected = extractSeriesExpectedCount(value);
+  if (expected > 1 && bulkItems.length < expected) return false;
   if (/id=["']series-childAsin-list["']|id=["']series-childAsin-item_\d+["']/i.test(value)) return true;
   if (/hulk-buy-card|Kindle版\(電子書籍\)のシリーズを購入|まとめ買い\s*[（(]\s*巻\s*[）)]|シリーズの巻/i.test(value)) return true;
 
-  const expected = extractSeriesExpectedCount(value);
   if (expected <= 1) return false;
-  return bulkItems.length >= Math.min(expected, 2);
+  return bulkItems.length >= expected;
 }
 
 function bulkItemsLikelyDifferentEdition(bulkItems = [], childItems = []) {
