@@ -336,6 +336,11 @@ async function importSeriesIntoStore(store, input, series, options = {}) {
       : { ...series, expectedVolumeCount: currentExpectedVolumeCount(regularSeriesItems) };
   const seriesExpectedCount = normalizeSeriesExpectedCount(expectedSeries, regularSeriesItems);
   const existingSeriesBooks = store.books.filter((book) => isKnownBookForSeries(book, seriesIdentity));
+  await backfillKnownWeakSeriesImages(regularSeriesItems, existingSeriesBooks, seriesErrors, {
+    now,
+    signal: options.signal,
+    timeoutMs: options.timeoutMs
+  });
   const weakImageUrls = weakSeriesImageUrls([...regularSeriesItems, ...existingSeriesBooks]);
   const additions = [];
 
@@ -498,6 +503,46 @@ function futureReleaseValidationTargets(items = [], store = {}) {
       return String(right.asin || '').localeCompare(String(left.asin || ''));
     })
     .slice(0, limit);
+}
+
+async function backfillKnownWeakSeriesImages(items = [], existingBooks = [], errors = [], options = {}) {
+  if (!items.length || !existingBooks.length) return;
+
+  const itemsByAsin = new Map(items.map((item) => [item.asin, item]));
+  const initialWeakImageUrls = weakSeriesImageUrls([...items, ...existingBooks]);
+  const targets = existingBooks
+    .filter((book) => {
+      if (!book?.asin) return false;
+      const item = itemsByAsin.get(book.asin);
+      if (!item) return false;
+      if (!isWeakSeriesImage(seedFromExistingBook(book), initialWeakImageUrls)) return false;
+      return isWeakSeriesImage(item, initialWeakImageUrls);
+    })
+    .sort((left, right) => compareSeriesItemSeeds(seedFromExistingBook(left), seedFromExistingBook(right)));
+
+  if (targets.length === 0) return;
+
+  const limit = floorNumber(process.env.SERIES_KNOWN_IMAGE_BACKFILL_LIMIT, 1, 24);
+  const limitedTargets = targets.slice(0, limit);
+  if (targets.length > limitedTargets.length) {
+    errors.push(`series known image backfill limited: ${limitedTargets.length}/${targets.length} attempted`);
+  }
+
+  for (const book of limitedTargets) {
+    const item = itemsByAsin.get(book.asin);
+    if (!item) continue;
+
+    try {
+      const snapshot = await fetchAmazonHtmlSnapshotForSeriesBackfill(book.asin, item, options);
+      if (!snapshot.imageUrl || isWeakSeriesImageUrl(snapshot.imageUrl)) {
+        errors.push(`${book.asin}: image backfill did not find a usable cover`);
+        continue;
+      }
+      Object.assign(item, mergeAmazonSnapshotIntoSeriesItem(item, snapshot));
+    } catch (error) {
+      errors.push(`${book.asin}: image backfill failed (${error.message})`);
+    }
+  }
 }
 
 async function importSingleBookSeriesCandidateIntoStore(store, input, item, options = {}) {
@@ -1398,6 +1443,7 @@ function seriesItemNeedsBackfill(item, weakImageUrls) {
 function isWeakSeriesImage(item, weakImageUrls) {
   if (!item?.imageUrl) return true;
   if (item.imageSource === 'series_fallback') return true;
+  if (isWeakSeriesImageUrl(item.imageUrl)) return true;
   return weakImageUrls.has(normalizeImageUrl(item.imageUrl));
 }
 
@@ -1409,7 +1455,20 @@ function weakSeriesImageUrls(items = []) {
     counts.set(normalized, (counts.get(normalized) || 0) + 1);
   }
 
-  return new Set([...counts.entries()].filter(([, count]) => count > 1).map(([url]) => url));
+  return new Set(
+    [...counts.entries()]
+      .filter(([url, count]) => count > 1 || isWeakSeriesImageUrl(url))
+      .map(([url]) => url)
+  );
+}
+
+export function isWeakSeriesImageUrl(value) {
+  const normalized = normalizeImageUrl(value).toLowerCase();
+  return (
+    Boolean(normalized) &&
+    (/\/a19vjrnyppl\./.test(normalized) ||
+      /(?:no[_-]?image|not[_-]?available|placeholder|transparent|pixel|sprite)/.test(normalized))
+  );
 }
 
 async function fetchAmazonHtmlSnapshotForSeriesBackfill(asin, seed = {}, options = {}) {
@@ -1646,8 +1705,11 @@ function shouldRefreshSeriesImage(book, item, options = {}) {
   if (!book.imageUrl) return true;
   if (normalizeImageUrl(book.imageUrl) === normalizeImageUrl(item.imageUrl)) return false;
   const weakImageUrls = options.weakImageUrls || new Set();
-  const bookImageIsWeak = weakImageUrls.has(normalizeImageUrl(book.imageUrl));
-  const itemImageIsWeak = item.imageSource === 'series_fallback' || weakImageUrls.has(normalizeImageUrl(item.imageUrl));
+  const bookImageIsWeak = isWeakSeriesImageUrl(book.imageUrl) || weakImageUrls.has(normalizeImageUrl(book.imageUrl));
+  const itemImageIsWeak =
+    item.imageSource === 'series_fallback' ||
+    isWeakSeriesImageUrl(item.imageUrl) ||
+    weakImageUrls.has(normalizeImageUrl(item.imageUrl));
   if (bookImageIsWeak && !itemImageIsWeak) return true;
   if (seriesImageProviderRank(item.provider) > seriesImageProviderRank(book.provider)) return true;
   return book.provider === 'curated_series';

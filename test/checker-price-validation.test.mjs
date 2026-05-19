@@ -7,6 +7,7 @@ import {
   isActiveSeriesAggregateSnapshot,
   isFutureReleaseDate,
   isUsableIncompleteSeriesCandidate,
+  isWeakSeriesImageUrl,
   priceIntegrityIssueForBook,
   repairStorePriceState,
   selectListPriceChallengeCandidates,
@@ -806,6 +807,11 @@ test('large incomplete series candidates capped at 50 items are not usable', () 
     }),
     false
   );
+});
+
+test('known Amazon placeholder images are treated as weak series covers', () => {
+  assert.equal(isWeakSeriesImageUrl('https://m.media-amazon.com/images/I/A19VjRNYppL._SY300_.png'), true);
+  assert.equal(isWeakSeriesImageUrl('https://m.media-amazon.com/images/I/513bgfa1haL._SY300_.jpg'), false);
 });
 
 test('completed series discovery becomes eligible for periodic recheck', () => {

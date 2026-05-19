@@ -35,6 +35,10 @@ test('Amazon series names drop store chrome, author text, and volume markers', (
     cleanAmazonSeriesName('Amazon.co.jp: 火の鳥 1 eBook : 手塚治虫: Kindleストア'),
     '火の鳥'
   );
+  assert.equal(
+    cleanAmazonSeriesName('Amazon.co.jp: 左ききのエレン 1 (ジャンプコミックスDIGITAL) eBook : かっぴー, nifuni: Kindleストア'),
+    '左ききのエレン'
+  );
 });
 
 test('Amazon series parser keeps bulk volume when child list repeats the first volume title', () => {
@@ -68,6 +72,30 @@ test('Amazon series parser ignores unrelated bulk offer ASINs on standalone prod
   `);
 
   assert.equal(items.length, 0);
+});
+
+test('Amazon series parser does not keep shared placeholder images as covers', () => {
+  const items = extractKindleSeriesItemsFromHtml(`
+    <meta property="og:title" content="原作版 左ききのエレン (全2巻)" />
+    <div id="series-childAsin-list">
+      <div id="series-childAsin-item_1" class="series-childAsin-item">
+        <a class="itemImageLink" title="原作版 左ききのエレン（１）" href="/gp/product/B07GWQT4JP?storeType=ebooks">
+          <img
+            alt="原作版 左ききのエレン（１）"
+            src="https://m.media-amazon.com/images/I/A19VjRNYppL._SY300_.png"
+            data-old-hires="https://m.media-amazon.com/images/I/513bgfa1haL._SY300_.jpg">
+        </a>
+      </div>
+      <div id="series-childAsin-item_2" class="series-childAsin-item">
+        <a class="itemImageLink" title="原作版 左ききのエレン（２）" href="/gp/product/B07GW9MFNR?storeType=ebooks">
+          <img alt="原作版 左ききのエレン（２）" src="https://m.media-amazon.com/images/I/A19VjRNYppL._SY300_.png">
+        </a>
+      </div>
+    </div>
+  `);
+
+  assert.equal(items[0].imageUrl, 'https://m.media-amazon.com/images/I/513bgfa1haL._SY300_.jpg');
+  assert.equal(items[1].imageUrl, '');
 });
 
 test('Amazon series parser ignores capped bulk ASIN lists for larger known collections', () => {

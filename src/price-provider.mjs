@@ -1737,12 +1737,14 @@ function extractAmazonReaderSeriesName(text) {
     String(text || '').match(/^#\s+(.+)$/m)?.[1] ||
     '';
 
-  return cleanTitle(heading)
-    .replace(/^Amazon\.co\.jp:\s*/i, '')
-    .replace(/\s*\(\s*[0-9０-９]+\s+book\s+series\s*\)\s*Kindle Edition.*$/i, '')
-    .replace(/\s*Kindle Edition.*$/i, '')
-    .replace(/\s*:\s*Kindle Store.*$/i, '')
-    .trim() || 'Kindle シリーズ';
+  return cleanAmazonSeriesName(
+    cleanTitle(heading)
+      .replace(/^Amazon\.co\.jp:\s*/i, '')
+      .replace(/\s*\(\s*[0-9０-９]+\s+book\s+series\s*\)\s*Kindle Edition.*$/i, '')
+      .replace(/\s*Kindle Edition.*$/i, '')
+      .replace(/\s*:\s*Kindle Store.*$/i, '')
+      .trim()
+  );
 }
 
 function extractAmazonReaderSeriesExpectedCount(text) {
@@ -1921,7 +1923,7 @@ function isAmazonReaderSeriesLinkCandidate(candidate, seriesName, expectedVolume
     return true;
   }
 
-  return candidate.kind === 'image' && expectedVolumeCount > 1;
+  return false;
 }
 
 function isAmazonReaderNoiseLinkCandidate(candidate) {
@@ -3307,21 +3309,46 @@ function extractItemTitle(fragment, asin) {
 }
 
 function extractItemImage(fragment) {
+  const candidates = [];
   const dynamic = fragment.match(/\bdata-a-dynamic-image=["']([^"']+)["']/i);
   if (dynamic) {
     const decoded = decodeHtml(dynamic[1]);
-    const url = decoded.match(/https?:\/\/[^"']+?(?:\.jpg|\.jpeg|\.png|\.webp)/i)?.[0];
-    if (isAmazonImage(url)) return url;
+    for (const match of decoded.matchAll(/https?:\/\/[^"']+?(?:\.jpg|\.jpeg|\.png|\.webp)/gi)) {
+      candidates.push(match[0]);
+    }
   }
 
-  const attrs = ['data-src', 'data-old-hires', 'src'];
+  const attrs = ['data-src', 'data-old-hires', 'data-a-hires', 'src'];
   for (const attr of attrs) {
     const value = extractAttribute(fragment, attr);
-    if (isAmazonImage(value)) return value;
+    if (isAmazonImage(value)) candidates.push(value);
   }
 
-  const url = fragment.match(/https?:\/\/[^"'\s<>]+?(?:\.jpg|\.jpeg|\.png|\.webp)/i)?.[0];
-  return isAmazonImage(url) ? decodeHtml(url) : '';
+  for (const srcset of extractAttributes(fragment, 'srcset')) {
+    for (const match of srcset.matchAll(/https?:\/\/[^,\s]+?(?:\.jpg|\.jpeg|\.png|\.webp)/gi)) {
+      candidates.push(match[0]);
+    }
+  }
+
+  for (const match of fragment.matchAll(/https?:\/\/[^"'\s<>]+?(?:\.jpg|\.jpeg|\.png|\.webp)/gi)) {
+    candidates.push(match[0]);
+  }
+
+  return bestItemImage(candidates);
+}
+
+function bestItemImage(candidates = []) {
+  const seen = new Set();
+  const normalized = [];
+
+  for (const candidate of candidates) {
+    const imageUrl = decodeHtml(String(candidate || '').trim());
+    if (!isAmazonImage(imageUrl) || seen.has(imageUrl)) continue;
+    seen.add(imageUrl);
+    normalized.push(imageUrl);
+  }
+
+  return normalized.find((url) => !isKnownWeakAmazonImageUrl(url)) || '';
 }
 
 function extractAttribute(fragment, attr) {
@@ -3617,6 +3644,14 @@ function cleanupSeriesNameSeparators(value) {
 
 function isAmazonImage(value) {
   return Boolean(value && /m\.media-amazon\.com|images-(?:fe|na)\.ssl-images-amazon\.com|\.media-amazon\./i.test(value));
+}
+
+function isKnownWeakAmazonImageUrl(value) {
+  const normalized = String(value || '').toLowerCase();
+  return (
+    /\/a19vjrnyppl\./.test(normalized) ||
+    /(?:no[_-]?image|not[_-]?available|placeholder|transparent|pixel|sprite)/.test(normalized)
+  );
 }
 
 export function isProbablyBookAsin(asin) {
