@@ -8,6 +8,8 @@ import {
   extractKindleSeriesItemsFromHtml,
   extractMangaZenkanCompletionEvidenceFromHtml,
   extractSeriesCompletionStatusFromHtml,
+  fetchAmazonHtmlSnapshot,
+  fetchKindleSeriesItems,
   isKindleSeriesUrl,
   shouldDeferAmazonReaderPrice
 } from '../src/price-provider.mjs';
@@ -72,6 +74,98 @@ test('Amazon series parser ignores unrelated bulk offer ASINs on standalone prod
   `);
 
   assert.equal(items.length, 0);
+});
+
+test('Amazon series fetch falls back from kindle-dbs product URL to dp URL when DBS is blocked', async () => {
+  const originalFetch = globalThis.fetch;
+  const seen = [];
+  globalThis.fetch = async (url) => {
+    const href = String(url);
+    seen.push(href);
+    const parsed = new URL(href);
+    if (/\/kindle-dbs\/product\//.test(parsed.pathname)) {
+      return new Response('blocked', { status: 503 });
+    }
+    if (parsed.pathname === '/dp/B012345678') {
+      return new Response(`
+        <html>
+          <head><meta property="og:title" content="フォールバック作品 (全2巻)"></head>
+          <body>
+            <div id="series-childAsin-list">
+              <div id="series-childAsin-item_1" class="series-childAsin-item">
+                <a class="itemImageLink" title="フォールバック作品 1" href="/gp/product/B012345671?storeType=ebooks">
+                  <img alt="フォールバック作品 1" src="https://m.media-amazon.com/images/I/51one._SY300_.jpg">
+                </a>
+                <span class="a-size-large a-color-price">￥537</span>
+              </div>
+              <div id="series-childAsin-item_2" class="series-childAsin-item">
+                <a class="itemImageLink" title="フォールバック作品 2" href="/gp/product/B012345672?storeType=ebooks">
+                  <img alt="フォールバック作品 2" src="https://m.media-amazon.com/images/I/51two._SY300_.jpg">
+                </a>
+                <span class="a-size-large a-color-price">￥537</span>
+              </div>
+            </div>
+          </body>
+        </html>
+      `, { status: 200, headers: { 'content-type': 'text/html' } });
+    }
+    return new Response('not found', { status: 404 });
+  };
+
+  try {
+    const series = await fetchKindleSeriesItems('https://www.amazon.co.jp/kindle-dbs/product/B012345678', {
+      retries: 0,
+      timeoutMs: 1000,
+      skipThrottle: true,
+      probeSeriesCompletion: false,
+      allowReaderFallback: false
+    });
+
+    assert.equal(series.seriesName, 'フォールバック作品');
+    assert.equal(series.items.length, 2);
+    assert.equal(series.items[0].currentPrice, 537);
+    assert.ok(seen.some((url) => url.includes('/kindle-dbs/product/B012345678')));
+    assert.ok(seen.some((url) => new URL(url).pathname === '/dp/B012345678'));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('Amazon product fetch falls back from kindle-dbs product URL to dp URL when DBS is blocked', async () => {
+  const originalFetch = globalThis.fetch;
+  const seen = [];
+  globalThis.fetch = async (url) => {
+    const href = String(url);
+    seen.push(href);
+    const parsed = new URL(href);
+    if (/\/kindle-dbs\/product\//.test(parsed.pathname)) {
+      return new Response('blocked', { status: 503 });
+    }
+    if (parsed.pathname === '/dp/B012345679') {
+      return new Response(productHtml({
+        title: 'フォールバック単巻 1',
+        currentPrice: 537,
+        listPrice: 792,
+        promo: '32%OFF 5ポイント'
+      }), { status: 200, headers: { 'content-type': 'text/html' } });
+    }
+    return new Response('not found', { status: 404 });
+  };
+
+  try {
+    const snapshot = await fetchAmazonHtmlSnapshot(
+      'B012345679',
+      'https://www.amazon.co.jp/kindle-dbs/product/B012345679',
+      { retries: 0, timeoutMs: 1000, skipThrottle: true, allowExternalPriceFallback: false }
+    );
+
+    assert.equal(snapshot.title, 'フォールバック単巻 1');
+    assert.equal(snapshot.currentPrice, 537);
+    assert.ok(seen.some((url) => url.includes('/kindle-dbs/product/B012345679')));
+    assert.ok(seen.some((url) => new URL(url).pathname === '/dp/B012345679'));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('Amazon series parser does not keep shared placeholder images as covers', () => {

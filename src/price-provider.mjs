@@ -69,27 +69,19 @@ export async function fetchKindleSeriesItems(input, options = {}) {
   const inputAsin = extractAsin(input);
   let amazonResult = null;
   let amazonError = null;
+  const attemptedUrls = new Set();
 
-  try {
-    const { url, html } = await fetchAmazonSeriesHtml(input, options);
-    let items = extractKindleSeriesItemsFromHtml(html);
-    items = await enrichKindleSeriesItemsFromChildListPages(items, html, url, options);
-    const sourceAsin = extractSeriesCollectionAsin(html, inputAsin, items);
-
-    if (options.requireCollectionPage && !isKindleCollectionPage(html, sourceAsin, items)) {
-      items = [];
+  while (shouldTryAmazonSeriesHtmlCandidate(amazonResult, amazonError, input, attemptedUrls)) {
+    try {
+      const candidate = await fetchAmazonSeriesResultFromNextHtml(input, inputAsin, options, attemptedUrls);
+      if (isBetterKindleSeriesResult(candidate, amazonResult) || !amazonResult) {
+        amazonResult = candidate;
+      }
+      amazonError = null;
+    } catch (error) {
+      amazonError = error;
+      break;
     }
-
-    amazonResult = await withSeriesCompletionProbe(buildKindleSeriesResult({
-      seriesName: extractSeriesName(html),
-      sourceAsin,
-      sourcePriceSeed: extractSeriesSourcePriceSeedFromHtml(html, sourceAsin, url, items),
-      expectedVolumeCount: extractSeriesExpectedCount(html) || maxSeriesItemVolume(items) || items.length,
-      completed: extractSeriesCompletionStatus(html),
-      items
-    }), options);
-  } catch (error) {
-    amazonError = error;
   }
 
   if (options.allowReaderFallback !== false && shouldTryAmazonSeriesReaderFallback(amazonResult, amazonError)) {
@@ -103,6 +95,38 @@ export async function fetchKindleSeriesItems(input, options = {}) {
 
   if (amazonResult) return amazonResult;
   throw amazonError || new Error('Amazonシリーズページを取得できませんでした');
+}
+
+async function fetchAmazonSeriesResultFromNextHtml(input, inputAsin, options, attemptedUrls) {
+  const { url, html } = await fetchAmazonSeriesHtml(input, options, attemptedUrls);
+  let items = extractKindleSeriesItemsFromHtml(html);
+  items = await enrichKindleSeriesItemsFromChildListPages(items, html, url, options);
+  const sourceAsin = extractSeriesCollectionAsin(html, inputAsin, items);
+
+  if (options.requireCollectionPage && !isKindleCollectionPage(html, sourceAsin, items)) {
+    items = [];
+  }
+
+  return withSeriesCompletionProbe(buildKindleSeriesResult({
+    seriesName: extractSeriesName(html),
+    sourceAsin,
+    sourcePriceSeed: extractSeriesSourcePriceSeedFromHtml(html, sourceAsin, url, items),
+    expectedVolumeCount: extractSeriesExpectedCount(html) || maxSeriesItemVolume(items) || items.length,
+    completed: extractSeriesCompletionStatus(html),
+    items
+  }), options);
+}
+
+function shouldTryAmazonSeriesHtmlCandidate(series, error, input, attemptedUrls) {
+  const urls = kindleSeriesCandidateUrls(input);
+  if (attemptedUrls.size >= urls.length) return false;
+  if (!series) return true;
+  if (error) return true;
+  if (!isKindleDbsProductUrl(input)) return false;
+  const items = Array.isArray(series.items) ? series.items : [];
+  if (items.length <= 1) return true;
+  const expected = Number(series.expectedVolumeCount) || 0;
+  return expected > items.length;
 }
 
 function buildKindleSeriesResult(series) {
@@ -208,20 +232,30 @@ function isBetterKindleSeriesResult(candidate, current) {
   return false;
 }
 
-async function fetchAmazonSeriesHtml(input, options = {}) {
+async function fetchAmazonSeriesHtml(input, options = {}, attemptedUrls = new Set()) {
   const urls = kindleSeriesCandidateUrls(input);
   let lastError;
 
   for (const url of urls) {
+    if (attemptedUrls.has(url)) continue;
+    attemptedUrls.add(url);
     try {
       return { url, html: await fetchAmazonHtml(url, options) };
     } catch (error) {
       lastError = error;
-      if (isAmazonBlockingFetchError(error)) break;
+      if (isAmazonBlockingFetchError(error) && !shouldContinueAfterBlockedKindleDbsUrl(url)) break;
     }
   }
 
   throw lastError || new Error('Amazonシリーズページを取得できませんでした');
+}
+
+function shouldContinueAfterBlockedKindleDbsUrl(url) {
+  return isKindleDbsProductUrl(url);
+}
+
+function shouldSkipBlockingPenalty(url, responseLike = {}) {
+  return isKindleDbsProductUrl(url) && isBlockingHttpStatus(responseLike.status);
 }
 
 async function enrichKindleSeriesItemsFromChildListPages(items, html, sourceUrl, options = {}) {
@@ -366,6 +400,15 @@ function kindleSeriesCandidateUrls(input) {
   }
 
   return urls;
+}
+
+function isKindleDbsProductUrl(value) {
+  try {
+    const url = new URL(String(value || '').trim());
+    return /\/kindle-dbs\/product\/[A-Z0-9]{10}/i.test(url.pathname);
+  } catch {
+    return false;
+  }
 }
 
 export async function fetchExternalKindleSeriesItems(input, options = {}) {
@@ -1405,6 +1448,7 @@ async function fetchFromAmazonHtml(asin, inputUrl = '', options = {}) {
       if (isPermanentKindleProductError(error)) throw error;
       errors.push(`${amazonFetchUrlLabel(url)}: ${error.message}`);
       if (isAmazonBlockingFetchError(error)) {
+        if (shouldContinueAfterBlockedKindleDbsUrl(url)) continue;
         amazonBlocked = true;
         break;
       }
@@ -2395,13 +2439,17 @@ async function fetchHtmlOnce(url, options = {}) {
     await waitForHostFetchSlot(options.throttleUrl || url, { ...options, signal });
     const response = await fetch(fetchUrl, { headers: options.headers || AMAZON_HEADERS, signal });
     if (!response.ok) {
-      noteHostFetchPenalty(options.throttleUrl || url, response);
+      if (!shouldSkipBlockingPenalty(url, response)) {
+        noteHostFetchPenalty(options.throttleUrl || url, response);
+      }
       throw new Error(`HTTP ${response.status}`);
     }
 
     const html = await response.text();
     if (options.rejectRobotCheck && /captcha|robot check|自動化されたアクセス|ショッピングを続けてください/i.test(html)) {
-      noteHostFetchPenalty(options.throttleUrl || url, { status: 503 });
+      if (!shouldSkipBlockingPenalty(url, { status: 503 })) {
+        noteHostFetchPenalty(options.throttleUrl || url, { status: 503 });
+      }
       throw new Error('Amazonにブロックされました');
     }
 
