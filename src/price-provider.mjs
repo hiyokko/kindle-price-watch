@@ -1228,7 +1228,7 @@ function extractExternalVolumeFromTitle(text) {
   const explicit = value.match(/(?:第)?([0-9０-９]{1,3})\s*巻(?:\s|$|[（(])/);
   if (explicit) return String(toHalfWidthNumber(explicit[1]));
 
-  const parenthesized = value.match(/[（(]\s*([0-9０-９]{1,3})\s*[）)]\s*$/);
+  const parenthesized = value.match(/[（(]\s*([0-9０-９]{1,3})\s*[）)](?:\s*[（(][^（）()]{0,80}[）)])?\s*$/);
   if (parenthesized) return String(toHalfWidthNumber(parenthesized[1]));
 
   const isolated = value.match(/[　\s]([0-9０-９]{1,3})(?=[　\s]|$)/);

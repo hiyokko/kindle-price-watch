@@ -263,20 +263,21 @@ async function importSeriesIntoStore(store, input, series, options = {}) {
   let skippedDuplicates = 0;
   let updatedDuplicates = 0;
   const seriesErrors = [...(series.reconciliation?.errors || [])];
+  const sourceAsin = canonicalSeriesSourceAsin(input, series);
   const seriesKey = seriesKeyForSeries(input, series);
   const seriesName = cleanStoredSeriesName(series.seriesName || 'Kindle シリーズ');
   const sourceUrl = seriesSourceUrlFor(input, series);
   const seriesCompleted = Boolean(series.completed);
 
-  const sourceIsSeriesItem = Boolean(series.sourceAsin && series.items.some((item) => item.asin === series.sourceAsin));
+  const sourceIsSeriesItem = Boolean(sourceAsin && series.items.some((item) => item.asin === sourceAsin));
   const obsoleteIds = new Set(
     store.books
       .filter(
         (book) =>
-          series.sourceAsin &&
-          book.asin === series.sourceAsin &&
+          sourceAsin &&
+          book.asin === sourceAsin &&
           !sourceIsSeriesItem &&
-          (isSameSeriesSource(book.sourceUrl, sourceUrl, series.sourceAsin) || !book.seriesKey)
+          (isSameSeriesSource(book.sourceUrl, sourceUrl, sourceAsin) || !book.seriesKey)
       )
       .map((book) => book.id)
   );
@@ -287,7 +288,7 @@ async function importSeriesIntoStore(store, input, series, options = {}) {
   const seriesIdentity = {
     input,
     sourceUrl,
-    sourceAsin: series.sourceAsin,
+    sourceAsin,
     seriesKey,
     seriesName
   };
@@ -2953,6 +2954,7 @@ function volumeFromSeriesTitle(title) {
   const value = String(title || '');
   const match =
     value.match(/(?:第)?([0-9０-９]{1,3})\s*巻/) ||
+    value.match(/[（(]\s*([0-9０-９]{1,3})\s*[）)](?:\s*[（(][^（）()]{0,80}[）)])?\s*$/) ||
     value.match(/[　\s（(]([0-9０-９]{1,3})[）)]?\s*$/);
   if (!match) return 0;
   return Number(String(match[1]).replace(/[０-９]/g, (char) => String(char.charCodeAt(0) - 0xff10)));
@@ -5860,14 +5862,20 @@ function isUnresolvedSingleBook(book) {
   );
 }
 
-function seriesKeyForSeries(input, series = {}) {
-  const asin = series.sourceAsin || extractAsin(input);
+export function canonicalSeriesSourceAsin(input, series = {}) {
+  const inputAsin = extractAsin(input);
+  if (inputAsin && isKindleSeriesUrl(input)) return inputAsin;
+  return series.sourceAsin || inputAsin || '';
+}
+
+export function seriesKeyForSeries(input, series = {}) {
+  const asin = canonicalSeriesSourceAsin(input, series);
   if (asin) return `series:asin:${asin}`;
   return `series:${crypto.createHash('sha1').update(String(input || '').trim()).digest('hex').slice(0, 16)}`;
 }
 
-function seriesSourceUrlFor(input, series = {}) {
-  const asin = series.sourceAsin || extractAsin(input);
+export function seriesSourceUrlFor(input, series = {}) {
+  const asin = canonicalSeriesSourceAsin(input, series);
   return asin ? kindleSeriesUrlForAsin(asin) : String(input || '').trim();
 }
 

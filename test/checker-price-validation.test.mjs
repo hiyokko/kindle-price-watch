@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   canUseCachedSeriesPriceSnapshotForBook,
+  canonicalSeriesSourceAsin,
   needsDiscountExpiryRecheck,
   isActiveSeriesAggregateSnapshot,
   isFutureReleaseDate,
@@ -11,6 +12,8 @@ import {
   priceIntegrityIssueForBook,
   repairStorePriceState,
   selectListPriceChallengeCandidates,
+  seriesKeyForSeries,
+  seriesSourceUrlFor,
   seriesAggregateSnapshot,
   seriesSnapshotFromKindleSeriesForBook,
   shouldRecheckCompletedSeriesGroup,
@@ -527,6 +530,21 @@ test('store repair canonicalizes series bulk titles and fixes duplicated sequent
     '進撃の巨人 ４',
     '進撃の巨人 ５'
   ]);
+});
+
+test('Kindle DBS product input keeps the collection ASIN as the series identity', () => {
+  const input = 'https://www.amazon.co.jp/kindle-dbs/product/B0FFTJ4W95';
+  const series = {
+    sourceAsin: 'B08GC7TB1F',
+    items: [
+      { asin: 'B08GC7TB1F', title: '王様ランキング(1) (BLIC)', volume: 1 },
+      { asin: 'B08GCBG5QB', title: '王様ランキング(2) (BLIC)', volume: 2 }
+    ]
+  };
+
+  assert.equal(canonicalSeriesSourceAsin(input, series), 'B0FFTJ4W95');
+  assert.equal(seriesKeyForSeries(input, series), 'series:asin:B0FFTJ4W95');
+  assert.equal(seriesSourceUrlFor(input, series), 'https://www.amazon.co.jp/kindle-dbs/product/B0FFTJ4W95');
 });
 
 test('store repair canonicalizes noisy series child titles for the same series', () => {

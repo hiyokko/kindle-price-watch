@@ -1092,7 +1092,10 @@ function compareBooksWithinGroup(a, b) {
 }
 
 function volumeFromTitle(title) {
-  const match = String(title || '').match(/(?:第)?([0-9０-９]+)\s*(?:巻|$)/);
+  const value = String(title || '');
+  const match =
+    value.match(/(?:第)?([0-9０-９]+)\s*(?:巻|$)/) ||
+    value.match(/[（(]\s*([0-9０-９]+)\s*[）)](?:\s*[（(][^（）()]{0,80}[）)])?\s*$/);
   if (!match) return null;
   return Number(match[1].replace(/[０-９]/g, (ch) => String(ch.charCodeAt(0) - 0xff10)));
 }

@@ -142,6 +142,21 @@ test('series meta uses representative author, publisher, and series ASIN', () =>
   );
 });
 
+test('series books sort by parenthesized volume before imprint text', () => {
+  const { compareBooksWithinGroup } = loadAppSortContext();
+  const books = [
+    { title: '王様ランキング(16) (BLIC)', volume: 1 },
+    { title: '王様ランキング(2) (BLIC)', volume: 2 },
+    { title: '王様ランキング (BLIC) １８', volume: 18 }
+  ].sort(compareBooksWithinGroup);
+
+  assert.deepEqual(books.map((book) => book.title), [
+    '王様ランキング(2) (BLIC)',
+    '王様ランキング(16) (BLIC)',
+    '王様ランキング (BLIC) １８'
+  ]);
+});
+
 test('sale badge ignores ordinary point-only discounts', () => {
   const { isBelowList, badgeFor } = loadAppSortContext();
 
