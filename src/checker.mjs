@@ -2065,7 +2065,8 @@ export function repairStorePriceState(store, options = {}) {
       singleSeriesDemoted: 0,
       seriesDiscoveryDeferred: 0,
       removedSeriesNavigationItems: 0,
-      removedSupplementalSeriesItems: 0
+      removedSupplementalSeriesItems: 0,
+      removedUnvalidatedSeriesTailItems: 0
     };
   }
 
@@ -2080,7 +2081,8 @@ export function repairStorePriceState(store, options = {}) {
     singleSeriesDemoted: 0,
     seriesDiscoveryDeferred: 0,
     removedSeriesNavigationItems: 0,
-    removedSupplementalSeriesItems: 0
+    removedSupplementalSeriesItems: 0,
+    removedUnvalidatedSeriesTailItems: 0
   };
 
   const pseudoItemRepair = repairSeriesNavigationPseudoItems(store, { now });
@@ -2099,6 +2101,15 @@ export function repairStorePriceState(store, options = {}) {
     summary.removedHistory += supplementalItemRepair.removedHistory;
     summary.removedNotifications += supplementalItemRepair.removedNotifications;
     summary.booksRepaired += supplementalItemRepair.expectedCountUpdated;
+  }
+
+  const unvalidatedTailRepair = repairUnvalidatedSyntheticTailSeriesItems(store, { now });
+  if (unvalidatedTailRepair.changed) {
+    summary.changed = true;
+    summary.removedUnvalidatedSeriesTailItems += unvalidatedTailRepair.removed;
+    summary.removedHistory += unvalidatedTailRepair.removedHistory;
+    summary.removedNotifications += unvalidatedTailRepair.removedNotifications;
+    summary.booksRepaired += unvalidatedTailRepair.expectedCountUpdated;
   }
 
   const classificationRepair = repairSingleBookSeriesClassifications(store, { now });
@@ -2254,6 +2265,85 @@ function repairSupplementalSeriesItems(store, options = {}) {
     removedNotifications: beforeNotifications - store.notifications.length,
     expectedCountUpdated
   };
+}
+
+function repairUnvalidatedSyntheticTailSeriesItems(store, options = {}) {
+  const now = options.now || new Date().toISOString();
+  const ids = new Set();
+  const affectedKeys = new Set();
+  const groups = new Map();
+
+  for (const book of store.books || []) {
+    if (!isSeriesBookRecord(book)) continue;
+    const key = seriesGroupKeyForBook(book);
+    if (!key) continue;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(book);
+  }
+
+  for (const [key, books] of groups.entries()) {
+    if (books.length < 3) continue;
+
+    const candidateIds = new Set(
+      books.filter(isUnvalidatedSyntheticStoredSeriesItem).map((book) => book.id)
+    );
+    if (candidateIds.size === 0) continue;
+
+    const confirmedVolumes = books
+      .filter((book) => !candidateIds.has(book.id))
+      .map(storedBookVolume)
+      .filter((volume) => Number.isFinite(volume) && volume > 0);
+    if (confirmedVolumes.length < 3) continue;
+
+    const maxConfirmedVolume = Math.max(...confirmedVolumes);
+    for (const book of books) {
+      if (!candidateIds.has(book.id)) continue;
+      if (storedBookVolume(book) <= maxConfirmedVolume) continue;
+      ids.add(book.id);
+      affectedKeys.add(key);
+    }
+  }
+
+  if (ids.size === 0) {
+    return {
+      changed: false,
+      removed: 0,
+      removedHistory: 0,
+      removedNotifications: 0,
+      expectedCountUpdated: 0
+    };
+  }
+
+  const beforeHistory = store.priceHistory.length;
+  const beforeNotifications = store.notifications.length;
+  removeStoreBooksById(store, ids);
+  const expectedCountUpdated = normalizeExpectedCountForSeriesKeys(store, affectedKeys, now);
+
+  return {
+    changed: true,
+    removed: ids.size,
+    removedHistory: beforeHistory - store.priceHistory.length,
+    removedNotifications: beforeNotifications - store.notifications.length,
+    expectedCountUpdated
+  };
+}
+
+function isUnvalidatedSyntheticStoredSeriesItem(book = {}) {
+  const volume = storedBookVolume(book);
+  if (!volume) return false;
+  if (!isSyntheticSeriesVolumeTitle(book.title, book.seriesName, volume)) return false;
+  if (book.currentPrice == null) return true;
+
+  const provider = String(book.provider || '').toLowerCase();
+  if (
+    provider === 'pending' ||
+    provider === 'pending_series' ||
+    provider === 'series_diff_pending' ||
+    isUnvalidatedSeriesPriceProvider(provider)
+  ) {
+    return true;
+  }
+  return /シリーズ価格補完|価格を取得できません|タイムアウト|aborted/i.test(String(book.lastError || ''));
 }
 
 function normalizeExpectedCountForSeriesKeys(store, affectedKeys, now) {

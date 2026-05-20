@@ -698,6 +698,74 @@ test('store repair removes supplemental books mixed into main series volumes', (
   assert.equal(kamuiBooks.length, 2);
 });
 
+test('store repair removes unvalidated synthetic tail volumes re-added by an older workflow', () => {
+  const store = {
+    books: [
+      ...Array.from({ length: 34 }, (_, index) => ({
+        id: `aot-${index + 1}`,
+        asin: `B00AOT${String(index + 1).padStart(4, '0')}`,
+        title: `進撃の巨人 ${index + 1}`,
+        seriesName: '進撃の巨人',
+        seriesKey: 'series:asin:B009KYC6S6',
+        seriesExpectedCount: 38,
+        importMode: 'kindle_series',
+        volume: index + 1,
+        currentPrice: 550,
+        currentPoints: 0,
+        effectivePrice: 550
+      })),
+      {
+        id: 'aot-unvalidated-35',
+        asin: 'B00JDYKLPS',
+        title: '進撃の巨人 ３５',
+        seriesName: '進撃の巨人',
+        seriesKey: 'series:asin:B009KYC6S6',
+        seriesExpectedCount: 38,
+        importMode: 'kindle_series',
+        volume: 35,
+        currentPrice: null,
+        currentPoints: 0,
+        effectivePrice: null,
+        provider: 'pending_series',
+        lastError: 'シリーズ価格補完: Amazon HTMLで価格補完できませんでした'
+      },
+      {
+        id: 'aot-unvalidated-36',
+        asin: 'B01DLJNQK2',
+        title: '進撃の巨人 ３６',
+        seriesName: '進撃の巨人',
+        seriesKey: 'series:asin:B009KYC6S6',
+        seriesExpectedCount: 38,
+        importMode: 'kindle_series',
+        volume: 36,
+        currentPrice: null,
+        currentPoints: 0,
+        effectivePrice: null,
+        provider: 'pending_series',
+        lastError: 'シリーズ価格補完: HTTP取得がタイムアウトしました'
+      }
+    ],
+    priceHistory: [
+      { id: 'history-tail', bookId: 'aot-unvalidated-35', asin: 'B00JDYKLPS', checkedAt: '2026-05-20T00:00:00.000Z' }
+    ],
+    notifications: [],
+    seriesPriceHistory: []
+  };
+
+  const summary = repairStorePriceState(store, {
+    clearCurrent: false,
+    now: '2026-05-21T02:00:00.000Z'
+  });
+
+  const attackBooks = store.books.filter((book) => book.seriesName === '進撃の巨人');
+  assert.equal(summary.changed, true);
+  assert.equal(summary.removedUnvalidatedSeriesTailItems, 2);
+  assert.equal(summary.removedHistory, 1);
+  assert.equal(attackBooks.length, 34);
+  assert.deepEqual([...new Set(attackBooks.map((book) => book.seriesExpectedCount))], [34]);
+  assert.equal(store.books.some((book) => book.asin === 'B00JDYKLPS' || book.asin === 'B01DLJNQK2'), false);
+});
+
 test('supplemental series title detection preserves series whose own name contains the marker', () => {
   assert.equal(
     isSupplementalSeriesBookTitle('ダーウィン事変公式 ヒトとサルの境界線 (アフタヌーンコミックス)', 'ダーウィン事変'),
