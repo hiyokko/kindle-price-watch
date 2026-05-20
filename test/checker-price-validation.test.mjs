@@ -7,6 +7,7 @@ import {
   needsDiscountExpiryRecheck,
   isActiveSeriesAggregateSnapshot,
   isFutureReleaseDate,
+  isSupplementalSeriesBookTitle,
   isUsableIncompleteSeriesCandidate,
   isWeakSeriesImageUrl,
   priceIntegrityIssueForBook,
@@ -599,6 +600,117 @@ test('store repair removes Amazon reader series navigation pseudo items', () => 
   assert.equal(store.books.some((book) => book.asin === 'B07BHYVPPL'), false);
   assert.deepEqual([...new Set(store.books.map((book) => book.seriesExpectedCount))], [10]);
   assert.deepEqual(store.books.map((book) => book.volume), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+});
+
+test('store repair removes supplemental books mixed into main series volumes', () => {
+  const store = {
+    books: [
+      ...Array.from({ length: 34 }, (_, index) => ({
+        id: `aot-${index + 1}`,
+        asin: `B00AOT${String(index + 1).padStart(4, '0')}`,
+        title: `進撃の巨人 ${index + 1}`,
+        seriesName: '進撃の巨人',
+        seriesKey: 'series:asin:B009KYC6S6',
+        seriesExpectedCount: 36,
+        importMode: 'kindle_series',
+        volume: index + 1,
+        currentPrice: 550,
+        currentPoints: 0,
+        effectivePrice: 550
+      })),
+      {
+        id: 'aot-lost-girls',
+        asin: 'B01DLJNQK2',
+        title: '進撃の巨人 ＬＯＳＴ ＧＩＲＬＳ（１） (週刊少年マガジンコミックス)',
+        seriesName: '進撃の巨人',
+        seriesKey: 'series:asin:B009KYC6S6',
+        seriesExpectedCount: 36,
+        importMode: 'kindle_series',
+        volume: 35,
+        currentPrice: 770,
+        currentPoints: 0,
+        effectivePrice: 770
+      },
+      {
+        id: 'aot-answers',
+        asin: 'B07HNXWX2Y',
+        title: '進撃の巨人 ＡＮＳＷＥＲＳ（１） (週刊少年マガジンコミックス)',
+        seriesName: '進撃の巨人',
+        seriesKey: 'series:asin:B009KYC6S6',
+        seriesExpectedCount: 36,
+        importMode: 'kindle_series',
+        volume: 36,
+        currentPrice: 770,
+        currentPoints: 0,
+        effectivePrice: 770
+      },
+      {
+        id: 'kamui-gaiden-1',
+        asin: 'B00KAMUI01',
+        title: 'カムイ伝全集 カムイ外伝 １',
+        seriesName: 'カムイ伝全集 カムイ外伝',
+        seriesKey: 'series:asin:B00KAMUI00',
+        seriesExpectedCount: 2,
+        importMode: 'kindle_series',
+        volume: 1,
+        currentPrice: 660,
+        currentPoints: 0,
+        effectivePrice: 660
+      },
+      {
+        id: 'kamui-gaiden-2',
+        asin: 'B00KAMUI02',
+        title: 'カムイ伝全集 カムイ外伝 ２',
+        seriesName: 'カムイ伝全集 カムイ外伝',
+        seriesKey: 'series:asin:B00KAMUI00',
+        seriesExpectedCount: 2,
+        importMode: 'kindle_series',
+        volume: 2,
+        currentPrice: 660,
+        currentPoints: 0,
+        effectivePrice: 660
+      }
+    ],
+    priceHistory: [
+      { id: 'history-lost-girls', bookId: 'aot-lost-girls', asin: 'B01DLJNQK2', checkedAt: '2026-05-20T00:00:00.000Z' }
+    ],
+    notifications: [
+      { id: 'notification-answers', bookId: 'aot-answers', asin: 'B07HNXWX2Y', status: 'pending' }
+    ],
+    seriesPriceHistory: []
+  };
+
+  const summary = repairStorePriceState(store, {
+    clearCurrent: false,
+    now: '2026-05-21T01:00:00.000Z'
+  });
+
+  const attackBooks = store.books.filter((book) => book.seriesName === '進撃の巨人');
+  const kamuiBooks = store.books.filter((book) => book.seriesName === 'カムイ伝全集 カムイ外伝');
+
+  assert.equal(summary.changed, true);
+  assert.equal(summary.removedSupplementalSeriesItems, 2);
+  assert.equal(summary.removedHistory, 1);
+  assert.equal(summary.removedNotifications, 1);
+  assert.equal(attackBooks.length, 34);
+  assert.deepEqual([...new Set(attackBooks.map((book) => book.seriesExpectedCount))], [34]);
+  assert.equal(store.books.some((book) => book.asin === 'B01DLJNQK2' || book.asin === 'B07HNXWX2Y'), false);
+  assert.equal(kamuiBooks.length, 2);
+});
+
+test('supplemental series title detection preserves series whose own name contains the marker', () => {
+  assert.equal(
+    isSupplementalSeriesBookTitle('ダーウィン事変公式 ヒトとサルの境界線 (アフタヌーンコミックス)', 'ダーウィン事変'),
+    true
+  );
+  assert.equal(
+    isSupplementalSeriesBookTitle('進撃の巨人 悔いなき選択（１） (ＡＲＩＡコミックス)', '進撃の巨人'),
+    true
+  );
+  assert.equal(
+    isSupplementalSeriesBookTitle('カムイ伝全集 カムイ外伝 １', 'カムイ伝全集 カムイ外伝'),
+    false
+  );
 });
 
 test('store repair canonicalizes noisy series child titles for the same series', () => {

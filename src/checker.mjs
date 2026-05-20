@@ -305,13 +305,18 @@ async function importSeriesIntoStore(store, input, series, options = {}) {
       seriesErrors.push(`${item.asin}: skipped title outside series (${item.title})`);
       continue;
     }
+    if (isSupplementalSeriesBookTitle(item.title, seriesName)) {
+      seriesErrors.push(`${item.asin}: skipped supplemental series book (${item.title})`);
+      continue;
+    }
     seriesItems.push(item);
   }
   let regularSeriesItems = dropDuplicateAlternativeEditionItems(seriesItems, seriesErrors);
   regularSeriesItems = await dropFutureReleaseNewSeriesItems(regularSeriesItems, store, seriesErrors, {
     now,
     signal: options.signal,
-    timeoutMs: options.timeoutMs
+    timeoutMs: options.timeoutMs,
+    ...seriesIdentity
   });
 
   if (isSingleBookSeriesCandidate(series, regularSeriesItems)) {
@@ -389,6 +394,10 @@ async function importSeriesIntoStore(store, input, series, options = {}) {
     });
     if (isClearlyDifferentSeriesTitle(book.title, seriesName)) {
       seriesErrors.push(`${asin}: skipped title outside series (${book.title})`);
+      continue;
+    }
+    if (isSupplementalSeriesBookTitle(book.title, seriesName)) {
+      seriesErrors.push(`${asin}: skipped supplemental series book (${book.title})`);
       continue;
     }
     additions.push(book);
@@ -485,15 +494,40 @@ async function dropFutureReleaseNewSeriesItems(items = [], store = {}, errors = 
   if (targets.length === 0) return items;
 
   const droppedAsins = new Set();
+  const knownMaxVolume = maxKnownSeriesVolume(store, options);
+  const targetAsins = new Set(targets.map((item) => item.asin).filter(Boolean));
   for (const item of targets) {
     try {
       const snapshot = await fetchAmazonHtmlSnapshotForSeriesBackfill(item.asin, item, options);
-      if (!isFutureReleaseDate(snapshot.releaseDate, options.now)) continue;
-      droppedAsins.add(item.asin);
-      errors.push(`${item.asin}: skipped future release (${snapshot.releaseDate})`);
-    } catch {
-      // If Amazon cannot confirm the release date, keep the candidate and let the normal price checks handle it.
+      if (isFutureReleaseDate(snapshot.releaseDate, options.now)) {
+        droppedAsins.add(item.asin);
+        errors.push(`${item.asin}: skipped future release (${snapshot.releaseDate})`);
+        continue;
+      }
+      if (isSupplementalSeriesBookTitle(snapshot.title, options.seriesName)) {
+        droppedAsins.add(item.asin);
+        errors.push(`${item.asin}: skipped supplemental series book (${snapshot.title})`);
+        continue;
+      }
+      if (isClearlyDifferentSeriesTitle(snapshot.title, options.seriesName)) {
+        droppedAsins.add(item.asin);
+        errors.push(`${item.asin}: skipped title outside series (${snapshot.title})`);
+        continue;
+      }
+      Object.assign(item, mergeAmazonSnapshotIntoSeriesItem(item, snapshot));
+    } catch (error) {
+      if (isUnvalidatedSyntheticTailSeriesItem(item, options.seriesName, knownMaxVolume)) {
+        droppedAsins.add(item.asin);
+        errors.push(`${item.asin}: deferred unvalidated tail candidate (${error.message})`);
+      }
     }
+  }
+
+  for (const item of items) {
+    if (!item?.asin || targetAsins.has(item.asin) || droppedAsins.has(item.asin)) continue;
+    if (!isUnvalidatedSyntheticTailSeriesItem(item, options.seriesName, knownMaxVolume)) continue;
+    droppedAsins.add(item.asin);
+    errors.push(`${item.asin}: deferred unvalidated tail candidate (validation limit)`);
   }
 
   if (droppedAsins.size === 0) return items;
@@ -502,7 +536,11 @@ async function dropFutureReleaseNewSeriesItems(items = [], store = {}, errors = 
 
 function futureReleaseValidationTargets(items = [], store = {}) {
   const existingAsins = new Set((store.books || []).map((book) => book.asin).filter(Boolean));
-  const limit = floorNumber(process.env.SERIES_FUTURE_RELEASE_PROBE_LIMIT, 1, 5);
+  const limit = floorNumber(
+    process.env.SERIES_NEW_ITEM_VALIDATION_LIMIT ?? process.env.SERIES_FUTURE_RELEASE_PROBE_LIMIT,
+    1,
+    5
+  );
   return items
     .filter((item) => item?.asin && !existingAsins.has(item.asin))
     .sort((left, right) => {
@@ -511,6 +549,46 @@ function futureReleaseValidationTargets(items = [], store = {}) {
       return String(right.asin || '').localeCompare(String(left.asin || ''));
     })
     .slice(0, limit);
+}
+
+function maxKnownSeriesVolume(store = {}, options = {}) {
+  const volumes = (store.books || [])
+    .filter((book) => isKnownBookForSeries(book, options))
+    .map(storedBookVolume)
+    .filter((volume) => Number.isFinite(volume) && volume > 0);
+  return volumes.length ? Math.max(...volumes) : 0;
+}
+
+function isUnvalidatedSyntheticTailSeriesItem(item = {}, seriesName = '', knownMaxVolume = 0) {
+  const volume = seriesItemVolume(item);
+  if (!volume || volume <= knownMaxVolume || knownMaxVolume < 3) return false;
+  if (!isSyntheticSeriesVolumeTitle(item.title, seriesName, volume)) return false;
+
+  const provider = String(item.provider || '').toLowerCase();
+  return (
+    !provider ||
+    provider === 'pending' ||
+    provider === 'pending_series' ||
+    provider === 'series_diff_pending' ||
+    provider === 'amazon_series_bulk' ||
+    provider === 'amazon_series_reader' ||
+    isUnvalidatedSeriesPriceProvider(provider) ||
+    item.imageSource === 'series_fallback'
+  );
+}
+
+function isSyntheticSeriesVolumeTitle(title, seriesName, volume) {
+  const titleStem = seriesTitleComparisonStem(title);
+  const seriesStem = seriesTitleComparisonStem(seriesName);
+  if (!titleStem || !seriesStem || !volume) return false;
+  const fullWidth = toFullWidthNumber(volume);
+  const variants = [
+    `${seriesName} ${volume}`,
+    `${seriesName} ${fullWidth}`,
+    `${seriesName}${volume}`,
+    `${seriesName}${fullWidth}`
+  ].map(seriesTitleComparisonStem);
+  return variants.includes(titleStem) || titleStem === `${seriesStem}${volume}` || titleStem === `${seriesStem}${fullWidth}`;
 }
 
 async function backfillKnownWeakSeriesImages(items = [], existingBooks = [], errors = [], options = {}) {
@@ -1986,7 +2064,8 @@ export function repairStorePriceState(store, options = {}) {
       removedNotifications: 0,
       singleSeriesDemoted: 0,
       seriesDiscoveryDeferred: 0,
-      removedSeriesNavigationItems: 0
+      removedSeriesNavigationItems: 0,
+      removedSupplementalSeriesItems: 0
     };
   }
 
@@ -2000,7 +2079,8 @@ export function repairStorePriceState(store, options = {}) {
     removedNotifications: 0,
     singleSeriesDemoted: 0,
     seriesDiscoveryDeferred: 0,
-    removedSeriesNavigationItems: 0
+    removedSeriesNavigationItems: 0,
+    removedSupplementalSeriesItems: 0
   };
 
   const pseudoItemRepair = repairSeriesNavigationPseudoItems(store, { now });
@@ -2010,6 +2090,15 @@ export function repairStorePriceState(store, options = {}) {
     summary.removedHistory += pseudoItemRepair.removedHistory;
     summary.removedNotifications += pseudoItemRepair.removedNotifications;
     summary.booksRepaired += pseudoItemRepair.expectedCountUpdated;
+  }
+
+  const supplementalItemRepair = repairSupplementalSeriesItems(store, { now });
+  if (supplementalItemRepair.changed) {
+    summary.changed = true;
+    summary.removedSupplementalSeriesItems += supplementalItemRepair.removed;
+    summary.removedHistory += supplementalItemRepair.removedHistory;
+    summary.removedNotifications += supplementalItemRepair.removedNotifications;
+    summary.booksRepaired += supplementalItemRepair.expectedCountUpdated;
   }
 
   const classificationRepair = repairSingleBookSeriesClassifications(store, { now });
@@ -2134,6 +2223,57 @@ function repairSeriesNavigationPseudoItems(store, options = {}) {
     removedNotifications: beforeNotifications - store.notifications.length,
     expectedCountUpdated
   };
+}
+
+function repairSupplementalSeriesItems(store, options = {}) {
+  const now = options.now || new Date().toISOString();
+  const targets = (store.books || []).filter((book) =>
+    isSupplementalSeriesBookTitle(book.title, book.seriesName)
+  );
+  if (targets.length === 0) {
+    return {
+      changed: false,
+      removed: 0,
+      removedHistory: 0,
+      removedNotifications: 0,
+      expectedCountUpdated: 0
+    };
+  }
+
+  const ids = new Set(targets.map((book) => book.id));
+  const affectedKeys = new Set(targets.map(seriesGroupKeyForBook).filter(Boolean));
+  const beforeHistory = store.priceHistory.length;
+  const beforeNotifications = store.notifications.length;
+  removeStoreBooksById(store, ids);
+  const expectedCountUpdated = normalizeExpectedCountForSeriesKeys(store, affectedKeys, now);
+
+  return {
+    changed: true,
+    removed: targets.length,
+    removedHistory: beforeHistory - store.priceHistory.length,
+    removedNotifications: beforeNotifications - store.notifications.length,
+    expectedCountUpdated
+  };
+}
+
+function normalizeExpectedCountForSeriesKeys(store, affectedKeys, now) {
+  let expectedCountUpdated = 0;
+  for (const key of affectedKeys || []) {
+    const books = (store.books || []).filter((book) => seriesGroupKeyForBook(book) === key);
+    if (books.length === 0) continue;
+
+    const expectedCount = Math.max(
+      books.length,
+      ...books.map((book) => storedBookVolume(book)).filter((volume) => volume > 0)
+    );
+    for (const book of books) {
+      if (Number(book.seriesExpectedCount || 0) === expectedCount) continue;
+      book.seriesExpectedCount = expectedCount;
+      book.updatedAt = now;
+      expectedCountUpdated += 1;
+    }
+  }
+  return expectedCountUpdated;
 }
 
 function repairStoredSeriesNames(store, options = {}) {
@@ -2871,6 +3011,7 @@ function removeStoreBooksById(store, ids) {
 function isLikelyObsoleteSingleEpisodeSeriesBook(book, currentSeriesAsins, seriesName = '') {
   if (!book?.asin || currentSeriesAsins.has(book.asin)) return false;
   if (isClearlyDifferentSeriesTitle(book.title, seriesName || book.seriesName)) return true;
+  if (isSupplementalSeriesBookTitle(book.title, seriesName || book.seriesName)) return true;
   if (isSingleEpisodeLikeTitle(book.title)) return true;
   return isCheapAmazonBulkSeriesBook(book);
 }
@@ -2914,6 +3055,51 @@ function isCheapAmazonBulkSeriesBook(book) {
     price > 0 &&
     price <= SINGLE_EPISODE_SERIES_PRICE_MAX
   );
+}
+
+export function isSupplementalSeriesBookTitle(title, seriesName) {
+  const rawTitle = String(title || '').trim();
+  const rawSeriesName = String(seriesName || '').trim();
+  if (!rawTitle || !rawSeriesName || isGenericSeriesName(rawSeriesName)) return false;
+  if (!seriesTitleContainsSeriesName(rawTitle, rawSeriesName)) return false;
+
+  const normalizedTitle = normalizeSupplementalTitleText(rawTitle);
+  const normalizedSeries = normalizeSupplementalTitleText(rawSeriesName);
+  for (const pattern of SUPPLEMENTAL_SERIES_TITLE_PATTERNS) {
+    if (!pattern.test(normalizedTitle)) continue;
+    if (pattern.test(normalizedSeries)) continue;
+    return true;
+  }
+  return false;
+}
+
+const SUPPLEMENTAL_SERIES_TITLE_PATTERNS = [
+  /公式/u,
+  /ガイド|guide/u,
+  /ファンブック|fanbook/u,
+  /読本/u,
+  /名鑑|図鑑|事典|辞典|データブック|character/u,
+  /解説|設定資料/u,
+  /外伝|スピンオフ|spinoff|spin-off/u,
+  /小説|novel/u,
+  /悔いなき選択/u,
+  /lost\s*girls/u,
+  /before\s*the\s*fall/u,
+  /中学校|junior\s*high/u,
+  /answers|inside|outside/u
+];
+
+function seriesTitleContainsSeriesName(title, seriesName) {
+  const titleStem = seriesTitleComparisonStem(title);
+  const seriesStem = seriesTitleComparisonStem(seriesName);
+  return Boolean(titleStem && seriesStem && titleStem.includes(seriesStem));
+}
+
+function normalizeSupplementalTitleText(value) {
+  return String(value || '')
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[！-～]/g, (char) => String.fromCharCode(char.charCodeAt(0) - 0xfee0));
 }
 
 function isClearlyDifferentSeriesTitle(title, seriesName) {
