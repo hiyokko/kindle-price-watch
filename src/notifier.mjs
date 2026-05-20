@@ -1,12 +1,29 @@
+const DEFAULT_DISCORD_WEBHOOK_SPACING_MS = 350;
+const DEFAULT_DISCORD_RETRY_ATTEMPTS = 3;
+const DEFAULT_DISCORD_RETRY_BASE_DELAY_MS = 750;
+const DEFAULT_DISCORD_RETRY_MAX_DELAY_MS = 10_000;
+const DEFAULT_DISCORD_RETRY_SAFETY_MS = 250;
+
+const discordWebhookNextAvailableAt = new Map();
+
 export async function sendDiscordNotification(message, options = {}) {
   const webhookUrls = options.webhookUrls || getDiscordWebhookUrls();
   if (webhookUrls.length === 0) {
     return { ok: false, skipped: true, reason: 'DISCORD_WEBHOOK_URL is not set' };
   }
 
-  const results = await Promise.allSettled(webhookUrls.map((webhookUrl) => postDiscordWebhook(webhookUrl, message)));
+  const deliveryOptions = discordDeliveryOptions(options);
+  const results = await Promise.allSettled(
+    webhookUrls.map(async (webhookUrl) => {
+      await waitForDiscordWebhookSlot(webhookUrl, deliveryOptions);
+      return postDiscordWebhook(webhookUrl, message, deliveryOptions);
+    })
+  );
   const delivered = results.filter((result) => result.status === 'fulfilled').length;
   const failed = results.length - delivered;
+  const retryCount = results
+    .filter((result) => result.status === 'fulfilled')
+    .reduce((total, result) => total + Math.max(0, Number(result.value?.attempts || 1) - 1), 0);
 
   if (delivered === 0) {
     const errors = results
@@ -15,24 +32,137 @@ export async function sendDiscordNotification(message, options = {}) {
     throw new Error(errors.join(' / ') || 'Discord webhook delivery failed');
   }
 
-  return { ok: true, delivered, failed, total: webhookUrls.length };
+  return { ok: true, delivered, failed, total: webhookUrls.length, retries: retryCount };
 }
 
 export function getDiscordWebhookUrls() {
   return parseDiscordWebhookUrls(`${process.env.DISCORD_WEBHOOK_URL || ''}\n${process.env.DISCORD_WEBHOOK_URLS || ''}`);
 }
 
-async function postDiscordWebhook(webhookUrl, message) {
-  const response = await fetch(webhookUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(message)
-  });
+async function postDiscordWebhook(webhookUrl, message, options = {}) {
+  let lastError = null;
+  for (let attempt = 0; attempt <= options.retryAttempts; attempt += 1) {
+    let response;
+    try {
+      response = await fetch(webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(message)
+      });
+    } catch (error) {
+      lastError = error;
+      if (attempt < options.retryAttempts) {
+        await options.sleep(retryDelayMs({ attempt, options }));
+        continue;
+      }
+      throw error;
+    }
 
-  if (!response.ok) {
+    if (response.ok) {
+      return { attempts: attempt + 1 };
+    }
+
     const body = await response.text().catch(() => '');
-    throw new Error(`Discord HTTP ${response.status}: ${body.slice(0, 120)}`);
+    const error = new Error(`Discord HTTP ${response.status}: ${body.slice(0, 120)}`);
+    lastError = error;
+    if (isRetryableDiscordStatus(response.status) && attempt < options.retryAttempts) {
+      await options.sleep(retryDelayMs({ response, body, attempt, options }));
+      continue;
+    }
+    throw error;
   }
+
+  throw lastError || new Error('Discord webhook delivery failed');
+}
+
+function discordDeliveryOptions(options = {}) {
+  return {
+    retryAttempts: clampInteger(
+      options.retryAttempts ?? process.env.DISCORD_WEBHOOK_RETRY_ATTEMPTS,
+      0,
+      8,
+      DEFAULT_DISCORD_RETRY_ATTEMPTS
+    ),
+    retryBaseDelayMs: clampInteger(
+      options.retryBaseDelayMs ?? process.env.DISCORD_WEBHOOK_RETRY_BASE_MS,
+      100,
+      60_000,
+      DEFAULT_DISCORD_RETRY_BASE_DELAY_MS
+    ),
+    retryMaxDelayMs: clampInteger(
+      options.retryMaxDelayMs ?? process.env.DISCORD_WEBHOOK_RETRY_MAX_MS,
+      100,
+      120_000,
+      DEFAULT_DISCORD_RETRY_MAX_DELAY_MS
+    ),
+    retrySafetyMs: clampInteger(
+      options.retrySafetyMs ?? process.env.DISCORD_WEBHOOK_RETRY_SAFETY_MS,
+      0,
+      10_000,
+      DEFAULT_DISCORD_RETRY_SAFETY_MS
+    ),
+    webhookSpacingMs: clampInteger(
+      options.webhookSpacingMs ?? process.env.DISCORD_WEBHOOK_SPACING_MS,
+      0,
+      10_000,
+      DEFAULT_DISCORD_WEBHOOK_SPACING_MS
+    ),
+    sleep: typeof options.sleep === 'function' ? options.sleep : sleep
+  };
+}
+
+async function waitForDiscordWebhookSlot(webhookUrl, options) {
+  if (options.webhookSpacingMs <= 0) return;
+
+  const now = Date.now();
+  const reservedAt = Math.max(now, discordWebhookNextAvailableAt.get(webhookUrl) || 0);
+  discordWebhookNextAvailableAt.set(webhookUrl, reservedAt + options.webhookSpacingMs);
+
+  const waitMs = reservedAt - now;
+  if (waitMs > 0) await options.sleep(waitMs);
+}
+
+function isRetryableDiscordStatus(status) {
+  return status === 429 || (status >= 500 && status <= 599);
+}
+
+function retryDelayMs({ response, body, attempt, options }) {
+  const explicitDelayMs = response ? discordRetryAfterMs(response, body) : null;
+  if (explicitDelayMs != null) return Math.min(options.retryMaxDelayMs, explicitDelayMs + options.retrySafetyMs);
+
+  const exponentialDelay = options.retryBaseDelayMs * (2 ** attempt);
+  return Math.min(options.retryMaxDelayMs, exponentialDelay + options.retrySafetyMs);
+}
+
+function discordRetryAfterMs(response, body) {
+  const headerDelay =
+    parseDiscordDelaySeconds(response.headers.get('retry-after')) ??
+    parseDiscordDelaySeconds(response.headers.get('x-ratelimit-reset-after'));
+  if (headerDelay != null) return headerDelay;
+
+  try {
+    const parsed = JSON.parse(body);
+    return parseDiscordDelaySeconds(parsed?.retry_after);
+  } catch {
+    return null;
+  }
+}
+
+function parseDiscordDelaySeconds(value) {
+  if (value == null || value === '') return null;
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0) return null;
+  return Math.round(number * 1000);
+}
+
+function clampInteger(value, min, max, fallback) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(number)));
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, Math.round(ms || 0))));
 }
 
 export function parseDiscordWebhookUrls(value) {
