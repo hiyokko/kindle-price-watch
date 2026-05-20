@@ -547,6 +547,60 @@ test('Kindle DBS product input keeps the collection ASIN as the series identity'
   assert.equal(seriesSourceUrlFor(input, series), 'https://www.amazon.co.jp/kindle-dbs/product/B0FFTJ4W95');
 });
 
+test('store repair removes Amazon reader series navigation pseudo items', () => {
+  const store = {
+    books: [
+      ...Array.from({ length: 10 }, (_, index) => ({
+        id: `hajime-${index + 1}`,
+        asin: `B00HAJIME${index + 1}`,
+        title: `はじめアルゴリズム ${index + 1}`,
+        seriesName: 'はじめアルゴリズム',
+        seriesKey: 'series:asin:B077G1LLT2',
+        seriesExpectedCount: 11,
+        importMode: 'kindle_series',
+        volume: index + 1,
+        currentPrice: 759,
+        currentPoints: 0,
+        effectivePrice: 759
+      })),
+      {
+        id: 'hajime-pseudo',
+        asin: 'B07BHYVPPL',
+        title: '全10巻中第1巻: はじめアルゴリズム',
+        seriesName: 'はじめアルゴリズム',
+        seriesKey: 'series:asin:B077G1LLT2',
+        seriesExpectedCount: 11,
+        importMode: 'kindle_series',
+        volume: 11,
+        currentPrice: null,
+        currentPoints: 0,
+        effectivePrice: null
+      }
+    ],
+    priceHistory: [
+      { id: 'history-pseudo', bookId: 'hajime-pseudo', asin: 'B07BHYVPPL', checkedAt: '2026-05-20T00:00:00.000Z' }
+    ],
+    notifications: [
+      { id: 'notification-pseudo', bookId: 'hajime-pseudo', asin: 'B07BHYVPPL', status: 'pending' }
+    ],
+    seriesPriceHistory: []
+  };
+
+  const summary = repairStorePriceState(store, {
+    clearCurrent: false,
+    now: '2026-05-21T01:00:00.000Z'
+  });
+
+  assert.equal(summary.changed, true);
+  assert.equal(summary.removedSeriesNavigationItems, 1);
+  assert.equal(summary.removedHistory, 1);
+  assert.equal(summary.removedNotifications, 1);
+  assert.equal(store.books.length, 10);
+  assert.equal(store.books.some((book) => book.asin === 'B07BHYVPPL'), false);
+  assert.deepEqual([...new Set(store.books.map((book) => book.seriesExpectedCount))], [10]);
+  assert.deepEqual(store.books.map((book) => book.volume), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+});
+
 test('store repair canonicalizes noisy series child titles for the same series', () => {
   const store = {
     books: [

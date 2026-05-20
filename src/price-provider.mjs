@@ -1976,8 +1976,17 @@ function isAmazonReaderNoiseLinkCandidate(candidate) {
 
   return (
     /customerReviews|product-reviews|\/ap\/signin|\/ap\/register|#customerReviews/i.test(href) ||
+    isSeriesNavigationPseudoTitle(title) ||
     /^(?:See included items|Share this item|Sold by:|Amazon\.co\.jp)$/i.test(title) ||
     /\bout of 5 stars\b/i.test(title)
+  );
+}
+
+function isSeriesNavigationPseudoTitle(title) {
+  const value = String(title || '').normalize('NFKC').trim();
+  return (
+    /^全\s*[0-9]{1,4}\s*巻中\s*第\s*[0-9]{1,4}\s*巻\s*[:：]/u.test(value) ||
+    /^Book\s+[0-9]{1,4}\s+of\s+[0-9]{1,4}\s*[:：]/i.test(value)
   );
 }
 
