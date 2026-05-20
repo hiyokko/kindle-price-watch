@@ -767,6 +767,26 @@ test('list price challenge only targets successful current-price checks without 
   assert.deepEqual(selected.books.map((book) => book.id), ['target']);
 });
 
+test('list price challenge spreads attempts across series before trying more volumes', () => {
+  const books = [
+    ...Array.from({ length: 5 }, (_, index) => challengeBook(`a-${index + 1}`, 'series-a')),
+    ...Array.from({ length: 3 }, (_, index) => challengeBook(`b-${index + 1}`, 'series-b')),
+    ...Array.from({ length: 2 }, (_, index) => challengeBook(`c-${index + 1}`, 'series-c')),
+    challengeBook('single-1', '')
+  ];
+  const selected = selectListPriceChallengeCandidates(
+    { books },
+    books.map((book) => ({ ok: true, book: { id: book.id } })),
+    8
+  );
+
+  assert.equal(selected.eligible, 11);
+  assert.deepEqual(
+    selected.books.map((book) => book.id),
+    ['a-1', 'b-1', 'c-1', 'single-1', 'a-2', 'b-2', 'c-2']
+  );
+});
+
 test('list price challenge rejects candidates far above established price history', () => {
   const book = {
     id: 'book-1',
@@ -788,6 +808,19 @@ test('list price challenge rejects candidates far above established price histor
     reason: 'above_price_history'
   });
 });
+
+function challengeBook(id, seriesKey) {
+  return {
+    id,
+    asin: `B${id.replace(/[^A-Z0-9]/gi, '').padEnd(9, '0').slice(0, 9)}`.toUpperCase(),
+    title: id,
+    seriesKey,
+    importMode: seriesKey ? 'kindle_series' : 'single',
+    currentPrice: 330,
+    effectivePrice: 327,
+    provider: 'amazon_html'
+  };
+}
 
 test('large incomplete series candidates capped at 50 items are not usable', () => {
   const items = Array.from({ length: 50 }, (_, index) => ({

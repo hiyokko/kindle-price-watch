@@ -41,6 +41,7 @@ const AMAZON_HTML_TINY_PRICE_MAX = 10;
 const DISCOUNT_RECHECK_DEFAULT_HOURS = 24;
 const DISCOUNT_RECHECK_RATIO = 0.7;
 const PRICE_INTEGRITY_SERIES_OUTLIER_RATIO = 0.55;
+const LIST_PRICE_CHALLENGE_MAX_PER_SERIES = 2;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 export async function listBooks() {
@@ -4982,10 +4983,41 @@ export function selectListPriceChallengeCandidates(store = {}, results = [], lim
   }
 
   const normalizedLimit = clampNumber(limit, 0, 50, 50);
+  const books = spreadListPriceChallengeCandidates(candidates, normalizedLimit);
   return {
     eligible: candidates.length,
-    books: candidates.slice(0, normalizedLimit)
+    books
   };
+}
+
+function spreadListPriceChallengeCandidates(candidates = [], limit = 50) {
+  const normalizedLimit = clampNumber(limit, 0, 50, 50);
+  if (normalizedLimit <= 0 || candidates.length === 0) return [];
+
+  const buckets = new Map();
+  for (const book of candidates) {
+    const key = listPriceChallengeScopeKey(book);
+    if (!buckets.has(key)) buckets.set(key, []);
+    buckets.get(key).push(book);
+  }
+
+  const selected = [];
+  for (let round = 0; round < LIST_PRICE_CHALLENGE_MAX_PER_SERIES && selected.length < normalizedLimit; round += 1) {
+    for (const bucket of buckets.values()) {
+      const book = bucket[round];
+      if (!book) continue;
+      selected.push(book);
+      if (selected.length >= normalizedLimit) break;
+    }
+  }
+  return selected;
+}
+
+function listPriceChallengeScopeKey(book = {}) {
+  if (book.seriesKey) return `seriesKey:${book.seriesKey}`;
+  if (book.sourceUrl && book.importMode === 'kindle_series') return `sourceUrl:${book.sourceUrl}`;
+  if (book.seriesName && book.importMode === 'kindle_series') return `seriesName:${book.seriesName}`;
+  return `book:${book.id || book.asin || book.title || ''}`;
 }
 
 function hasDirectStoredListPrice(book = {}) {
