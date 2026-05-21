@@ -212,7 +212,7 @@ test('Amazon reader fallback follows real collection link and ignores recommenda
   }
 });
 
-test('Amazon product fetch falls back from kindle-dbs product URL to dp URL when DBS is blocked', async () => {
+test('Amazon product fetch resolves kindle-dbs product input through canonical dp URL', async () => {
   const originalFetch = globalThis.fetch;
   const seen = [];
   globalThis.fetch = async (url) => {
@@ -242,8 +242,43 @@ test('Amazon product fetch falls back from kindle-dbs product URL to dp URL when
 
     assert.equal(snapshot.title, 'フォールバック単巻 1');
     assert.equal(snapshot.currentPrice, 537);
-    assert.ok(seen.some((url) => url.includes('/kindle-dbs/product/B012345679')));
     assert.ok(seen.some((url) => new URL(url).pathname === '/dp/B012345679'));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('Amazon product fetch tries canonical product URL before stale search-result URLs', async () => {
+  const originalFetch = globalThis.fetch;
+  const seen = [];
+  globalThis.fetch = async (url) => {
+    const href = String(url);
+    seen.push(href);
+    const parsed = new URL(href);
+    if (parsed.pathname === '/dp/B012345680') {
+      return new Response(productHtml({
+        title: '検索URLに依存しない単巻',
+        currentPrice: 1320,
+        listPrice: 1320,
+        promo: '13ポイント'
+      }), { status: 200, headers: { 'content-type': 'text/html' } });
+    }
+    return new Response('<html><head><meta property="og:title" content="検索URLに依存しない単巻"></head><body>no price</body></html>', {
+      status: 200,
+      headers: { 'content-type': 'text/html' }
+    });
+  };
+
+  try {
+    const snapshot = await fetchAmazonHtmlSnapshot(
+      'B012345680',
+      'https://www.amazon.co.jp/title-ebook/dp/B012345680/ref=sr_1_1?keywords=B012345680&s=digital-text',
+      { retries: 0, timeoutMs: 1000, skipThrottle: true, allowExternalPriceFallback: false }
+    );
+
+    assert.equal(new URL(seen[0]).pathname, '/dp/B012345680');
+    assert.equal(snapshot.currentPrice, 1320);
+    assert.equal(snapshot.currentPoints, 13);
   } finally {
     globalThis.fetch = originalFetch;
   }

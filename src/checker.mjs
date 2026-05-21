@@ -228,7 +228,7 @@ async function addSingleBookFromInputInStore(store, input, options = {}) {
   }
 
   const now = options.now || new Date().toISOString();
-  const sourceUrl = String(input || '').trim();
+  const sourceUrl = canonicalSingleBookSourceUrl(asin, input);
   const existing = store.books.find((book) => book.asin === asin);
   if (existing) {
     let updated = false;
@@ -725,7 +725,7 @@ async function importSingleBookSeriesCandidateIntoStore(store, input, item, opti
     throw error;
   }
 
-  const sourceUrl = String(options.sourceUrl || input || item?.amazonUrl || '').trim();
+  const sourceUrl = canonicalSingleBookSourceUrl(asin, options.sourceUrl || input || item?.amazonUrl);
   const existing = store.books.find((book) => book.asin === asin);
   if (existing) {
     const before = singleBookSeriesState(existing);
@@ -796,7 +796,7 @@ function applySingleSeriesCandidateSeed(book, item, now) {
 
 async function refreshExistingSingleBookFromInput(id, input) {
   const now = new Date().toISOString();
-  const sourceUrl = String(input || '').trim();
+  const sourceUrl = canonicalSingleBookSourceUrl(extractAsin(input), input);
   let snapshotResult = null;
   if (sourceUrl) {
     snapshotResult = await settleSnapshotWithUrl(extractAsin(sourceUrl), sourceUrl, await findBookById(id));
@@ -6297,6 +6297,12 @@ export function snapshotInputUrlForBook(book = {}) {
     .map((value) => String(value || '').trim())
     .filter(Boolean);
   return candidates.find((url) => extractAsin(url) === normalizedAsin) || '';
+}
+
+function canonicalSingleBookSourceUrl(asin, input = '') {
+  const normalizedAsin = String(asin || extractAsin(input) || '').toUpperCase();
+  if (!normalizedAsin) return String(input || '').trim();
+  return amazonUrlForAsin(normalizedAsin);
 }
 
 async function fetchSeriesPriceSnapshotForBook(asin, book = {}, options = {}) {

@@ -210,15 +210,40 @@ function discountRate(effectivePrice, listPrice) {
 function normalizeBook(book) {
   const asin = String(book?.asin || '').trim().toUpperCase();
   const imageUrl = book?.imageUrl || amazonImageUrlForKey(book?.imageKey);
+  const importMode = book?.importMode || 'single';
   return {
     ...book,
     asin: asin || book?.asin,
     imageUrl,
     imageSource: book?.imageSource || '',
     amazonUrl: book?.amazonUrl || (asin ? amazonUrlForAsin(asin) : ''),
+    sourceUrl: normalizeStoredSourceUrl(book, asin, importMode),
     currentPoints: Number(book?.currentPoints || 0),
-    importMode: book?.importMode || 'single'
+    importMode
   };
+}
+
+function normalizeStoredSourceUrl(book = {}, asin = '', importMode = 'single') {
+  const value = String(book?.sourceUrl || '').trim();
+  if (!value) return '';
+  const normalizedAsin = String(asin || '').toUpperCase();
+  if (importMode !== 'kindle_series' && normalizedAsin && sourceUrlPointsToAsin(value, normalizedAsin)) {
+    return amazonUrlForAsin(normalizedAsin);
+  }
+  return value;
+}
+
+function sourceUrlPointsToAsin(value, asin) {
+  const normalizedAsin = String(asin || '').toUpperCase();
+  if (!normalizedAsin) return false;
+  if (String(value || '').trim().toUpperCase() === normalizedAsin) return true;
+  try {
+    const url = new URL(String(value || '').trim());
+    if (!/amazon\./i.test(url.hostname)) return false;
+    return new RegExp(`/(?:dp|gp/product|gp/aw/d)/${normalizedAsin}(?:[/?#]|$)`, 'i').test(url.pathname);
+  } catch {
+    return false;
+  }
 }
 
 function publicMetadataText(value) {

@@ -1616,24 +1616,32 @@ function amazonProductCandidateUrls(asin, inputUrl = '', options = {}) {
     urls.push(value);
   };
 
-  add(inputUrl);
-  add(withAmazonSearchParams(inputUrl, { binding: 'kindle_edition', ref: 'dbs_dp_rwt_sb_pc_tkin' }));
-
   const base = amazonUrlForAsin(normalizedAsin);
   add(base);
   add(withAmazonSearchParams(base, { binding: 'kindle_edition', ref: 'dbs_dp_rwt_sb_pc_tkin' }));
+
+  try {
+    add(normalizeAmazonUrl(inputUrl));
+  } catch {
+    // Ignore non-Amazon/empty input; canonical candidates remain.
+  }
+  add(inputUrl);
+  add(withAmazonSearchParams(inputUrl, { binding: 'kindle_edition', ref: 'dbs_dp_rwt_sb_pc_tkin' }));
 
   if (options.allowAmazonExtendedFallback === false) return urls;
 
   try {
     const baseUrl = new URL(base);
     const host = baseUrl.host;
+    add(`https://${host}/kindle-dbs/product/${normalizedAsin}`);
     add(`https://${host}/-/en/dp/${normalizedAsin}`);
     add(`https://${host}/gp/product/${normalizedAsin}`);
     add(`https://${host}/-/en/gp/product/${normalizedAsin}`);
     add(`https://${host}/gp/product/${normalizedAsin}?storeType=ebooks`);
     add(`https://${host}/gp/product/${normalizedAsin}?binding=kindle_edition&ref=dbs_dp_rwt_sb_pc_tkin`);
     add(`https://${host}/gp/aw/d/${normalizedAsin}`);
+    add(`https://${host}/gp/aw/d/${normalizedAsin}?storeType=ebooks`);
+    add(`https://${host}/gp/aw/d/${normalizedAsin}?binding=kindle_edition`);
     if (options.allowAmazonSearchFallback !== false) {
       for (const query of amazonSearchQueriesForInput(inputUrl, normalizedAsin)) {
         add(`https://${host}/s?k=${encodeURIComponent(query)}&i=digital-text`, { skipAsinCheck: true });
