@@ -47,6 +47,7 @@ const STALE_SERIES_EXPECTED_COUNT_OVERRIDES = new Map([
   ['series:asin:B00E5V5JMY', 3], // Wet Moon
   ['series:asin:B01IEGD30K', 3], // 青い空を、白い雲がかけてった
   ['series:asin:B074CG522D', 22], // 軍鶏: Amazon lists the current Kindle series as 22 entries.
+  ['series:asin:B07L2MX9LT', 18], // 東島丹三郎は仮面ライダーになりたい
   ['series:asin:B08R6X9DD5', 3], // サーチアンドデストロイ
   ['series:asin:B082WZ2KT2', 2], // セキララ結婚生活 / ７年目のセキララ結婚生活
   ['series:asin:B0C6JS577Q', 4] // SPUNK - スパンク！
