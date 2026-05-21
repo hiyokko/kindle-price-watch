@@ -131,6 +131,79 @@ test('Amazon series fetch falls back from kindle-dbs product URL to dp URL when 
   }
 });
 
+test('Amazon reader fallback follows real collection link and ignores recommendations', async () => {
+  const originalFetch = globalThis.fetch;
+  const seen = [];
+  globalThis.fetch = async (url) => {
+    const href = String(url);
+    seen.push(href);
+    const parsed = new URL(href);
+
+    if (parsed.hostname === 'r.jina.ai') {
+      return new Response(`
+        # 国宝（１） (ビッグコミックス) Kindle版
+
+        [全5巻中第1巻: 国宝](https://www.amazon.co.jp/dp/B0DHHL7Y1S?binding=kindle_edition&ref=dbs_dp_rwt_sb_pc_tkin)
+
+        ## この商品をチェックした人はこんな商品もチェックしています
+
+        [![Image 34: 国宝 上 青春篇 (朝日文庫)](https://m.media-amazon.com/images/I/71novel.jpg)](https://www.amazon.co.jp/dp/B09FDC3MVH)[国宝 上 青春篇 (朝日文庫)](https://www.amazon.co.jp/dp/B09FDC3MVH)
+        [![Image 43: 映画「国宝」感動は終わらない](https://m.media-amazon.com/images/I/51movie.jpg)](https://www.amazon.co.jp/dp/B0FR193L1Y)[映画「国宝」感動は終わらない](https://www.amazon.co.jp/dp/B0FR193L1Y)
+      `, { status: 200, headers: { 'content-type': 'text/plain' } });
+    }
+
+    if (parsed.pathname === '/dp/B0DHHL7Y1S') {
+      return new Response(`
+        <html>
+          <head><meta property="og:title" content="国宝 (全5巻)"></head>
+          <body>
+            <div id="series-childAsin-list">
+              ${[1, 2, 3, 4, 5].map((volume) => `
+                <div id="series-childAsin-item_${volume}" class="series-childAsin-item">
+                  <a class="itemImageLink" title="国宝（${volume}） (ビッグコミックス)" href="/gp/product/B0KOKUHA0${volume}?storeType=ebooks">
+                    <img alt="国宝（${volume}） (ビッグコミックス)" src="https://m.media-amazon.com/images/I/51kokuho${volume}._SY300_.jpg">
+                  </a>
+                  <span class="a-size-large a-color-price">￥759</span>
+                  <span class="itemPoints">28pt</span>
+                </div>
+              `).join('')}
+            </div>
+          </body>
+        </html>
+      `, { status: 200, headers: { 'content-type': 'text/html' } });
+    }
+
+    return new Response('<html><head><meta property="og:title" content="国宝（１） (ビッグコミックス)"></head><body>single page</body></html>', {
+      status: 200,
+      headers: { 'content-type': 'text/html' }
+    });
+  };
+
+  try {
+    const series = await fetchKindleSeriesItems('https://www.amazon.co.jp/dp/B0DGL9JJMJ', {
+      retries: 0,
+      timeoutMs: 1000,
+      skipThrottle: true,
+      probeSeriesCompletion: false
+    });
+
+    assert.equal(series.sourceAsin, 'B0DHHL7Y1S');
+    assert.equal(series.items.length, 5);
+    assert.deepEqual(series.items.map((item) => item.asin), [
+      'B0KOKUHA01',
+      'B0KOKUHA02',
+      'B0KOKUHA03',
+      'B0KOKUHA04',
+      'B0KOKUHA05'
+    ]);
+    assert.equal(series.items.some((item) => item.asin === 'B09FDC3MVH' || item.asin === 'B0FR193L1Y'), false);
+    assert.ok(seen.some((url) => url.includes('r.jina.ai')));
+    assert.ok(seen.some((url) => new URL(url).pathname === '/dp/B0DHHL7Y1S'));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('Amazon product fetch falls back from kindle-dbs product URL to dp URL when DBS is blocked', async () => {
   const originalFetch = globalThis.fetch;
   const seen = [];

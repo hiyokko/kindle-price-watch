@@ -288,6 +288,13 @@ async function importSeriesIntoStore(store, input, series, options = {}) {
   const seriesName = cleanStoredSeriesName(series.seriesName || 'Kindle シリーズ');
   const sourceUrl = seriesSourceUrlFor(input, series);
   const seriesCompleted = Boolean(series.completed);
+  const seriesIdentity = {
+    input,
+    sourceUrl,
+    sourceAsin,
+    seriesKey,
+    seriesName
+  };
 
   const sourceIsSeriesItem = Boolean(sourceAsin && series.items.some((item) => item.asin === sourceAsin));
   const obsoleteIds = new Set(
@@ -297,7 +304,9 @@ async function importSeriesIntoStore(store, input, series, options = {}) {
           sourceAsin &&
           book.asin === sourceAsin &&
           !sourceIsSeriesItem &&
-          (isSameSeriesSource(book.sourceUrl, sourceUrl, sourceAsin) || !book.seriesKey)
+          (isKnownBookForSeries(book, seriesIdentity) ||
+            isSameSeriesSource(book.sourceUrl, sourceUrl, sourceAsin) ||
+            !book.seriesKey)
       )
       .map((book) => book.id)
   );
@@ -305,13 +314,6 @@ async function importSeriesIntoStore(store, input, series, options = {}) {
     removeStoreBooksById(store, obsoleteIds);
   }
 
-  const seriesIdentity = {
-    input,
-    sourceUrl,
-    sourceAsin,
-    seriesKey,
-    seriesName
-  };
   const mergedSeriesItems = mergeWithKnownSeriesItems(series.items, store.books, seriesIdentity);
   const seriesItems = [];
   let skippedSeriesNavigationItems = 0;
@@ -2350,9 +2352,27 @@ function repairSeriesNavigationPseudoItems(store, options = {}) {
 
 function repairSupplementalSeriesItems(store, options = {}) {
   const now = options.now || new Date().toISOString();
-  const targets = (store.books || []).filter((book) =>
-    isSupplementalSeriesBookTitle(book.title, book.seriesName)
-  );
+  const groups = new Map();
+  for (const book of store.books || []) {
+    if (!isSeriesBookRecord(book)) continue;
+    const key = seriesGroupKeyForBook(book);
+    if (!key) continue;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(book);
+  }
+
+  const targets = [];
+  for (const books of groups.values()) {
+    for (const book of books) {
+      if (
+        isSupplementalSeriesBookTitle(book.title, book.seriesName) ||
+        isClearlyDifferentSeriesTitle(book.title, book.seriesName) ||
+        isStoredSeriesCollectionContainerBook(book, books)
+      ) {
+        targets.push(book);
+      }
+    }
+  }
   if (targets.length === 0) {
     return {
       changed: false,
@@ -2377,6 +2397,25 @@ function repairSupplementalSeriesItems(store, options = {}) {
     removedNotifications: beforeNotifications - store.notifications.length,
     expectedCountUpdated
   };
+}
+
+function isStoredSeriesCollectionContainerBook(book = {}, groupBooks = []) {
+  if (!book?.asin || !book.seriesName) return false;
+  if (trustedVolumeFromStoredBookTitle(book) > 0) return false;
+
+  const titleCore = seriesTitleComparisonCore(book.title);
+  const seriesCore = seriesTitleComparisonCore(book.seriesName);
+  if (!titleCore || !seriesCore || titleCore !== seriesCore) return false;
+
+  const siblingTrustedVolumes = groupBooks
+    .filter((item) => item?.id !== book.id)
+    .map(trustedVolumeFromStoredBookTitle)
+    .filter((volume) => Number.isFinite(volume) && volume > 0);
+  if (siblingTrustedVolumes.length < 2) return false;
+
+  const storedVolume = storedBookVolume(book);
+  const maxSiblingVolume = Math.max(...siblingTrustedVolumes);
+  return !storedVolume || storedVolume > maxSiblingVolume;
 }
 
 function repairUnvalidatedSyntheticTailSeriesItems(store, options = {}) {
@@ -3496,8 +3535,10 @@ const SUPPLEMENTAL_SERIES_TITLE_PATTERNS = [
   /読本/u,
   /名鑑|図鑑|事典|辞典|データブック|character/u,
   /解説|設定資料/u,
+  /映画|劇場版|実写/u,
   /外伝|スピンオフ|spinoff|spin-off/u,
   /小説|novel/u,
+  /感動は終わらない/u,
   /悔いなき選択/u,
   /lost\s*girls/u,
   /before\s*the\s*fall/u,
@@ -3526,11 +3567,15 @@ function isClearlyDifferentSeriesTitle(title, seriesName) {
 
   const titleStem = seriesTitleComparisonStem(rawTitle);
   const seriesStem = seriesTitleComparisonStem(rawSeriesName);
-  if (!titleStem || !seriesStem || seriesStem.length < 3) return false;
-  if (titleStem.includes(seriesStem) || seriesStem.includes(titleStem)) return false;
-
   const titleCore = seriesTitleComparisonCore(rawTitle);
   const seriesCore = seriesTitleComparisonCore(rawSeriesName);
+  if (!titleStem || !seriesStem) return false;
+  if (seriesStem.length < 3 || seriesCore.length < 3) {
+    if (titleStem === seriesStem || titleCore === seriesCore) return false;
+    return Boolean(titleCore && seriesCore && titleCore !== seriesCore);
+  }
+  if (titleStem.includes(seriesStem) || seriesStem.includes(titleStem)) return false;
+
   if (!titleCore || !seriesCore || titleCore.length < 3 || seriesCore.length < 3) return false;
   if (titleCore.includes(seriesCore) || seriesCore.includes(titleCore)) return false;
   if (commonPrefixLength(titleCore, seriesCore) >= Math.min(6, titleCore.length, seriesCore.length)) return false;
@@ -6581,8 +6626,18 @@ function isUnresolvedSingleBook(book) {
 
 export function canonicalSeriesSourceAsin(input, series = {}) {
   const inputAsin = extractAsin(input);
+  const seriesAsin = String(series.sourceAsin || '').toUpperCase();
+  if (
+    inputAsin &&
+    seriesAsin &&
+    seriesAsin !== inputAsin &&
+    Array.isArray(series.items) &&
+    series.items.some((item) => String(item?.asin || '').toUpperCase() === inputAsin)
+  ) {
+    return seriesAsin;
+  }
   if (inputAsin && isKindleSeriesUrl(input)) return inputAsin;
-  return series.sourceAsin || inputAsin || '';
+  return seriesAsin || inputAsin || '';
 }
 
 export function seriesKeyForSeries(input, series = {}) {

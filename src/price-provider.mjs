@@ -102,6 +102,19 @@ async function fetchAmazonSeriesResultFromNextHtml(input, inputAsin, options, at
   let items = extractKindleSeriesItemsFromHtml(html);
   items = await enrichKindleSeriesItemsFromChildListPages(items, html, url, options);
   const sourceAsin = extractSeriesCollectionAsin(html, inputAsin, items);
+  if (sourceAsin && inputAsin && sourceAsin !== inputAsin) {
+    try {
+      const collectionResult = await fetchAmazonSeriesResultFromNextHtml(
+        kindleSeriesFetchUrlForAsin(sourceAsin),
+        sourceAsin,
+        options,
+        attemptedUrls
+      );
+      if (collectionResult?.items?.length > 1) return collectionResult;
+    } catch {
+      // Continue with the original page if the collection page cannot be loaded.
+    }
+  }
 
   if (options.requireCollectionPage && !isKindleCollectionPage(html, sourceAsin, items)) {
     items = [];
@@ -131,11 +144,37 @@ function shouldTryAmazonSeriesHtmlCandidate(series, error, input, attemptedUrls)
 
 function buildKindleSeriesResult(series) {
   const limit = readPositiveInteger(process.env.SERIES_IMPORT_LIMIT, null);
-  const items = normalizeKindleSeriesItemVolumes(series.items || []);
+  const items = normalizeKindleSeriesItemVolumes((series.items || []).filter(isUsableKindleSeriesItem));
   return {
     ...series,
     items: limit == null ? items : items.slice(0, limit)
   };
+}
+
+function isUsableKindleSeriesItem(item = {}) {
+  if (!item?.asin || !isProbablyBookAsin(item.asin)) return false;
+  const title = cleanText(item.title);
+  if (!title) return true;
+  if (isSeriesNavigationPseudoTitle(title)) return false;
+  if (isAmazonRatingOrReviewTitle(title)) return false;
+  return true;
+}
+
+function isSeriesNavigationPseudoTitle(title) {
+  const value = String(title || '').normalize('NFKC').trim();
+  return (
+    /^全\s*[0-9]{1,4}\s*巻中\s*第\s*[0-9]{1,4}\s*巻\s*[:：]/u.test(value) ||
+    /^Book\s+[0-9]{1,4}\s+of\s+[0-9]{1,4}\s*[:：]/i.test(value)
+  );
+}
+
+function isAmazonRatingOrReviewTitle(title) {
+  const value = String(title || '').normalize('NFKC').trim();
+  return (
+    /^5つ星のうち\s*[0-9](?:\.[0-9])?$/u.test(value) ||
+    /^[0-9,]+\s*(?:レビュー|ratings?|customer reviews?)$/iu.test(value) ||
+    /^カスタマーレビュー$/u.test(value)
+  );
 }
 
 async function withSeriesCompletionProbe(series, options = {}) {
@@ -400,6 +439,13 @@ function kindleSeriesCandidateUrls(input) {
   }
 
   return urls;
+}
+
+function kindleSeriesFetchUrlForAsin(asin) {
+  const url = new URL(amazonUrlForAsin(asin));
+  url.searchParams.set('binding', 'kindle_edition');
+  url.searchParams.set('ref_', 'dbs_s_ks_series_rwt_tkin');
+  return url.toString();
 }
 
 function isKindleDbsProductUrl(value) {
@@ -1681,11 +1727,20 @@ async function fetchFromAmazonReader(asin, inputUrl = '', options = {}) {
 async function fetchKindleSeriesItemsFromAmazonReader(input, options = {}) {
   const urls = kindleSeriesCandidateUrls(input);
   let lastError;
+  const attemptedCollections = new Set();
 
   for (const sourceUrl of urls) {
     try {
       const text = await fetchHtml(amazonReaderUrl(sourceUrl), options);
       const result = extractKindleSeriesItemsFromAmazonReaderText(text, input, sourceUrl, options);
+      const collectionResult = await fetchResolvedCollectionFromAmazonReaderResult(
+        result,
+        sourceUrl,
+        input,
+        options,
+        attemptedCollections
+      );
+      if (collectionResult?.items?.length > 1) return collectionResult;
       if (result.items.length > 1) return result;
       lastError = new Error('readerでシリーズ内のKindle ASINを取得できませんでした');
     } catch (error) {
@@ -1694,6 +1749,23 @@ async function fetchKindleSeriesItemsFromAmazonReader(input, options = {}) {
   }
 
   throw lastError || new Error('readerでシリーズページを取得できませんでした');
+}
+
+async function fetchResolvedCollectionFromAmazonReaderResult(result, sourceUrl, input, options, attemptedCollections) {
+  const collectionAsin = String(result?.sourceAsin || '').toUpperCase();
+  const inputAsin = extractAsin(sourceUrl) || extractAsin(input);
+  if (!collectionAsin || !inputAsin || collectionAsin === inputAsin) return null;
+  if (attemptedCollections.has(collectionAsin)) return null;
+  attemptedCollections.add(collectionAsin);
+
+  try {
+    return await fetchKindleSeriesItems(kindleSeriesFetchUrlForAsin(collectionAsin), {
+      ...options,
+      allowReaderFallback: false
+    });
+  } catch {
+    return null;
+  }
 }
 
 function amazonReaderUrl(sourceUrl) {
@@ -1750,9 +1822,10 @@ function hasPhysicalBookEvidence(text) {
 
 function extractKindleSeriesItemsFromAmazonReaderText(text, input, sourceUrl, options = {}) {
   const value = String(text || '');
-  const sourceAsin = extractAsin(input);
   const seriesName = extractAmazonReaderSeriesName(value);
   const expectedVolumeCount = extractAmazonReaderSeriesExpectedCount(value);
+  const inputAsin = extractAsin(input);
+  const sourceAsin = extractAmazonReaderCollectionAsin(value, inputAsin, expectedVolumeCount) || inputAsin;
   let items = extractAmazonReaderSeriesItems(value, {
     seriesName,
     expectedVolumeCount
@@ -1772,6 +1845,40 @@ function extractKindleSeriesItemsFromAmazonReaderText(text, input, sourceUrl, op
     provider: 'amazon_series_reader',
     sourceUrl
   });
+}
+
+function extractAmazonReaderCollectionAsin(text, fallbackAsin = '', expectedVolumeCount = 0) {
+  const value = String(text || '');
+  const fallback = String(fallbackAsin || '').toUpperCase();
+
+  for (const match of value.matchAll(/\[([^\]\n]{1,180})\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g)) {
+    const label = cleanMarkdownText(match[1] || '');
+    if (!isAmazonReaderCollectionNavigationLabel(label, expectedVolumeCount)) continue;
+
+    const href = cleanMarkdownUrl(match[2] || '');
+    const asin = extractAsin(href) || extractAsin(decodeURIComponentSafe(href));
+    if (!asin || !isProbablyBookAsin(asin) || asin === fallback) continue;
+    return asin;
+  }
+
+  return '';
+}
+
+function isAmazonReaderCollectionNavigationLabel(label, expectedVolumeCount = 0) {
+  const value = String(label || '').normalize('NFKC').trim();
+  const japanese = value.match(/^全\s*([0-9]{1,4})\s*巻中\s*第\s*([0-9]{1,4})\s*巻\s*[:：]/u);
+  if (japanese) {
+    const total = Number(japanese[1]);
+    return total > 1 && (!expectedVolumeCount || total === Number(expectedVolumeCount));
+  }
+
+  const english = value.match(/^Book\s*([0-9]{1,4})\s+of\s+([0-9]{1,4})\s*[:：]/i);
+  if (english) {
+    const total = Number(english[2]);
+    return total > 1 && (!expectedVolumeCount || total === Number(expectedVolumeCount));
+  }
+
+  return false;
 }
 
 function extractAmazonReaderSeriesName(text) {
@@ -1878,7 +1985,12 @@ function extractAmazonReaderSeriesBlock(text) {
     /^##\s+Customers/im,
     /^##\s+Products related/im,
     /^###\s+Product details/im,
-    /^###\s+Popular/im
+    /^###\s+Popular/im,
+    /^##\s+この商品をチェックした人/im,
+    /^##\s+この商品に関連する商品/im,
+    /^##\s+関連商品/im,
+    /^##\s+商品の説明/im,
+    /^##\s+登録情報/im
   ];
   const endOffsets = endPatterns
     .map((pattern) => suffix.search(pattern))
@@ -1959,10 +2071,14 @@ function isAmazonReaderSeriesLinkCandidate(candidate, seriesName, expectedVolume
 
   const normalizedSeriesName = normalizeReaderImageText(seriesName);
   const normalizedTitle = normalizeReaderImageText(`${candidate.title || ''} ${candidate.alt || ''}`);
+  const titleHasExplicitVolume = Boolean(
+    extractExternalVolumeFromTitle(candidate.title) || extractExternalVolumeFromTitle(candidate.alt)
+  );
   if (
     normalizedSeriesName &&
     normalizedSeriesName !== normalizeReaderImageText('Kindle シリーズ') &&
-    normalizedTitle.includes(normalizedSeriesName)
+    normalizedTitle.includes(normalizedSeriesName) &&
+    titleHasExplicitVolume
   ) {
     return true;
   }
@@ -1979,14 +2095,6 @@ function isAmazonReaderNoiseLinkCandidate(candidate) {
     isSeriesNavigationPseudoTitle(title) ||
     /^(?:See included items|Share this item|Sold by:|Amazon\.co\.jp)$/i.test(title) ||
     /\bout of 5 stars\b/i.test(title)
-  );
-}
-
-function isSeriesNavigationPseudoTitle(title) {
-  const value = String(title || '').normalize('NFKC').trim();
-  return (
-    /^全\s*[0-9]{1,4}\s*巻中\s*第\s*[0-9]{1,4}\s*巻\s*[:：]/u.test(value) ||
-    /^Book\s+[0-9]{1,4}\s+of\s+[0-9]{1,4}\s*[:：]/i.test(value)
   );
 }
 
@@ -2940,12 +3048,19 @@ function extractSeriesCollectionAsin(html, fallbackAsin = '', items = []) {
   const fallback = String(fallbackAsin || '').toUpperCase();
   const itemAsins = new Set((items || []).map((item) => String(item?.asin || '').toUpperCase()).filter(Boolean));
   const candidates = [];
-  const add = (asin) => {
+  const add = (asin, options = {}) => {
     const normalized = String(asin || '').toUpperCase();
     if (!isProbablyBookAsin(normalized)) return;
-    if (itemAsins.has(normalized)) return;
+    if (!options.allowItemAsin && itemAsins.has(normalized)) return;
     if (!candidates.includes(normalized)) candidates.push(normalized);
   };
+
+  for (const match of value.matchAll(/<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)) {
+    const label = cleanText(match[2] || '');
+    if (!isSeriesNavigationPseudoTitle(label)) continue;
+    const asin = extractAsin(decodeHtml(match[1] || ''));
+    add(asin, { allowItemAsin: true });
+  }
 
   for (const match of value.matchAll(/collectionAsin(?:&quot;|"|')\s*:\s*(?:&quot;|"|')([A-Z0-9]{10})/gi)) {
     add(match[1]);

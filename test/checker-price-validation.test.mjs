@@ -548,6 +548,21 @@ test('Kindle DBS product input keeps the collection ASIN as the series identity'
   assert.equal(seriesSourceUrlFor(input, series), 'https://www.amazon.co.jp/kindle-dbs/product/B0FFTJ4W95');
 });
 
+test('resolved collection ASIN replaces a child-ASIN kindle-dbs input', () => {
+  const input = 'https://www.amazon.co.jp/kindle-dbs/product/B0DGL9JJMJ';
+  const series = {
+    sourceAsin: 'B0DHHL7Y1S',
+    items: [
+      { asin: 'B0DGL9JJMJ', title: '国宝（１） (ビッグコミックス)', volume: 1 },
+      { asin: 'B0DZJRSCTG', title: '国宝（２） (ビッグコミックス)', volume: 2 }
+    ]
+  };
+
+  assert.equal(canonicalSeriesSourceAsin(input, series), 'B0DHHL7Y1S');
+  assert.equal(seriesKeyForSeries(input, series), 'series:asin:B0DHHL7Y1S');
+  assert.equal(seriesSourceUrlFor(input, series), 'https://www.amazon.co.jp/kindle-dbs/product/B0DHHL7Y1S');
+});
+
 test('store repair removes Amazon reader series navigation pseudo items', () => {
   const store = {
     books: [
@@ -696,6 +711,109 @@ test('store repair removes supplemental books mixed into main series volumes', (
   assert.deepEqual([...new Set(attackBooks.map((book) => book.seriesExpectedCount))], [34]);
   assert.equal(store.books.some((book) => book.asin === 'B01DLJNQK2' || book.asin === 'B07HNXWX2Y'), false);
   assert.equal(kamuiBooks.length, 2);
+});
+
+test('store repair removes short-name related books and collection containers from a series', () => {
+  const store = {
+    books: [
+      ...[1, 2, 3, 4, 5].map((volume) => ({
+        id: `kokuho-${volume}`,
+        asin: `B0KOKUHA0${volume}`,
+        title: `国宝（${volume}） (ビッグコミックス)`,
+        seriesName: '国宝',
+        seriesKey: 'series:asin:B0DGL9JJMJ',
+        sourceUrl: 'https://www.amazon.co.jp/kindle-dbs/product/B0DGL9JJMJ',
+        seriesExpectedCount: 10,
+        importMode: 'kindle_series',
+        volume,
+        currentPrice: 759,
+        currentPoints: 28,
+        effectivePrice: 731
+      })),
+      {
+        id: 'kokuho-novel',
+        asin: 'B09FDC3MVH',
+        title: '国宝 上 青春篇 (朝日文庫)',
+        seriesName: '国宝',
+        seriesKey: 'series:asin:B0DGL9JJMJ',
+        sourceUrl: 'https://www.amazon.co.jp/kindle-dbs/product/B0DGL9JJMJ',
+        seriesExpectedCount: 10,
+        importMode: 'kindle_series',
+        volume: 6,
+        currentPrice: 792,
+        currentPoints: 8,
+        effectivePrice: 784
+      },
+      {
+        id: 'kokuho-related',
+        asin: 'B07QR1KZ1J',
+        title: '国宝のお医者さん 1 (ＢＲＩＤＧＥ ＣＯＭＩＣＳ)',
+        seriesName: '国宝',
+        seriesKey: 'series:asin:B0DGL9JJMJ',
+        sourceUrl: 'https://www.amazon.co.jp/kindle-dbs/product/B0DGL9JJMJ',
+        seriesExpectedCount: 10,
+        importMode: 'kindle_series',
+        volume: 7,
+        currentPrice: 644,
+        currentPoints: 6,
+        effectivePrice: 638
+      },
+      {
+        id: 'kokuho-movie',
+        asin: 'B0FR193L1Y',
+        title: '映画「国宝」感動は終わらない: 未来へ続く映画「国宝」の問いかけ',
+        seriesName: '国宝',
+        seriesKey: 'series:asin:B0DGL9JJMJ',
+        sourceUrl: 'https://www.amazon.co.jp/kindle-dbs/product/B0DGL9JJMJ',
+        seriesExpectedCount: 10,
+        importMode: 'kindle_series',
+        volume: 8,
+        currentPrice: 250,
+        currentPoints: 3,
+        effectivePrice: 247
+      },
+      {
+        id: 'kokuho-container',
+        asin: 'B0DHHL7Y1S',
+        title: '国宝',
+        seriesName: '国宝',
+        seriesKey: 'series:asin:B0DGL9JJMJ',
+        sourceUrl: 'https://www.amazon.co.jp/kindle-dbs/product/B0DGL9JJMJ',
+        seriesExpectedCount: 10,
+        importMode: 'kindle_series',
+        volume: 10,
+        currentPrice: 2277,
+        currentPoints: 140,
+        effectivePrice: 2137
+      }
+    ],
+    priceHistory: [
+      { id: 'history-movie', bookId: 'kokuho-movie', asin: 'B0FR193L1Y', checkedAt: '2026-05-21T00:00:00.000Z' },
+      { id: 'history-container', bookId: 'kokuho-container', asin: 'B0DHHL7Y1S', checkedAt: '2026-05-21T00:00:00.000Z' }
+    ],
+    notifications: [
+      { id: 'notification-related', bookId: 'kokuho-related', asin: 'B07QR1KZ1J', status: 'pending' }
+    ],
+    seriesPriceHistory: []
+  };
+
+  const summary = repairStorePriceState(store, {
+    clearCurrent: false,
+    now: '2026-05-22T00:00:00.000Z'
+  });
+
+  assert.equal(summary.changed, true);
+  assert.equal(summary.removedSupplementalSeriesItems, 4);
+  assert.equal(summary.removedHistory, 2);
+  assert.equal(summary.removedNotifications, 1);
+  assert.deepEqual(store.books.map((book) => book.asin), [
+    'B0KOKUHA01',
+    'B0KOKUHA02',
+    'B0KOKUHA03',
+    'B0KOKUHA04',
+    'B0KOKUHA05'
+  ]);
+  assert.deepEqual([...new Set(store.books.map((book) => book.seriesExpectedCount))], [5]);
 });
 
 test('store repair removes unvalidated synthetic tail volumes re-added by an older workflow', () => {
