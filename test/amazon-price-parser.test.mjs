@@ -41,6 +41,14 @@ test('Amazon series names drop store chrome, author text, and volume markers', (
     cleanAmazonSeriesName('Amazon.co.jp: 左ききのエレン 1 (ジャンプコミックスDIGITAL) eBook : かっぴー, nifuni: Kindleストア'),
     '左ききのエレン'
   );
+  assert.equal(
+    cleanAmazonSeriesName('銀河の死なない子供たちへ（上） (電撃コミックスNEXT)'),
+    '銀河の死なない子供たちへ'
+  );
+  assert.equal(
+    cleanAmazonSeriesName('銀河の死なない子供たちへ 下 Kindle版'),
+    '銀河の死なない子供たちへ'
+  );
 });
 
 test('Amazon series parser keeps bulk volume when child list repeats the first volume title', () => {

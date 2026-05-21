@@ -3538,6 +3538,7 @@ const SUPPLEMENTAL_SERIES_TITLE_PATTERNS = [
   /映画|劇場版|実写/u,
   /外伝|スピンオフ|spinoff|spin-off/u,
   /小説|novel/u,
+  /上下巻合計|上下巻|全巻セット|全巻合本|全巻まとめ|まとめ買い|合本/u,
   /感動は終わらない/u,
   /悔いなき選択/u,
   /lost\s*girls/u,

@@ -3801,7 +3801,9 @@ function stripSeriesImprint(value) {
 function stripSeriesVolumeTokens(value) {
   return String(value || '')
     .replace(/\s*[（(]\s*(?:第\s*)?[0-9０-９]{1,4}\s*(?:巻|巻目)?\s*[）)]\s*/giu, ' ')
+    .replace(/\s*[（(]\s*(?:上|中|下|前編|後編|完結編)\s*[）)]\s*/gu, ' ')
     .replace(/(^|[\s　\-－–—:：])(?:第\s*)?[0-9０-９]{1,4}\s*巻(?=$|[\s　\-－–—:：])/giu, '$1 ')
+    .replace(/(^|[\s　\-－–—:：])(?:上|中|下|前編|後編|完結編)(?=$|[\s　\-－–—:：])/gu, '$1 ')
     .replace(/(^|[\s　\-－–—:：])(?:vol\.?|volume)\s*[0-9０-９]{1,4}(?=$|[\s　\-－–—:：])/giu, '$1 ')
     .replace(/(^|[\s　\-－–—:：])(?:第\s*)?[0-9０-９]{1,4}(?=$|[\s　\-－–—:：])/giu, '$1 ');
 }
