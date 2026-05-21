@@ -2207,7 +2207,9 @@ export function repairStorePriceState(store, options = {}) {
   if (volumeRepair.changed) {
     summary.changed = true;
     summary.repairedSeriesVolumes += volumeRepair.repaired;
+    summary.repairedSeriesExpectedCounts += volumeRepair.expectedCountUpdated || 0;
     summary.booksRepaired += volumeRepair.repaired;
+    summary.booksRepaired += volumeRepair.expectedCountUpdated || 0;
   }
 
   const duplicateVolumeRepair = repairDuplicateStoredSeriesVolumes(store, { now });
@@ -2407,15 +2409,57 @@ function isStoredSeriesCollectionContainerBook(book = {}, groupBooks = []) {
   const seriesCore = seriesTitleComparisonCore(book.seriesName);
   if (!titleCore || !seriesCore || titleCore !== seriesCore) return false;
 
-  const siblingTrustedVolumes = groupBooks
+  const siblingTrustedBooks = groupBooks
     .filter((item) => item?.id !== book.id)
-    .map(trustedVolumeFromStoredBookTitle)
-    .filter((volume) => Number.isFinite(volume) && volume > 0);
-  if (siblingTrustedVolumes.length < 2) return false;
+    .map((item) => ({ item, volume: trustedVolumeFromStoredBookTitle(item) }))
+    .filter(({ volume }) => Number.isFinite(volume) && volume > 0);
+  if (siblingTrustedBooks.length < 2) return false;
 
   const storedVolume = storedBookVolume(book);
+  const siblingTrustedVolumes = siblingTrustedBooks.map(({ volume }) => volume);
   const maxSiblingVolume = Math.max(...siblingTrustedVolumes);
-  return !storedVolume || storedVolume > maxSiblingVolume;
+  if (!storedVolume || storedVolume > maxSiblingVolume) return true;
+
+  const sourceAsin = extractAsin(book.sourceUrl || '');
+  const storedVolumeCollidesWithSibling = siblingTrustedVolumes.includes(storedVolume);
+  if (
+    (storedVolumeCollidesWithSibling || sourceAsin === String(book.asin || '').toUpperCase()) &&
+    storedBookPriceLooksLikeSeriesTotal(
+      book,
+      siblingTrustedBooks.map(({ item }) => item)
+    )
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function storedBookPriceLooksLikeSeriesTotal(book = {}, siblingBooks = []) {
+  const currentTotal = sumStoredPrices(siblingBooks, 'currentPrice');
+  const effectiveTotal = sumStoredPrices(siblingBooks, 'effectivePrice');
+  const totals = [currentTotal, effectiveTotal].filter((value) => Number.isFinite(value) && value > 0);
+  if (totals.length === 0) return false;
+
+  const prices = [storedPositiveNumber(book.currentPrice), storedPositiveNumber(book.effectivePrice)].filter(
+    (value) => Number.isFinite(value) && value > 0
+  );
+  return totals.some((total) => prices.some((price) => nearlySameSeriesTotalPrice(price, total)));
+}
+
+function sumStoredPrices(books = [], field) {
+  const prices = books.map((book) => storedPositiveNumber(book?.[field])).filter((value) => Number.isFinite(value) && value > 0);
+  if (prices.length < 2) return null;
+  return prices.reduce((sum, value) => sum + value, 0);
+}
+
+function storedPositiveNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : null;
+}
+
+function nearlySameSeriesTotalPrice(price, total) {
+  return Math.abs(price - total) <= Math.max(2, Math.round(total * 0.005));
 }
 
 function repairUnvalidatedSyntheticTailSeriesItems(store, options = {}) {
@@ -2500,6 +2544,7 @@ function isUnvalidatedSyntheticStoredSeriesItem(book = {}) {
 function repairTrustedStoredSeriesVolumes(store, options = {}) {
   const now = options.now || new Date().toISOString();
   let repaired = 0;
+  const affectedKeys = new Set();
   for (const book of store.books || []) {
     if (!isSeriesBookRecord(book)) continue;
     const fixup = STORED_SERIES_BOOK_FIXUPS.get(String(book.asin || '').toUpperCase());
@@ -2515,12 +2560,16 @@ function repairTrustedStoredSeriesVolumes(store, options = {}) {
     }
     if (!changed) continue;
     book.updatedAt = now;
+    const key = seriesGroupKeyForBook(book);
+    if (key) affectedKeys.add(key);
     repaired += 1;
   }
 
+  const expectedCountUpdated = normalizeExpectedCountForSeriesKeys(store, affectedKeys, now);
   return {
-    changed: repaired > 0,
-    repaired
+    changed: repaired > 0 || expectedCountUpdated > 0,
+    repaired,
+    expectedCountUpdated
   };
 }
 

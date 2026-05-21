@@ -816,6 +816,137 @@ test('store repair removes short-name related books and collection containers fr
   assert.deepEqual([...new Set(store.books.map((book) => book.seriesExpectedCount))], [5]);
 });
 
+test('store repair removes exact-title collection totals even when they collide with an existing volume', () => {
+  const store = {
+    books: [
+      {
+        id: 'sute-upper',
+        asin: 'B00CZCWC84',
+        title: '捨てがたき人々（上） (幻冬舎文庫)',
+        seriesName: '捨てがたき人々',
+        seriesKey: 'series:asin:B074CG66B3',
+        sourceUrl: 'https://www.amazon.co.jp/kindle-dbs/product/B074CG66B3',
+        seriesExpectedCount: 3,
+        importMode: 'kindle_series',
+        volume: 1,
+        currentPrice: 824,
+        currentPoints: 8,
+        effectivePrice: 816
+      },
+      {
+        id: 'sute-container',
+        asin: 'B074CG66B3',
+        title: '捨てがたき人々',
+        seriesName: '捨てがたき人々',
+        seriesKey: 'series:asin:B074CG66B3',
+        sourceUrl: 'https://www.amazon.co.jp/kindle-dbs/product/B074CG66B3',
+        seriesExpectedCount: 3,
+        importMode: 'kindle_series',
+        volume: 2,
+        currentPrice: 1648,
+        currentPoints: 16,
+        effectivePrice: 1632
+      },
+      {
+        id: 'sute-lower',
+        asin: 'B00CZCWBVC',
+        title: '捨てがたき人々（下） (幻冬舎文庫)',
+        seriesName: '捨てがたき人々',
+        seriesKey: 'series:asin:B074CG66B3',
+        sourceUrl: 'https://www.amazon.co.jp/kindle-dbs/product/B074CG66B3',
+        seriesExpectedCount: 3,
+        importMode: 'kindle_series',
+        volume: 3,
+        currentPrice: 824,
+        currentPoints: 8,
+        effectivePrice: 816
+      },
+      {
+        id: 'kichijoji-1',
+        asin: 'B00Q9NQ81C',
+        title: '吉祥寺キャットウォーク １',
+        seriesName: '吉祥寺キャットウォーク',
+        seriesKey: 'series:asin:B00Q9NQ81C',
+        sourceUrl: 'https://www.amazon.co.jp/kindle-dbs/product/B00Q9NQ81C',
+        seriesExpectedCount: 4,
+        importMode: 'kindle_series',
+        volume: 1,
+        currentPrice: 814,
+        currentPoints: 0,
+        effectivePrice: 814
+      },
+      {
+        id: 'kichijoji-2',
+        asin: 'B00Q9NQ876',
+        title: '吉祥寺キャットウォーク 2 (ビームコミックス)',
+        seriesName: '吉祥寺キャットウォーク',
+        seriesKey: 'series:asin:B00Q9NQ81C',
+        sourceUrl: 'https://www.amazon.co.jp/kindle-dbs/product/B00Q9NQ81C',
+        seriesExpectedCount: 4,
+        importMode: 'kindle_series',
+        volume: 2,
+        currentPrice: 836,
+        currentPoints: 8,
+        effectivePrice: 828
+      },
+      {
+        id: 'kichijoji-3',
+        asin: 'B00Q9NQ812',
+        title: '吉祥寺キャットウォーク 3 (ビームコミックス)',
+        seriesName: '吉祥寺キャットウォーク',
+        seriesKey: 'series:asin:B00Q9NQ81C',
+        sourceUrl: 'https://www.amazon.co.jp/kindle-dbs/product/B00Q9NQ81C',
+        seriesExpectedCount: 4,
+        importMode: 'kindle_series',
+        volume: 3,
+        currentPrice: 902,
+        currentPoints: 9,
+        effectivePrice: 893
+      },
+      {
+        id: 'kichijoji-container',
+        asin: 'B074CKWR7Z',
+        title: '吉祥寺キャットウォーク',
+        seriesName: '吉祥寺キャットウォーク',
+        seriesKey: 'series:asin:B00Q9NQ81C',
+        sourceUrl: 'https://www.amazon.co.jp/kindle-dbs/product/B00Q9NQ81C',
+        seriesExpectedCount: 4,
+        importMode: 'kindle_series',
+        volume: 4,
+        currentPrice: 2552,
+        currentPoints: 17,
+        effectivePrice: 2535
+      }
+    ],
+    priceHistory: [
+      { id: 'history-sute-container', bookId: 'sute-container', asin: 'B074CG66B3', checkedAt: '2026-05-21T00:00:00.000Z' },
+      { id: 'history-kichijoji-container', bookId: 'kichijoji-container', asin: 'B074CKWR7Z', checkedAt: '2026-05-21T00:00:00.000Z' }
+    ],
+    notifications: [
+      { id: 'notification-sute-container', bookId: 'sute-container', asin: 'B074CG66B3', status: 'pending' }
+    ],
+    seriesPriceHistory: []
+  };
+
+  const summary = repairStorePriceState(store, {
+    clearCurrent: false,
+    now: '2026-05-22T00:00:00.000Z'
+  });
+
+  assert.equal(summary.changed, true);
+  assert.equal(summary.removedSupplementalSeriesItems, 2);
+  assert.equal(summary.removedHistory, 2);
+  assert.equal(summary.removedNotifications, 1);
+  assert.equal(store.books.some((book) => book.asin === 'B074CG66B3' || book.asin === 'B074CKWR7Z'), false);
+
+  const suteBooks = store.books.filter((book) => book.seriesName === '捨てがたき人々');
+  const kichijojiBooks = store.books.filter((book) => book.seriesName === '吉祥寺キャットウォーク');
+  assert.deepEqual(suteBooks.map((book) => book.volume), [1, 2]);
+  assert.deepEqual([...new Set(suteBooks.map((book) => book.seriesExpectedCount))], [2]);
+  assert.deepEqual(kichijojiBooks.map((book) => book.volume), [1, 2, 3]);
+  assert.deepEqual([...new Set(kichijojiBooks.map((book) => book.seriesExpectedCount))], [3]);
+});
+
 test('store repair removes unvalidated synthetic tail volumes re-added by an older workflow', () => {
   const store = {
     books: [
