@@ -766,6 +766,297 @@ test('store repair removes unvalidated synthetic tail volumes re-added by an old
   assert.equal(store.books.some((book) => book.asin === 'B00JDYKLPS' || book.asin === 'B01DLJNQK2'), false);
 });
 
+test('store repair lowers stale expected count for completed contiguous series', () => {
+  const store = {
+    books: Array.from({ length: 7 }, (_, index) => ({
+      id: `desco-${index + 1}`,
+      asin: `B00DESCO${index + 1}`,
+      title: `デスコ ${index + 1}`,
+      seriesName: 'デスコ',
+      seriesKey: 'series:asin:B00ORJ3X4K',
+      seriesExpectedCount: 8,
+      seriesCompleted: true,
+      importMode: 'kindle_series',
+      volume: index + 1,
+      currentPrice: 224,
+      currentPoints: 0,
+      effectivePrice: 224
+    })),
+    priceHistory: [],
+    notifications: [],
+    seriesPriceHistory: []
+  };
+
+  const summary = repairStorePriceState(store, {
+    clearCurrent: false,
+    now: '2026-05-21T03:00:00.000Z'
+  });
+
+  assert.equal(summary.changed, true);
+  assert.equal(summary.repairedSeriesExpectedCounts, 7);
+  assert.deepEqual([...new Set(store.books.map((book) => book.seriesExpectedCount))], [7]);
+});
+
+test('store repair fixes title-backed volumes and drops ambiguous duplicate series entries', () => {
+  const store = {
+    books: [
+      {
+        id: 'spunk-source',
+        asin: 'B0C6JS577Q',
+        title: 'SPUNK - スパンク！ - 1 (ビームコミックス)',
+        seriesName: 'SPUNK - スパンク！',
+        seriesKey: 'series:asin:B0C6JS577Q',
+        seriesExpectedCount: 6,
+        importMode: 'kindle_series',
+        volume: 6,
+        currentPrice: 257,
+        currentPoints: 0,
+        effectivePrice: 257,
+        provider: 'listasin'
+      },
+      {
+        id: 'spunk-ambiguous',
+        asin: 'B0CQZKSKLG',
+        title: 'SPUNK - スパンク！ -',
+        seriesName: 'SPUNK - スパンク！',
+        seriesKey: 'series:asin:B0C6JS577Q',
+        seriesExpectedCount: 6,
+        importMode: 'kindle_series',
+        volume: 1,
+        currentPrice: 778,
+        currentPoints: 0,
+        effectivePrice: 778,
+        provider: 'amazon_html'
+      },
+      ...[2, 3, 4].map((volume) => ({
+        id: `spunk-${volume}`,
+        asin: `B0SPUNK000${volume}`,
+        title: `SPUNK - スパンク！ - ${volume} (ビームコミックス)`,
+        seriesName: 'SPUNK - スパンク！',
+        seriesKey: 'series:asin:B0C6JS577Q',
+        seriesExpectedCount: 6,
+        importMode: 'kindle_series',
+        volume,
+        currentPrice: 264,
+        currentPoints: 0,
+        effectivePrice: 264,
+        provider: 'listasin'
+      }))
+    ],
+    priceHistory: [
+      { id: 'history-ambiguous', bookId: 'spunk-ambiguous', asin: 'B0CQZKSKLG', checkedAt: '2026-05-20T00:00:00.000Z' }
+    ],
+    notifications: [
+      { id: 'notification-ambiguous', bookId: 'spunk-ambiguous', asin: 'B0CQZKSKLG', status: 'pending' }
+    ],
+    seriesPriceHistory: []
+  };
+
+  const summary = repairStorePriceState(store, {
+    clearCurrent: false,
+    now: '2026-05-21T03:10:00.000Z'
+  });
+
+  assert.equal(summary.changed, true);
+  assert.equal(summary.repairedSeriesVolumes, 1);
+  assert.equal(summary.removedDuplicateSeriesVolumeItems, 1);
+  assert.equal(summary.removedHistory, 1);
+  assert.equal(summary.removedNotifications, 1);
+  assert.equal(store.books.some((book) => book.asin === 'B0CQZKSKLG'), false);
+  assert.equal(store.books.find((book) => book.asin === 'B0C6JS577Q').volume, 1);
+  assert.deepEqual([...new Set(store.books.map((book) => book.seriesExpectedCount))], [4]);
+  assert.deepEqual(store.books.map((book) => book.volume).sort((a, b) => a - b), [1, 2, 3, 4]);
+});
+
+test('store repair maps upper and lower part markers to series volumes', () => {
+  const store = {
+    books: [
+      {
+        id: 'ginga-upper',
+        asin: 'B075M4B2B1',
+        title: '銀河の死なない子供たちへ（上） (電撃コミックスNEXT)',
+        seriesName: '銀河の死なない子供たちへ（上）',
+        seriesKey: 'series:asin:B075M4B2B1',
+        seriesExpectedCount: 2,
+        importMode: 'kindle_series',
+        volume: 2,
+        currentPrice: 564,
+        currentPoints: 0,
+        effectivePrice: 564,
+        provider: 'listasin'
+      },
+      {
+        id: 'ginga-lower',
+        asin: 'B07GDBC2SD',
+        title: '銀河の死なない子供たちへ（下） (電撃コミックスNEXT)',
+        seriesName: '銀河の死なない子供たちへ（上）',
+        seriesKey: 'series:asin:B075M4B2B1',
+        seriesExpectedCount: 2,
+        importMode: 'kindle_series',
+        volume: 2,
+        currentPrice: 594,
+        currentPoints: 0,
+        effectivePrice: 594,
+        provider: 'listasin'
+      }
+    ],
+    priceHistory: [],
+    notifications: [],
+    seriesPriceHistory: []
+  };
+
+  const summary = repairStorePriceState(store, {
+    clearCurrent: false,
+    now: '2026-05-21T03:20:00.000Z'
+  });
+
+  assert.equal(summary.changed, true);
+  assert.equal(summary.repairedSeriesVolumes, 1);
+  assert.deepEqual(
+    store.books.sort((a, b) => a.asin.localeCompare(b.asin)).map((book) => [book.asin, book.volume]),
+    [
+      ['B075M4B2B1', 1],
+      ['B07GDBC2SD', 2]
+    ]
+  );
+});
+
+test('store repair fixes known mixed-edition series volumes from stable ASINs', () => {
+  const store = {
+    books: [
+      {
+        id: 'shamo-1',
+        asin: 'B00QAEZKNC',
+        title: '軍鶏 １',
+        seriesName: '軍鶏',
+        seriesKey: 'series:asin:B074CG522D',
+        seriesExpectedCount: 34,
+        importMode: 'kindle_series',
+        volume: 1,
+        currentPrice: 1362,
+        currentPoints: 0,
+        effectivePrice: 1362,
+        provider: 'amazon_series_bulk'
+      },
+      {
+        id: 'shamo-4',
+        asin: 'B00QAEZLAY',
+        title: '軍鶏 １２',
+        seriesName: '軍鶏',
+        seriesKey: 'series:asin:B074CG522D',
+        seriesExpectedCount: 34,
+        importMode: 'kindle_series',
+        volume: 12,
+        currentPrice: 1362,
+        currentPoints: 0,
+        effectivePrice: 1362,
+        provider: 'amazon_series_bulk'
+      },
+      ...[2, 3, ...Array.from({ length: 18 }, (_, index) => index + 5)].map((volume) => {
+        return {
+          id: `shamo-${volume}`,
+          asin: `B00SHAMO${String(volume).padStart(2, '0')}`,
+          title: `軍鶏 ${volume}`,
+          seriesName: '軍鶏',
+          seriesKey: 'series:asin:B074CG522D',
+          seriesExpectedCount: 34,
+          importMode: 'kindle_series',
+          volume,
+          currentPrice: 792,
+          currentPoints: 0,
+          effectivePrice: 792,
+          provider: 'amazon_series_bulk'
+        };
+      })
+    ],
+    priceHistory: [],
+    notifications: [],
+    seriesPriceHistory: []
+  };
+
+  const summary = repairStorePriceState(store, {
+    clearCurrent: false,
+    now: '2026-05-21T03:30:00.000Z'
+  });
+
+  assert.equal(summary.changed, true);
+  assert.equal(store.books.find((book) => book.asin === 'B00QAEZLAY').volume, 4);
+  assert.equal(
+    store.books.find((book) => book.asin === 'B00QAEZLAY').title,
+    '極厚版『軍鶏』 巻之四 （１０～１２巻相当） (イブニングコミックス)'
+  );
+  assert.deepEqual([...new Set(store.books.map((book) => book.seriesExpectedCount))], [22]);
+});
+
+test('store repair removes inferior exact-title duplicate before applying known expected count', () => {
+  const store = {
+    books: [
+      {
+        id: 'sekirara-1',
+        asin: 'B082WYVC7D',
+        title: 'セキララ結婚生活',
+        seriesName: '７年目のセキララ結婚生活',
+        seriesKey: 'series:asin:B082WZ2KT2',
+        seriesExpectedCount: 5,
+        importMode: 'kindle_series',
+        volume: 1,
+        author: 'けら えいこ (著)',
+        imageUrl: 'https://example.com/cover.jpg',
+        currentPrice: 855,
+        currentPoints: 0,
+        effectivePrice: 855,
+        provider: 'listasin'
+      },
+      {
+        id: 'sekirara-duplicate',
+        asin: 'B085FWKSVV',
+        title: 'セキララ結婚生活',
+        seriesName: '７年目のセキララ結婚生活',
+        seriesKey: 'series:asin:B082WZ2KT2',
+        seriesExpectedCount: 5,
+        importMode: 'kindle_series',
+        volume: 1,
+        imageUrl: 'https://example.com/cover.jpg',
+        currentPrice: 1710,
+        currentPoints: 0,
+        effectivePrice: 1710,
+        provider: 'amazon_html'
+      },
+      {
+        id: 'sekirara-2',
+        asin: 'B082WZ2KT2',
+        title: '７年目のセキララ結婚生活',
+        seriesName: '７年目のセキララ結婚生活',
+        seriesKey: 'series:asin:B082WZ2KT2',
+        seriesExpectedCount: 5,
+        importMode: 'kindle_series',
+        volume: 5,
+        author: 'けら えいこ (著)',
+        currentPrice: 855,
+        currentPoints: 0,
+        effectivePrice: 855,
+        provider: 'listasin'
+      }
+    ],
+    priceHistory: [
+      { id: 'history-sekirara-duplicate', bookId: 'sekirara-duplicate', asin: 'B085FWKSVV', checkedAt: '2026-05-20T00:00:00.000Z' }
+    ],
+    notifications: [],
+    seriesPriceHistory: []
+  };
+
+  const summary = repairStorePriceState(store, {
+    clearCurrent: false,
+    now: '2026-05-21T03:40:00.000Z'
+  });
+
+  assert.equal(summary.changed, true);
+  assert.equal(summary.removedDuplicateSeriesVolumeItems, 1);
+  assert.equal(store.books.some((book) => book.asin === 'B085FWKSVV'), false);
+  assert.equal(store.books.find((book) => book.asin === 'B082WZ2KT2').volume, 2);
+  assert.deepEqual([...new Set(store.books.map((book) => book.seriesExpectedCount))], [2]);
+});
+
 test('supplemental series title detection preserves series whose own name contains the marker', () => {
   assert.equal(
     isSupplementalSeriesBookTitle('ダーウィン事変公式 ヒトとサルの境界線 (アフタヌーンコミックス)', 'ダーウィン事変'),

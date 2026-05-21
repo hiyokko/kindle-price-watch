@@ -43,6 +43,25 @@ const DISCOUNT_RECHECK_RATIO = 0.7;
 const PRICE_INTEGRITY_SERIES_OUTLIER_RATIO = 0.55;
 const LIST_PRICE_CHALLENGE_MAX_PER_SERIES = 2;
 const DAY_MS = 24 * 60 * 60 * 1000;
+const STALE_SERIES_EXPECTED_COUNT_OVERRIDES = new Map([
+  ['series:asin:B00E5V5JMY', 3], // Wet Moon
+  ['series:asin:B01IEGD30K', 3], // 青い空を、白い雲がかけてった
+  ['series:asin:B074CG522D', 22], // 軍鶏: Amazon lists the current Kindle series as 22 entries.
+  ['series:asin:B08R6X9DD5', 3], // サーチアンドデストロイ
+  ['series:asin:B082WZ2KT2', 2], // セキララ結婚生活 / ７年目のセキララ結婚生活
+  ['series:asin:B0C6JS577Q', 4] // SPUNK - スパンク！
+]);
+const STORED_SERIES_BOOK_FIXUPS = new Map([
+  ['B00QAEZKNC', { volume: 1, title: '極厚版『軍鶏』 巻之壱 （１～３巻相当） (イブニングコミックス)' }],
+  ['B00QAEZKZU', { volume: 2, title: '極厚版『軍鶏』 巻之弐 （４～６巻相当） (イブニングコミックス)' }],
+  ['B00QAEZLDQ', { volume: 3, title: '極厚版『軍鶏』 巻之参 （７～９巻相当） (イブニングコミックス)' }],
+  ['B00QAEZLAY', { volume: 4, title: '極厚版『軍鶏』 巻之四 （１０～１２巻相当） (イブニングコミックス)' }],
+  ['B00RDYOB5Q', { volume: 5, title: '極厚版『軍鶏』 巻之伍 （１３～１５巻相当） (イブニングコミックス)' }],
+  ['B00RDYOBCE', { volume: 6, title: '極厚版『軍鶏』 巻之六 （１６～１７巻相当） (イブニングコミックス)' }],
+  ['B00RDYOFHK', { volume: 7, title: '極厚版『軍鶏』 巻之七 （１８～１９巻相当） (イブニングコミックス)' }],
+  ['B00SICO3NM', { volume: 9, title: '軍鶏 ９' }],
+  ['B082WZ2KT2', { volume: 2 }]
+]);
 
 export async function listBooks() {
   const store = await readStoreWithPriceRepairs();
@@ -296,9 +315,9 @@ async function importSeriesIntoStore(store, input, series, options = {}) {
   const seriesItems = [];
   let skippedSeriesNavigationItems = 0;
   for (const item of mergedSeriesItems) {
-    if (isSeriesNavigationPseudoItem(item)) {
+    if (isNonBookSeriesCandidateItem(item)) {
       skippedSeriesNavigationItems += 1;
-      seriesErrors.push(`${item.asin}: skipped series navigation item (${item.title})`);
+      seriesErrors.push(`${item.asin}: skipped non-book series candidate (${item.title})`);
       continue;
     }
     if (isClearlyDifferentSeriesTitle(item.title, seriesName)) {
@@ -312,6 +331,7 @@ async function importSeriesIntoStore(store, input, series, options = {}) {
     seriesItems.push(item);
   }
   let regularSeriesItems = dropDuplicateAlternativeEditionItems(seriesItems, seriesErrors);
+  regularSeriesItems = dropDuplicateAmbiguousSeriesItems(regularSeriesItems, seriesName, seriesErrors);
   regularSeriesItems = await dropFutureReleaseNewSeriesItems(regularSeriesItems, store, seriesErrors, {
     now,
     signal: options.signal,
@@ -459,6 +479,68 @@ function dropDuplicateAlternativeEditionItems(items = [], errors = []) {
 
   if (droppedAsins.size === 0) return items;
   return items.filter((item) => !droppedAsins.has(item.asin));
+}
+
+function dropDuplicateAmbiguousSeriesItems(items = [], seriesName = '', errors = []) {
+  const byVolume = new Map();
+  for (const item of items) {
+    const volume = seriesItemVolume(item);
+    if (!volume) continue;
+    const group = byVolume.get(volume) || [];
+    group.push(item);
+    byVolume.set(volume, group);
+  }
+
+  const droppedAsins = new Set();
+  for (const [volume, group] of byVolume.entries()) {
+    if (group.length <= 1) continue;
+    const keep = preferredSeriesDuplicateItem(group, seriesName, volume);
+    if (!keep || !shouldDropAmbiguousSeriesDuplicateGroup(group, keep, seriesName, volume)) continue;
+
+    for (const item of group) {
+      if (item.asin === keep.asin) continue;
+      if (!isDroppableAmbiguousSeriesDuplicate(item, keep, seriesName, volume)) continue;
+      droppedAsins.add(item.asin);
+      errors.push(`${item.asin}: skipped ambiguous duplicate volume ${volume} (${item.title})`);
+    }
+  }
+
+  if (droppedAsins.size === 0) return items;
+  return items.filter((item) => !droppedAsins.has(item.asin));
+}
+
+function shouldDropAmbiguousSeriesDuplicateGroup(group, keep, seriesName, volume) {
+  if (!keep || group.length <= 1) return false;
+  return group.some((item) => isDroppableAmbiguousSeriesDuplicate(item, keep, seriesName, volume));
+}
+
+function isDroppableAmbiguousSeriesDuplicate(item, keep, seriesName, volume) {
+  if (!item?.asin || item.asin === keep?.asin) return false;
+  if (isNonBookSeriesCandidateItem(item)) return true;
+  if (isSupplementalSeriesBookTitle(item.title, seriesName || item.seriesName)) return true;
+  if (alternativeEditionRank(item) > alternativeEditionRank(keep)) return true;
+
+  const itemTitleVolume = trustedVolumeFromSeriesTitle(item.title, seriesName || item.seriesName);
+  const keepTitleVolume = trustedVolumeFromSeriesTitle(keep.title, seriesName || keep.seriesName);
+  if (keepTitleVolume === volume && itemTitleVolume !== volume) return true;
+  return false;
+}
+
+function preferredSeriesDuplicateItem(group, seriesName, volume) {
+  return [...group].sort((left, right) => {
+    const leftTitleVolume = trustedVolumeFromSeriesTitle(left.title, seriesName || left.seriesName) === volume ? 1 : 0;
+    const rightTitleVolume = trustedVolumeFromSeriesTitle(right.title, seriesName || right.seriesName) === volume ? 1 : 0;
+    if (leftTitleVolume !== rightTitleVolume) return rightTitleVolume - leftTitleVolume;
+
+    const leftNonBook = isNonBookSeriesCandidateItem(left) ? 1 : 0;
+    const rightNonBook = isNonBookSeriesCandidateItem(right) ? 1 : 0;
+    if (leftNonBook !== rightNonBook) return leftNonBook - rightNonBook;
+
+    const editionRank = alternativeEditionRank(left) - alternativeEditionRank(right);
+    if (editionRank !== 0) return editionRank;
+
+    return compareSeriesEditionPreference(left, right);
+  })[0] || null;
 }
 
 function compareSeriesEditionPreference(left, right) {
@@ -2066,7 +2148,10 @@ export function repairStorePriceState(store, options = {}) {
       seriesDiscoveryDeferred: 0,
       removedSeriesNavigationItems: 0,
       removedSupplementalSeriesItems: 0,
-      removedUnvalidatedSeriesTailItems: 0
+      removedUnvalidatedSeriesTailItems: 0,
+      removedDuplicateSeriesVolumeItems: 0,
+      repairedSeriesVolumes: 0,
+      repairedSeriesExpectedCounts: 0
     };
   }
 
@@ -2082,7 +2167,10 @@ export function repairStorePriceState(store, options = {}) {
     seriesDiscoveryDeferred: 0,
     removedSeriesNavigationItems: 0,
     removedSupplementalSeriesItems: 0,
-    removedUnvalidatedSeriesTailItems: 0
+    removedUnvalidatedSeriesTailItems: 0,
+    removedDuplicateSeriesVolumeItems: 0,
+    repairedSeriesVolumes: 0,
+    repairedSeriesExpectedCounts: 0
   };
 
   const pseudoItemRepair = repairSeriesNavigationPseudoItems(store, { now });
@@ -2110,6 +2198,29 @@ export function repairStorePriceState(store, options = {}) {
     summary.removedHistory += unvalidatedTailRepair.removedHistory;
     summary.removedNotifications += unvalidatedTailRepair.removedNotifications;
     summary.booksRepaired += unvalidatedTailRepair.expectedCountUpdated;
+  }
+
+  const volumeRepair = repairTrustedStoredSeriesVolumes(store, { now });
+  if (volumeRepair.changed) {
+    summary.changed = true;
+    summary.repairedSeriesVolumes += volumeRepair.repaired;
+    summary.booksRepaired += volumeRepair.repaired;
+  }
+
+  const duplicateVolumeRepair = repairDuplicateStoredSeriesVolumes(store, { now });
+  if (duplicateVolumeRepair.changed) {
+    summary.changed = true;
+    summary.removedDuplicateSeriesVolumeItems += duplicateVolumeRepair.removed;
+    summary.removedHistory += duplicateVolumeRepair.removedHistory;
+    summary.removedNotifications += duplicateVolumeRepair.removedNotifications;
+    summary.booksRepaired += duplicateVolumeRepair.expectedCountUpdated;
+  }
+
+  const expectedCountRepair = repairStaleStoredSeriesExpectedCounts(store, { now });
+  if (expectedCountRepair.changed) {
+    summary.changed = true;
+    summary.repairedSeriesExpectedCounts += expectedCountRepair.repaired;
+    summary.booksRepaired += expectedCountRepair.repaired;
   }
 
   const classificationRepair = repairSingleBookSeriesClassifications(store, { now });
@@ -2346,6 +2457,205 @@ function isUnvalidatedSyntheticStoredSeriesItem(book = {}) {
   return /シリーズ価格補完|価格を取得できません|タイムアウト|aborted/i.test(String(book.lastError || ''));
 }
 
+function repairTrustedStoredSeriesVolumes(store, options = {}) {
+  const now = options.now || new Date().toISOString();
+  let repaired = 0;
+  for (const book of store.books || []) {
+    if (!isSeriesBookRecord(book)) continue;
+    const fixup = STORED_SERIES_BOOK_FIXUPS.get(String(book.asin || '').toUpperCase());
+    const trustedVolume = fixup?.volume || trustedVolumeFromStoredBookTitle(book);
+    let changed = false;
+    if (trustedVolume && Number(book.volume || 0) !== trustedVolume) {
+      book.volume = trustedVolume;
+      changed = true;
+    }
+    if (fixup?.title && book.title !== fixup.title) {
+      book.title = fixup.title;
+      changed = true;
+    }
+    if (!changed) continue;
+    book.updatedAt = now;
+    repaired += 1;
+  }
+
+  return {
+    changed: repaired > 0,
+    repaired
+  };
+}
+
+function repairDuplicateStoredSeriesVolumes(store, options = {}) {
+  const now = options.now || new Date().toISOString();
+  const ids = new Set();
+  const affectedKeys = new Set();
+  const groups = new Map();
+
+  for (const book of store.books || []) {
+    if (!isSeriesBookRecord(book)) continue;
+    const key = seriesGroupKeyForBook(book);
+    const volume = storedBookVolume(book);
+    if (!key || !volume) continue;
+    const volumeKey = `${key}\u0000${volume}`;
+    if (!groups.has(volumeKey)) groups.set(volumeKey, { key, volume, books: [] });
+    groups.get(volumeKey).books.push(book);
+  }
+
+  for (const group of groups.values()) {
+    if (group.books.length <= 1) continue;
+    const keep = preferredStoredSeriesDuplicateBook(group.books, group.volume);
+    if (!keep) continue;
+    for (const book of group.books) {
+      if (book.id === keep.id) continue;
+      if (!isDroppableStoredSeriesDuplicate(book, keep, group.volume, group.key)) continue;
+      ids.add(book.id);
+      affectedKeys.add(group.key);
+    }
+  }
+
+  if (ids.size === 0) {
+    return {
+      changed: false,
+      removed: 0,
+      removedHistory: 0,
+      removedNotifications: 0,
+      expectedCountUpdated: 0
+    };
+  }
+
+  const beforeHistory = store.priceHistory.length;
+  const beforeNotifications = store.notifications.length;
+  removeStoreBooksById(store, ids);
+  const expectedCountUpdated = normalizeExpectedCountForSeriesKeys(store, affectedKeys, now);
+
+  return {
+    changed: true,
+    removed: ids.size,
+    removedHistory: beforeHistory - store.priceHistory.length,
+    removedNotifications: beforeNotifications - store.notifications.length,
+    expectedCountUpdated
+  };
+}
+
+function preferredStoredSeriesDuplicateBook(books = [], volume = 0) {
+  return [...books].sort((left, right) => {
+    const leftTitleVolume = trustedVolumeFromStoredBookTitle(left) === volume ? 1 : 0;
+    const rightTitleVolume = trustedVolumeFromStoredBookTitle(right) === volume ? 1 : 0;
+    if (leftTitleVolume !== rightTitleVolume) return rightTitleVolume - leftTitleVolume;
+
+    const leftNonBook = isNonBookSeriesCandidateItem(left) ? 1 : 0;
+    const rightNonBook = isNonBookSeriesCandidateItem(right) ? 1 : 0;
+    if (leftNonBook !== rightNonBook) return leftNonBook - rightNonBook;
+
+    const editionRank = alternativeEditionRank(left) - alternativeEditionRank(right);
+    if (editionRank !== 0) return editionRank;
+
+    const metadataRank = storedSeriesMetadataQualityRank(right) - storedSeriesMetadataQualityRank(left);
+    if (metadataRank !== 0) return metadataRank;
+
+    const providerRank = seriesPriceProviderRank(right.provider) - seriesPriceProviderRank(left.provider);
+    if (providerRank !== 0) return providerRank;
+
+    const leftChecked = Date.parse(left.lastCheckedAt || left.updatedAt || left.createdAt || '') || 0;
+    const rightChecked = Date.parse(right.lastCheckedAt || right.updatedAt || right.createdAt || '') || 0;
+    if (leftChecked !== rightChecked) return rightChecked - leftChecked;
+
+    return String(left.title || left.asin).localeCompare(String(right.title || right.asin), 'ja');
+  })[0] || null;
+}
+
+function isDroppableStoredSeriesDuplicate(book = {}, keep = {}, volume = 0, seriesKey = '') {
+  if (!book?.id || book.id === keep?.id) return false;
+  if (isNonBookSeriesCandidateItem(book)) return true;
+  if (isSupplementalSeriesBookTitle(book.title, book.seriesName)) return true;
+  if (alternativeEditionRank(book) > alternativeEditionRank(keep)) return true;
+
+  const bookTitleVolume = trustedVolumeFromStoredBookTitle(book);
+  const keepTitleVolume = trustedVolumeFromStoredBookTitle(keep);
+  if (!STALE_SERIES_EXPECTED_COUNT_OVERRIDES.has(seriesKey)) return false;
+  if (keepTitleVolume === volume && bookTitleVolume !== volume) return true;
+  if (
+    storedDuplicateTitleKey(book.title) &&
+    storedDuplicateTitleKey(book.title) === storedDuplicateTitleKey(keep.title) &&
+    storedSeriesMetadataQualityRank(keep) > storedSeriesMetadataQualityRank(book)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function storedSeriesMetadataQualityRank(book = {}) {
+  let rank = 0;
+  if (book.author) rank += 4;
+  if (book.publisher) rank += 2;
+  if (book.imageUrl || book.imageKey) rank += 1;
+  if (book.currentPrice != null) rank += 1;
+  return rank;
+}
+
+function storedDuplicateTitleKey(title) {
+  return seriesTitleComparisonStem(title);
+}
+
+function repairStaleStoredSeriesExpectedCounts(store, options = {}) {
+  const now = options.now || new Date().toISOString();
+  const groups = new Map();
+  for (const book of store.books || []) {
+    if (!isSeriesBookRecord(book)) continue;
+    const key = seriesGroupKeyForBook(book);
+    if (!key) continue;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(book);
+  }
+
+  let repaired = 0;
+  for (const [key, books] of groups.entries()) {
+    const expected = repairedSeriesExpectedCountForGroup(key, books);
+    if (!expected) continue;
+    for (const book of books) {
+      if (Number(book.seriesExpectedCount || 0) === expected) continue;
+      book.seriesExpectedCount = expected;
+      book.updatedAt = now;
+      repaired += 1;
+    }
+  }
+
+  return {
+    changed: repaired > 0,
+    repaired
+  };
+}
+
+function repairedSeriesExpectedCountForGroup(key, books = []) {
+  const override = STALE_SERIES_EXPECTED_COUNT_OVERRIDES.get(key);
+  if (override && shouldApplySeriesExpectedCountOverride(books, override)) return override;
+
+  const volumes = books.map(storedBookVolume).filter((volume) => Number.isFinite(volume) && volume > 0);
+  if (!books.some((book) => book.seriesCompleted)) return 0;
+  if (!isContiguousOneBasedVolumeSet(volumes, books.length)) return 0;
+  const maxVolume = Math.max(...volumes, 0);
+  const currentExpected = Math.max(...books.map((book) => Number(book.seriesExpectedCount || 0)), 0);
+  if (currentExpected <= maxVolume) return 0;
+  return maxVolume;
+}
+
+function shouldApplySeriesExpectedCountOverride(books = [], expected = 0) {
+  if (!expected || books.length === 0) return false;
+  const volumes = books.map(storedBookVolume).filter((volume) => Number.isFinite(volume) && volume > 0);
+  if (volumes.some((volume) => volume > expected)) return false;
+  if (books.length > expected) return false;
+  return isContiguousOneBasedVolumeSet(volumes, Math.min(books.length, expected));
+}
+
+function isContiguousOneBasedVolumeSet(volumes = [], expectedSize = 0) {
+  if (!expectedSize || volumes.length !== expectedSize) return false;
+  const unique = new Set(volumes);
+  if (unique.size !== volumes.length) return false;
+  for (let volume = 1; volume <= expectedSize; volume += 1) {
+    if (!unique.has(volume)) return false;
+  }
+  return true;
+}
+
 function normalizeExpectedCountForSeriesKeys(store, affectedKeys, now) {
   let expectedCountUpdated = 0;
   for (const key of affectedKeys || []) {
@@ -2500,6 +2810,8 @@ function shouldRepairStoredSeriesBookTitle(book, previousNames = []) {
 }
 
 function shouldCanonicalizeStoredSeriesBookTitle(book = {}) {
+  const fixup = STORED_SERIES_BOOK_FIXUPS.get(String(book.asin || '').toUpperCase());
+  if (fixup?.title && String(book.title || '').trim() === fixup.title) return false;
   if (!isSeriesDerivedPriceProvider(book.provider)) return false;
   if (!book.seriesName || storedBookVolume(book) <= 0) return false;
   const canonical = storedSeriesVolumeTitle(book.seriesName, storedBookVolume(book));
@@ -3074,14 +3386,14 @@ function seriesImageProviderRank(provider) {
 function mergeWithKnownSeriesItems(items, books, options) {
   const merged = new Map();
   for (const item of items) {
-    if (isSeriesNavigationPseudoItem(item)) continue;
+    if (isNonBookSeriesCandidateItem(item)) continue;
     if (item.asin) merged.set(item.asin, item);
   }
   const currentSeriesAsins = new Set(merged.keys());
 
   for (const book of books) {
     if (!isKnownBookForSeries(book, options) || merged.has(book.asin)) continue;
-    if (isSeriesNavigationPseudoItem(book)) continue;
+    if (isNonBookSeriesCandidateItem(book)) continue;
     if (isLikelyObsoleteSingleEpisodeSeriesBook(book, currentSeriesAsins, options.seriesName)) continue;
     merged.set(book.asin, seedFromExistingBook(book));
   }
@@ -3124,11 +3436,24 @@ function isSeriesNavigationPseudoItem(item = {}) {
   return isSeriesNavigationPseudoTitle(item.title);
 }
 
+function isNonBookSeriesCandidateItem(item = {}) {
+  return isSeriesNavigationPseudoItem(item) || isAmazonRatingOrReviewTitle(item.title);
+}
+
 function isSeriesNavigationPseudoTitle(title) {
   const value = String(title || '').normalize('NFKC').trim();
   return (
     /^全\s*[0-9]{1,4}\s*巻中\s*第\s*[0-9]{1,4}\s*巻\s*[:：]/u.test(value) ||
     /^Book\s+[0-9]{1,4}\s+of\s+[0-9]{1,4}\s*[:：]/i.test(value)
+  );
+}
+
+function isAmazonRatingOrReviewTitle(title) {
+  const value = String(title || '').normalize('NFKC').trim();
+  return (
+    /^5つ星のうち\s*[0-9](?:\.[0-9])?$/u.test(value) ||
+    /^[0-9,]+\s*(?:レビュー|ratings?|customer reviews?)$/iu.test(value) ||
+    /^カスタマーレビュー$/u.test(value)
   );
 }
 
@@ -3243,6 +3568,7 @@ function stripSeriesVolumeMarkers(value) {
   return String(value || '')
     .normalize('NFKC')
     .replace(/(?:第)?[0-9]{1,4}\s*巻/giu, ' ')
+    .replace(/[（(]\s*(?:上|中|下|前編|後編|完結編)\s*[）)]/gu, ' ')
     .replace(/[ (（]*[0-9]{1,4}[ )）]*$/u, ' ')
     .replace(/[ 　]*(?:上|中|下|前編|後編|完結編)\s*$/u, ' ');
 }
@@ -3304,6 +3630,40 @@ function seriesItemVolume(item) {
     return explicitVolume;
   }
   return titleVolume || explicitVolume || 0;
+}
+
+function trustedVolumeFromStoredBookTitle(book = {}) {
+  return trustedVolumeFromSeriesTitle(book.title, book.seriesName);
+}
+
+function trustedVolumeFromSeriesTitle(title, seriesName = '') {
+  const value = String(title || '').normalize('NFKC').trim();
+  if (!value || isNonBookSeriesCandidateItem({ title: value })) return 0;
+  if (/巻之|相当|[0-9０-９]{1,3}\s*[~〜～\-－]\s*[0-9０-９]{1,3}\s*巻/u.test(value)) return 0;
+
+  const seriesStem = seriesTitleComparisonStem(seriesName);
+  if (seriesStem && !seriesTitleComparisonStem(value).includes(seriesStem)) return 0;
+
+  const partVolume = volumeFromTerminalPartMarker(value);
+  if (partVolume) return partVolume;
+
+  const numericMatch =
+    value.match(/(?:第)?([0-9０-９]{1,3})\s*巻/u) ||
+    value.match(/[（(]\s*([0-9０-９]{1,3})\s*[）)](?:\s*[（(][^（）()]{0,80}[）)])?\s*$/u) ||
+    value.match(/(?:^|[\s　:：\-－ー—])([0-9０-９]{1,3})(?:\s*[）)]|\s*[（(][^（）()]{0,80}[）)]|\s*$)/u);
+  if (!numericMatch) return 0;
+  return Number(String(numericMatch[1]).replace(/[０-９]/g, (char) => String(char.charCodeAt(0) - 0xff10))) || 0;
+}
+
+function volumeFromTerminalPartMarker(title) {
+  const value = String(title || '').normalize('NFKC').trim();
+  const marker = value.match(/[（(]\s*(上|中|下|前編|後編)\s*[）)]/u)?.[1] ||
+    value.match(/(?:^|[\s　:：\-－ー—])(?:第)?(上|中|下|前編|後編)\s*$/u)?.[1];
+  if (!marker) return 0;
+  if (marker === '上' || marker === '前編') return 1;
+  if (marker === '中') return 2;
+  if (marker === '下' || marker === '後編') return 2;
+  return 0;
 }
 
 function volumeFromSeriesTitle(title) {
