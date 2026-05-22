@@ -42,6 +42,7 @@ const DISCOUNT_RECHECK_DEFAULT_HOURS = 24;
 const DISCOUNT_RECHECK_RATIO = 0.7;
 const PRICE_INTEGRITY_SERIES_OUTLIER_RATIO = 0.55;
 const LIST_PRICE_CHALLENGE_MAX_PER_SERIES = 2;
+const LIST_PRICE_CHALLENGE_SAMPLE_LIMIT = 10;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const STALE_SERIES_EXPECTED_COUNT_OVERRIDES = new Map([
   ['series:asin:B00E5V5JMY', 3], // Wet Moon
@@ -4403,6 +4404,8 @@ export async function runDueChecks(options = {}) {
           lastListPriceChallengeNotFound: listPriceChallenge?.notFound || 0,
           lastListPriceChallengeRejected: listPriceChallenge?.rejected || 0,
           lastListPriceChallengeErrors: listPriceChallenge?.errors?.length || 0,
+          lastListPriceChallengeSkippedRecentNotFound: listPriceChallenge?.skippedRecentNotFound || 0,
+          lastListPriceChallengeNotFoundSamples: listPriceChallenge?.notFoundSamples || [],
           lastListPriceChallengeStoppedByRuntimeLimit: Boolean(listPriceChallenge?.stoppedByRuntimeLimit),
           lastPriceIntegrityAuditChecked: priceIntegrityAudit?.checked || 0,
           lastPriceIntegrityAuditSuspicious: priceIntegrityAudit?.suspicious || 0,
@@ -5710,7 +5713,7 @@ function shouldRunListPriceChallenge(source, options = {}) {
 
 async function runListPriceChallengeInStore(store, results = [], options = {}) {
   const limit = clampNumber(options.settings?.listPriceChallengeBatchSize, 0, 50, 50);
-  const { books, eligible } = selectListPriceChallengeCandidates(store, results, limit);
+  const { books, eligible, skippedRecentNotFound } = selectListPriceChallengeCandidates(store, results, limit);
   const summary = {
     eligible,
     limit,
@@ -5718,8 +5721,10 @@ async function runListPriceChallengeInStore(store, results = [], options = {}) {
     updated: 0,
     notFound: 0,
     rejected: 0,
+    skippedRecentNotFound,
     skippedByLimit: Math.max(0, eligible - books.length),
     stoppedByRuntimeLimit: false,
+    notFoundSamples: [],
     rejectionBreakdown: [],
     errors: []
   };
@@ -5756,12 +5761,15 @@ async function runListPriceChallengeInStore(store, results = [], options = {}) {
       });
       const listPrice = trustedListPriceFor(book.currentPrice, snapshot.listPrice, snapshot.provider);
       if (listPrice == null) {
+        recordListPriceChallengeAttempt(book, now, 'not_found');
+        pushListPriceChallengeNotFoundSample(summary, book, snapshot);
         summary.notFound += 1;
         continue;
       }
 
       const validation = validateListPriceChallengeCandidate(book, listPrice, store);
       if (!validation.ok) {
+        recordListPriceChallengeAttempt(book, now, 'rejected');
         summary.rejected += 1;
         incrementListPriceChallengeRejection(summary, validation.reason);
         continue;
@@ -5770,6 +5778,7 @@ async function runListPriceChallengeInStore(store, results = [], options = {}) {
       applyListPriceChallengeResult(book, listPrice, snapshot.provider, now);
       summary.updated += 1;
     } catch (error) {
+      recordListPriceChallengeAttempt(book, now, 'error');
       pushListPriceChallengeError(summary, book, error);
     } finally {
       runtime.cleanup();
@@ -5783,6 +5792,8 @@ export function selectListPriceChallengeCandidates(store = {}, results = [], lim
   const booksById = new Map((store.books || []).map((book) => [book.id, book]));
   const seen = new Set();
   const candidates = [];
+  let skippedRecentNotFound = 0;
+  const nowMs = Date.now();
 
   for (const result of results || []) {
     const id = result?.book?.id;
@@ -5793,23 +5804,28 @@ export function selectListPriceChallengeCandidates(store = {}, results = [], lim
     if (!book) continue;
     if (!hasTrustedCurrentPrice(book)) continue;
     if (hasDirectStoredListPrice(book)) continue;
+    if (isRecentListPriceChallengeNotFound(book, nowMs)) {
+      skippedRecentNotFound += 1;
+      continue;
+    }
     candidates.push(book);
   }
 
   const normalizedLimit = clampNumber(limit, 0, 50, 50);
-  const books = spreadListPriceChallengeCandidates(candidates, normalizedLimit);
+  const books = spreadListPriceChallengeCandidates(candidates, normalizedLimit, store);
   return {
     eligible: candidates.length,
+    skippedRecentNotFound,
     books
   };
 }
 
-function spreadListPriceChallengeCandidates(candidates = [], limit = 50) {
+function spreadListPriceChallengeCandidates(candidates = [], limit = 50, store = {}) {
   const normalizedLimit = clampNumber(limit, 0, 50, 50);
   if (normalizedLimit <= 0 || candidates.length === 0) return [];
 
   const buckets = new Map();
-  for (const book of candidates) {
+  for (const book of orderedListPriceChallengeCandidates(candidates, store)) {
     const key = listPriceChallengeScopeKey(book);
     if (!buckets.has(key)) buckets.set(key, []);
     buckets.get(key).push(book);
@@ -5825,6 +5841,44 @@ function spreadListPriceChallengeCandidates(candidates = [], limit = 50) {
     }
   }
   return selected;
+}
+
+function orderedListPriceChallengeCandidates(candidates = [], store = {}) {
+  return candidates
+    .map((book, index) => ({
+      book,
+      index,
+      priority: listPriceChallengeCandidatePriority(book, store)
+    }))
+    .sort((left, right) => {
+      if (left.priority.observedDiscountScore !== right.priority.observedDiscountScore) {
+        return right.priority.observedDiscountScore - left.priority.observedDiscountScore;
+      }
+      if (left.priority.notFoundCount !== right.priority.notFoundCount) {
+        return left.priority.notFoundCount - right.priority.notFoundCount;
+      }
+      if (left.priority.lastAttemptedAt !== right.priority.lastAttemptedAt) {
+        if (!left.priority.lastAttemptedAt) return -1;
+        if (!right.priority.lastAttemptedAt) return 1;
+        return left.priority.lastAttemptedAt - right.priority.lastAttemptedAt;
+      }
+      return left.index - right.index;
+    })
+    .map((entry) => entry.book);
+}
+
+function listPriceChallengeCandidatePriority(book = {}, store = {}) {
+  const current = nullableNumber(book.effectivePrice ?? book.currentPrice);
+  const history = listPriceChallengeHistoryContext(book, store);
+  const observedDiscountScore =
+    current != null && history.maxObserved != null && history.maxObserved > 0
+      ? Math.max(0, (history.maxObserved - current) / history.maxObserved)
+      : 0;
+  return {
+    observedDiscountScore,
+    notFoundCount: Math.max(0, floorNumber(book.listPriceNotFoundCount, 0, 0)),
+    lastAttemptedAt: timestampMs(book.listPriceLastAttemptedAt)
+  };
 }
 
 function listPriceChallengeScopeKey(book = {}) {
@@ -5894,7 +5948,35 @@ function listPriceChallengeHistoryContext(book = {}, store = {}) {
 function applyListPriceChallengeResult(book, listPrice, provider, now) {
   book.listPrice = listPrice;
   book.listPriceProvider = provider || 'amazon_html';
+  recordListPriceChallengeAttempt(book, now, 'updated');
   book.updatedAt = now;
+}
+
+function recordListPriceChallengeAttempt(book, now, status) {
+  book.listPriceLastAttemptedAt = now;
+  book.listPriceLastAttemptStatus = status;
+  if (status === 'not_found') {
+    book.listPriceLastNotFoundAt = now;
+    book.listPriceNotFoundCount = Math.max(0, floorNumber(book.listPriceNotFoundCount, 0, 0)) + 1;
+    return;
+  }
+  if (status === 'updated') {
+    book.listPriceLastNotFoundAt = '';
+    book.listPriceNotFoundCount = 0;
+  }
+}
+
+function isRecentListPriceChallengeNotFound(book = {}, nowMs = Date.now()) {
+  const retryMs = listPriceChallengeNotFoundRetryMs();
+  if (retryMs <= 0) return false;
+  const lastNotFoundAt = timestampMs(book.listPriceLastNotFoundAt);
+  if (!lastNotFoundAt) return false;
+  return nowMs - lastNotFoundAt < retryMs;
+}
+
+function listPriceChallengeNotFoundRetryMs() {
+  const hours = floorNumber(process.env.LIST_PRICE_NOT_FOUND_RETRY_HOURS, 0, 168);
+  return hours * 60 * 60 * 1000;
 }
 
 function incrementListPriceChallengeRejection(summary, reason) {
@@ -5905,6 +5987,28 @@ function incrementListPriceChallengeRejection(summary, reason) {
   } else {
     summary.rejectionBreakdown.push({ reason: normalized, count: 1 });
   }
+}
+
+function pushListPriceChallengeNotFoundSample(summary, book, snapshot = {}) {
+  if (summary.notFoundSamples.length >= LIST_PRICE_CHALLENGE_SAMPLE_LIMIT) return;
+  summary.notFoundSamples.push({
+    asin: book.asin || '',
+    title: truncateSummaryText(book.title || '', 80),
+    currentPrice: nullableNumber(book.currentPrice),
+    effectivePrice: nullableNumber(book.effectivePrice ?? book.currentPrice),
+    provider: snapshot?.provider || '',
+    rawListPrice: nullableNumber(snapshot?.listPrice),
+    reason: listPriceChallengeNotFoundReason(book, snapshot)
+  });
+}
+
+function listPriceChallengeNotFoundReason(book = {}, snapshot = {}) {
+  const rawListPrice = nullableNumber(snapshot?.listPrice);
+  if (rawListPrice == null) return 'list_price_missing';
+  if (isSeriesDerivedPriceProvider(snapshot?.provider || '')) return 'series_derived_provider';
+  const currentPrice = nullableNumber(book.currentPrice);
+  if (currentPrice != null && rawListPrice <= currentPrice) return 'not_above_current_price';
+  return 'untrusted_list_price';
 }
 
 function pushListPriceChallengeError(summary, book, error) {
@@ -6227,9 +6331,11 @@ function cronSummaryPayload(result, context = {}) {
           updated: result.listPriceChallenge.updated || 0,
           notFound: result.listPriceChallenge.notFound || 0,
           rejected: result.listPriceChallenge.rejected || 0,
+          skippedRecentNotFound: result.listPriceChallenge.skippedRecentNotFound || 0,
           skippedByLimit: result.listPriceChallenge.skippedByLimit || 0,
           stoppedByRuntimeLimit: Boolean(result.listPriceChallenge.stoppedByRuntimeLimit),
           errors: result.listPriceChallenge.errors?.length || 0,
+          notFoundSamples: result.listPriceChallenge.notFoundSamples || [],
           rejectionBreakdown: result.listPriceChallenge.rejectionBreakdown || []
         }
       : null,
@@ -8023,6 +8129,7 @@ function hasListPriceChallengeWork(listPriceChallenge = null) {
       listPriceChallenge.updated > 0 ||
       listPriceChallenge.rejected > 0 ||
       listPriceChallenge.notFound > 0 ||
+      listPriceChallenge.skippedRecentNotFound > 0 ||
       listPriceChallenge.stoppedByRuntimeLimit ||
       (Array.isArray(listPriceChallenge.errors) && listPriceChallenge.errors.length > 0)
   );

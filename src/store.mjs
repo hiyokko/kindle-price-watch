@@ -55,6 +55,8 @@ const defaultStore = {
     lastListPriceChallengeNotFound: 0,
     lastListPriceChallengeRejected: 0,
     lastListPriceChallengeErrors: 0,
+    lastListPriceChallengeSkippedRecentNotFound: 0,
+    lastListPriceChallengeNotFoundSamples: [],
     lastListPriceChallengeStoppedByRuntimeLimit: false
   },
   checkCursor: {

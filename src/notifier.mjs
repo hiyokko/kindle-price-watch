@@ -311,6 +311,9 @@ function listPriceChallengeSummaryText(summary = {}) {
   if (Number(summary.skippedByLimit || 0) > 0) {
     parts.push(`上限超過 ${Number(summary.skippedByLimit || 0).toLocaleString('ja-JP')}`);
   }
+  if (Number(summary.skippedRecentNotFound || 0) > 0) {
+    parts.push(`再試行待ち ${Number(summary.skippedRecentNotFound || 0).toLocaleString('ja-JP')}`);
+  }
   if (summary.stoppedByRuntimeLimit) parts.push('時間切れ');
 
   const rejectionText = Array.isArray(summary.rejectionBreakdown) && summary.rejectionBreakdown.length > 0
@@ -319,7 +322,13 @@ function listPriceChallengeSummaryText(summary = {}) {
         .map((entry) => `${listPriceChallengeRejectionLabel(entry.reason)} ${Number(entry.count || 0).toLocaleString('ja-JP')}`)
         .join(' / ')}`
     : '';
-  return `${parts.join(' / ')}${rejectionText}`;
+  const notFoundText = Array.isArray(summary.notFoundSamples) && summary.notFoundSamples.length > 0
+    ? `\n未検出例: ${summary.notFoundSamples
+        .slice(0, 3)
+        .map((entry) => compactSummaryTitle(entry.title || entry.asin || '不明'))
+        .join(' / ')}`
+    : '';
+  return `${parts.join(' / ')}${rejectionText}${notFoundText}`;
 }
 
 function listPriceChallengeRejectionLabel(reason = '') {
@@ -331,6 +340,11 @@ function listPriceChallengeRejectionLabel(reason = '') {
     below_price_history: '履歴下限割れ'
   };
   return labels[reason] || reason || '除外';
+}
+
+function compactSummaryTitle(value = '') {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  return text.length > 26 ? `${text.slice(0, 25)}…` : text;
 }
 
 function formatPriceLine(book) {

@@ -1571,6 +1571,63 @@ test('list price challenge only targets successful current-price checks without 
   assert.deepEqual(selected.books.map((book) => book.id), ['target']);
 });
 
+test('list price challenge skips recently not-found candidates', () => {
+  const recent = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  const old = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString();
+  const store = {
+    books: [
+      {
+        ...challengeBook('recent-not-found', ''),
+        listPriceLastNotFoundAt: recent,
+        listPriceNotFoundCount: 1
+      },
+      {
+        ...challengeBook('old-not-found', ''),
+        listPriceLastNotFoundAt: old,
+        listPriceNotFoundCount: 1
+      }
+    ]
+  };
+
+  const selected = selectListPriceChallengeCandidates(
+    store,
+    store.books.map((book) => ({ ok: true, book: { id: book.id } })),
+    50
+  );
+
+  assert.equal(selected.eligible, 1);
+  assert.equal(selected.skippedRecentNotFound, 1);
+  assert.deepEqual(selected.books.map((book) => book.id), ['old-not-found']);
+});
+
+test('list price challenge prioritizes books with observed discount evidence', () => {
+  const discounted = {
+    ...challengeBook('observed-drop', ''),
+    currentPrice: 300,
+    effectivePrice: 297
+  };
+  const store = {
+    books: [challengeBook('flat-price', ''), discounted],
+    priceHistory: [
+      {
+        bookId: discounted.id,
+        asin: discounted.asin,
+        price: 1000,
+        effectivePrice: 990,
+        provider: 'amazon_html'
+      }
+    ]
+  };
+
+  const selected = selectListPriceChallengeCandidates(
+    store,
+    store.books.map((book) => ({ ok: true, book: { id: book.id } })),
+    50
+  );
+
+  assert.deepEqual(selected.books.map((book) => book.id), ['observed-drop', 'flat-price']);
+});
+
 test('list price challenge spreads attempts across series before trying more volumes', () => {
   const books = [
     ...Array.from({ length: 5 }, (_, index) => challengeBook(`a-${index + 1}`, 'series-a')),
