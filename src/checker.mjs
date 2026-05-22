@@ -580,7 +580,10 @@ async function dropFutureReleaseNewSeriesItems(items = [], store = {}, errors = 
   if (targets.length === 0) return items;
 
   const droppedAsins = new Set();
-  const knownMaxVolume = maxKnownSeriesVolume(store, options);
+  const knownMaxVolume = Math.max(
+    maxKnownSeriesVolume(store, options),
+    maxConfirmedSeriesItemVolume(items, options.seriesName)
+  );
   const targetAsins = new Set(targets.map((item) => item.asin).filter(Boolean));
   for (const item of targets) {
     try {
@@ -601,6 +604,11 @@ async function dropFutureReleaseNewSeriesItems(items = [], store = {}, errors = 
         continue;
       }
       Object.assign(item, mergeAmazonSnapshotIntoSeriesItem(item, snapshot));
+      if (isUnvalidatedSyntheticTailSeriesItem(item, options.seriesName, knownMaxVolume)) {
+        droppedAsins.add(item.asin);
+        errors.push(`${item.asin}: deferred unvalidated tail candidate (${item.title})`);
+        continue;
+      }
     } catch (error) {
       if (isUnvalidatedSyntheticTailSeriesItem(item, options.seriesName, knownMaxVolume)) {
         droppedAsins.add(item.asin);
@@ -645,10 +653,26 @@ function maxKnownSeriesVolume(store = {}, options = {}) {
   return volumes.length ? Math.max(...volumes) : 0;
 }
 
+function maxConfirmedSeriesItemVolume(items = [], seriesName = '') {
+  const volumes = items
+    .map((item) => confirmedSeriesItemVolume(item, seriesName))
+    .filter((volume) => Number.isFinite(volume) && volume > 0);
+  return volumes.length ? Math.max(...volumes) : 0;
+}
+
+function confirmedSeriesItemVolume(item = {}, seriesName = '') {
+  if (!item?.asin || isUnresolvedAsinPlaceholderTitle(item.title, item.asin)) return 0;
+  if (isNonBookSeriesCandidateItem(item)) return 0;
+  if (isSupplementalSeriesBookTitle(item.title, seriesName || item.seriesName)) return 0;
+  if (isClearlyDifferentSeriesTitle(item.title, seriesName || item.seriesName)) return 0;
+  return trustedVolumeFromSeriesTitle(item.title, seriesName || item.seriesName);
+}
+
 function isUnvalidatedSyntheticTailSeriesItem(item = {}, seriesName = '', knownMaxVolume = 0) {
   const volume = seriesItemVolume(item);
   if (!volume || volume <= knownMaxVolume || knownMaxVolume < 3) return false;
-  if (!isSyntheticSeriesVolumeTitle(item.title, seriesName, volume)) return false;
+  if (!isUnvalidatedSyntheticTailTitle(item, seriesName, volume)) return false;
+  if (isUnresolvedAsinPlaceholderTitle(item.title, item.asin) && nullableNumber(item.currentPrice) == null) return true;
 
   const provider = String(item.provider || '').toLowerCase();
   return (
@@ -661,6 +685,21 @@ function isUnvalidatedSyntheticTailSeriesItem(item = {}, seriesName = '', knownM
     isUnvalidatedSeriesPriceProvider(provider) ||
     item.imageSource === 'series_fallback'
   );
+}
+
+function isUnvalidatedSyntheticTailTitle(item = {}, seriesName = '', volume = 0) {
+  return (
+    isSyntheticSeriesVolumeTitle(item.title, seriesName, volume) ||
+    isUnresolvedAsinPlaceholderTitle(item.title, item.asin)
+  );
+}
+
+function isUnresolvedAsinPlaceholderTitle(title = '', asin = '') {
+  const value = String(title || '').trim();
+  const normalizedAsin = String(asin || '').trim().toUpperCase();
+  if (!value) return true;
+  const match = value.match(/^ASIN\s+([A-Z0-9]{10})$/i);
+  return Boolean(match && (!normalizedAsin || match[1].toUpperCase() === normalizedAsin));
 }
 
 function isSyntheticSeriesVolumeTitle(title, seriesName, volume) {
@@ -2527,7 +2566,8 @@ function repairUnvalidatedSyntheticTailSeriesItems(store, options = {}) {
 function isUnvalidatedSyntheticStoredSeriesItem(book = {}) {
   const volume = storedBookVolume(book);
   if (!volume) return false;
-  if (!isSyntheticSeriesVolumeTitle(book.title, book.seriesName, volume)) return false;
+  if (!isUnvalidatedSyntheticTailTitle(book, book.seriesName, volume)) return false;
+  if (isUnresolvedAsinPlaceholderTitle(book.title, book.asin) && book.currentPrice == null) return true;
   if (book.currentPrice == null) return true;
 
   const provider = String(book.provider || '').toLowerCase();

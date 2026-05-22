@@ -1015,6 +1015,69 @@ test('store repair removes unvalidated synthetic tail volumes re-added by an old
   assert.equal(store.books.some((book) => book.asin === 'B00JDYKLPS' || book.asin === 'B01DLJNQK2'), false);
 });
 
+test('store repair removes unresolved ASIN placeholder tail volumes from a series', () => {
+  const store = {
+    books: [
+      ...Array.from({ length: 8 }, (_, index) => ({
+        id: `aju-${index + 1}`,
+        asin: `B00AJU${String(index + 1).padStart(4, '0')}`,
+        title: `亜獣譚（${index + 1}） (マンガワンコミックス)`,
+        seriesName: '亜獣譚',
+        seriesKey: 'series:asin:B07876DFH4',
+        sourceUrl: 'https://www.amazon.co.jp/kindle-dbs/product/B07876DFH4',
+        seriesExpectedCount: 13,
+        importMode: 'kindle_series',
+        volume: index + 1,
+        currentPrice: 649,
+        currentPoints: 0,
+        effectivePrice: 649
+      })),
+      ...[9, 10, 11, 12, 13].map((volume) => ({
+        id: `aju-placeholder-${volume}`,
+        asin: `B0PLACE${String(volume).padStart(3, '0')}`,
+        title: `ASIN B0PLACE${String(volume).padStart(3, '0')}`,
+        seriesName: '亜獣譚',
+        seriesKey: 'series:asin:B07876DFH4',
+        sourceUrl: 'https://www.amazon.co.jp/kindle-dbs/product/B07876DFH4',
+        seriesExpectedCount: 13,
+        importMode: 'kindle_series',
+        volume,
+        currentPrice: null,
+        currentPoints: 0,
+        effectivePrice: null,
+        provider: 'pending_series',
+        lastError: 'シリーズ価格補完: Amazon HTMLで価格補完できませんでした'
+      }))
+    ],
+    priceHistory: [
+      {
+        id: 'history-aju-placeholder',
+        bookId: 'aju-placeholder-9',
+        asin: 'B0PLACE009',
+        checkedAt: '2026-05-22T00:00:00.000Z'
+      }
+    ],
+    notifications: [
+      { id: 'notification-aju-placeholder', bookId: 'aju-placeholder-10', asin: 'B0PLACE010', status: 'pending' }
+    ],
+    seriesPriceHistory: []
+  };
+
+  const summary = repairStorePriceState(store, {
+    clearCurrent: false,
+    now: '2026-05-22T10:00:00.000Z'
+  });
+
+  const ajuBooks = store.books.filter((book) => book.seriesName === '亜獣譚');
+  assert.equal(summary.changed, true);
+  assert.equal(summary.removedUnvalidatedSeriesTailItems, 5);
+  assert.equal(summary.removedHistory, 1);
+  assert.equal(summary.removedNotifications, 1);
+  assert.equal(ajuBooks.length, 8);
+  assert.deepEqual(ajuBooks.map((book) => book.volume), [1, 2, 3, 4, 5, 6, 7, 8]);
+  assert.deepEqual([...new Set(ajuBooks.map((book) => book.seriesExpectedCount))], [8]);
+});
+
 test('store repair lowers stale expected count for completed contiguous series', () => {
   const store = {
     books: Array.from({ length: 7 }, (_, index) => ({
