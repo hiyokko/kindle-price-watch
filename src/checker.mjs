@@ -2759,6 +2759,9 @@ function repairedSeriesExpectedCountForGroup(key, books = []) {
   const override = STALE_SERIES_EXPECTED_COUNT_OVERRIDES.get(key);
   if (override && shouldApplySeriesExpectedCountOverride(books, override)) return override;
 
+  const childSourceExpected = repairedChildSourceSeriesExpectedCount(books);
+  if (childSourceExpected) return childSourceExpected;
+
   const volumes = books.map(storedBookVolume).filter((volume) => Number.isFinite(volume) && volume > 0);
   if (!books.some((book) => book.seriesCompleted)) return 0;
   if (!isContiguousOneBasedVolumeSet(volumes, books.length)) return 0;
@@ -2766,6 +2769,35 @@ function repairedSeriesExpectedCountForGroup(key, books = []) {
   const currentExpected = Math.max(...books.map((book) => Number(book.seriesExpectedCount || 0)), 0);
   if (currentExpected <= maxVolume) return 0;
   return maxVolume;
+}
+
+function repairedChildSourceSeriesExpectedCount(books = []) {
+  if (books.length < 2) return 0;
+
+  const volumes = books.map(storedBookVolume).filter((volume) => Number.isFinite(volume) && volume > 0);
+  if (!isContiguousOneBasedVolumeSet(volumes, books.length)) return 0;
+
+  const maxVolume = Math.max(...volumes, 0);
+  const currentExpected = Math.max(...books.map((book) => Number(book.seriesExpectedCount || 0)), 0);
+  if (currentExpected !== maxVolume + 1) return 0;
+
+  const bookAsins = new Set(books.map((book) => String(book.asin || '').toUpperCase()).filter(Boolean));
+  const sourceAsins = new Set();
+  for (const book of books) {
+    const sourceAsin = extractAsin(book.sourceUrl || '');
+    if (sourceAsin) sourceAsins.add(sourceAsin);
+    const keyAsin = String(book.seriesKey || '').match(/^series:asin:([A-Z0-9]{10})$/i)?.[1]?.toUpperCase();
+    if (keyAsin) sourceAsins.add(keyAsin);
+  }
+
+  for (const sourceAsin of sourceAsins) {
+    if (!bookAsins.has(sourceAsin)) continue;
+    const sourceBook = books.find((book) => String(book.asin || '').toUpperCase() === sourceAsin);
+    if (storedBookVolume(sourceBook) !== 1) continue;
+    return maxVolume;
+  }
+
+  return 0;
 }
 
 function shouldApplySeriesExpectedCountOverride(books = [], expected = 0) {

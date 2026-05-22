@@ -563,6 +563,37 @@ test('resolved collection ASIN replaces a child-ASIN kindle-dbs input', () => {
   assert.equal(seriesSourceUrlFor(input, series), 'https://www.amazon.co.jp/kindle-dbs/product/B0DHHL7Y1S');
 });
 
+test('store repair lowers stale expected count when the series source is the first volume ASIN', () => {
+  const store = {
+    books: Array.from({ length: 4 }, (_, index) => ({
+      id: `kenka-${index + 1}`,
+      asin: `B00A7660${index + 1}A`,
+      title: `喧嘩商売 ${index + 1}`,
+      seriesName: '喧嘩商売',
+      seriesKey: 'series:asin:B00A76601A',
+      sourceUrl: 'https://www.amazon.co.jp/kindle-dbs/product/B00A76601A',
+      seriesExpectedCount: 5,
+      importMode: 'kindle_series',
+      volume: index + 1,
+      currentPrice: 792,
+      currentPoints: 0,
+      effectivePrice: 792
+    })),
+    priceHistory: [],
+    notifications: [],
+    seriesPriceHistory: []
+  };
+
+  const summary = repairStorePriceState(store, {
+    clearCurrent: false,
+    now: '2026-05-22T10:30:00.000Z'
+  });
+
+  assert.equal(summary.changed, true);
+  assert.equal(summary.repairedSeriesExpectedCounts, 4);
+  assert.deepEqual([...new Set(store.books.map((book) => book.seriesExpectedCount))], [4]);
+});
+
 test('store repair removes Amazon reader series navigation pseudo items', () => {
   const store = {
     books: [
