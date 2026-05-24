@@ -270,17 +270,19 @@ function renderSummary() {
   els.bestCount.setAttribute('aria-pressed', String(state.activeFilter === 'best'));
   els.discordState.textContent = discordSummaryText();
   els.discordState.title = 'Webhookを編集';
-  els.cronState.textContent = cronSummary(state.automation);
-  els.cronState.disabled = lastCronNewReleaseCount(state.automation) === 0;
+  const newReleaseCount = newReleaseBooksFromLastCron(state.books, state.automation).length;
+  els.cronState.textContent = cronSummary(state.automation, state.books);
+  els.cronState.disabled = newReleaseCount === 0;
   els.cronState.classList.toggle('active', state.activeFilter === 'new');
   els.cronState.setAttribute('aria-pressed', String(state.activeFilter === 'new'));
-  els.cronState.title = lastCronNewReleaseCount(state.automation) > 0
+  els.cronState.title = newReleaseCount > 0
     ? '直近の自動実行で追加された新刊のみ表示'
     : '直近の自動実行で追加された新刊はありません';
 }
 
 function setBookFilter(filter) {
-  state.activeFilter = filter === 'new' && lastCronNewReleaseCount(state.automation) === 0 ? 'all' : filter;
+  const newReleaseCount = newReleaseBooksFromLastCron(state.books, state.automation).length;
+  state.activeFilter = filter === 'new' && newReleaseCount === 0 ? 'all' : filter;
   state.selectedBookIds.clear();
   renderBooks();
   renderBulkControls();
@@ -1303,23 +1305,29 @@ function relativeTime(value) {
   return `${days}日前`;
 }
 
-function cronSummary(automation) {
+function cronSummary(automation, books = null) {
   if (!automation?.lastCronStartedAt && !automation?.lastCronFinishedAt) return '未実行';
   if (automation.lastCronError) return 'エラー';
   const checked = Number(automation.lastCronChecked || 0);
-  const added = Number(automation.lastSeriesDiscoveryAdded || 0);
+  const added = Array.isArray(books) ? newReleaseBooksFromLastCron(books, automation).length : lastCronNewReleaseCount(automation);
   const time = relativeTime(automation.lastCronFinishedAt || automation.lastCronStartedAt);
   return `${time} / ${checked}冊${added > 0 ? ` / 新刊${added}冊` : ''}`;
 }
 
 function lastCronNewReleaseCount(automation) {
+  const additions = explicitLastCronNewReleaseAdditions(automation);
+  if (additions) return additions.length;
   const count = Number(automation?.lastSeriesDiscoveryAdded || 0);
   return Number.isFinite(count) && count > 0 ? Math.floor(count) : 0;
 }
 
 function newReleaseBooksFromLastCron(books, automation) {
+  if (!Array.isArray(books) || books.length === 0) return [];
+  const additions = explicitLastCronNewReleaseAdditions(automation);
+  if (additions) return newReleaseBooksFromExplicitAdditions(books, additions);
+
   const count = lastCronNewReleaseCount(automation);
-  if (count === 0 || !Array.isArray(books) || books.length === 0) return [];
+  if (count === 0) return [];
 
   const window = lastCronTimestampWindow(automation);
   if (!window) return [];
@@ -1328,6 +1336,26 @@ function newReleaseBooksFromLastCron(books, automation) {
     .filter((book) => isLastCronSeriesDiscoveryAddition(book, window))
     .sort(compareLastCronNewReleaseBooks)
     .slice(0, count);
+}
+
+function explicitLastCronNewReleaseAdditions(automation) {
+  if (!Array.isArray(automation?.lastSeriesDiscoveryAdditions)) return null;
+  return automation.lastSeriesDiscoveryAdditions.filter((entry) => entry && (entry.id || entry.asin));
+}
+
+function newReleaseBooksFromExplicitAdditions(books, additions) {
+  if (additions.length === 0) return [];
+  const byId = new Map(books.map((book) => [book.id, book]));
+  const byAsin = new Map(books.map((book) => [book.asin, book]));
+  const seen = new Set();
+  const result = [];
+  for (const entry of additions) {
+    const book = (entry.id && byId.get(entry.id)) || (entry.asin && byAsin.get(entry.asin));
+    if (!book || seen.has(book.id || book.asin)) continue;
+    seen.add(book.id || book.asin);
+    result.push(book);
+  }
+  return result.sort(compareLastCronNewReleaseBooks);
 }
 
 function lastCronTimestampWindow(automation) {

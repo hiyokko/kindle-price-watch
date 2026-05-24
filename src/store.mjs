@@ -39,6 +39,7 @@ const defaultStore = {
     lastImportQueueErrors: 0,
     lastSeriesDiscoveryChecked: 0,
     lastSeriesDiscoveryAdded: 0,
+    lastSeriesDiscoveryAdditions: [],
     lastSeriesDiscoveryCompleted: 0,
     lastSeriesDiscoverySkipped: 0,
     lastSeriesDiscoveryDeferred: 0,
@@ -308,10 +309,30 @@ function normalizeImportQueue(queue) {
 }
 
 function normalizeAutomation(automation) {
-  return {
+  const merged = {
     ...defaultStore.automation,
     ...(automation || {})
   };
+  return {
+    ...merged,
+    lastSeriesDiscoveryAdditions: normalizeSeriesDiscoveryAdditions(merged.lastSeriesDiscoveryAdditions)
+  };
+}
+
+function normalizeSeriesDiscoveryAdditions(additions) {
+  if (!Array.isArray(additions)) return [];
+  return additions
+    .filter((entry) => entry && (entry.id || entry.asin))
+    .slice(0, 50)
+    .map((entry) => ({
+      id: entry.id ? String(entry.id) : '',
+      asin: entry.asin ? String(entry.asin) : '',
+      title: entry.title ? String(entry.title) : '',
+      seriesName: entry.seriesName ? String(entry.seriesName) : '',
+      sourceUrl: entry.sourceUrl ? String(entry.sourceUrl) : '',
+      createdAt: entry.createdAt || '',
+      seriesLastDiscoveredAt: entry.seriesLastDiscoveredAt || ''
+    }));
 }
 
 function hasBlobConfig() {

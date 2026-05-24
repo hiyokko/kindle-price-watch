@@ -307,6 +307,66 @@ test('last cron new releases are inferred from series discovery additions', () =
   );
 });
 
+test('last cron new releases use stored addition identities when available', () => {
+  const { newReleaseBooksFromLastCron, lastCronNewReleaseCount } = loadAppSortContext();
+  const automation = {
+    lastCronStartedAt: '2026-05-12T09:28:35.000Z',
+    lastCronFinishedAt: '2026-05-12T14:25:52.000Z',
+    lastSeriesDiscoveryAdded: 3,
+    lastSeriesDiscoveryAdditions: [
+      { id: 'new-1', asin: 'B000000001' },
+      { id: 'removed', asin: 'B000000099' },
+      { asin: 'B000000002' }
+    ]
+  };
+  const books = [
+    {
+      id: 'new-1',
+      asin: 'B000000001',
+      title: '新刊1',
+      importMode: 'kindle_series',
+      createdAt: '2026-05-01T00:00:00.000Z',
+      seriesLastDiscoveredAt: '2026-05-12T10:00:00.000Z'
+    },
+    {
+      id: 'new-2',
+      asin: 'B000000002',
+      title: '新刊2',
+      importMode: 'kindle_series',
+      createdAt: '2026-05-02T00:00:00.000Z',
+      seriesLastDiscoveredAt: '2026-05-12T11:00:00.000Z'
+    }
+  ];
+
+  assert.equal(lastCronNewReleaseCount(automation), 3);
+  assert.deepEqual(
+    Array.from(newReleaseBooksFromLastCron(books, automation).map((book) => book.id)),
+    ['new-2', 'new-1']
+  );
+});
+
+test('last cron new releases do not fall back to stale raw counts when stored additions are empty', () => {
+  const { newReleaseBooksFromLastCron, lastCronNewReleaseCount } = loadAppSortContext();
+  const automation = {
+    lastCronStartedAt: '2026-05-12T09:28:35.000Z',
+    lastCronFinishedAt: '2026-05-12T14:25:52.000Z',
+    lastSeriesDiscoveryAdded: 1,
+    lastSeriesDiscoveryAdditions: []
+  };
+  const books = [
+    {
+      id: 'legacy-match',
+      title: '旧ロジックなら拾われる本',
+      importMode: 'kindle_series',
+      createdAt: '2026-05-12T10:00:00.000Z',
+      seriesLastDiscoveredAt: '2026-05-12T10:00:00.000Z'
+    }
+  ];
+
+  assert.equal(lastCronNewReleaseCount(automation), 0);
+  assert.deepEqual(Array.from(newReleaseBooksFromLastCron(books, automation)), []);
+});
+
 test('discount sort uses completeness and coverage only as tie breakers', () => {
   const { compareGroupsByDiscountRate } = loadAppSortContext();
   const complete = {

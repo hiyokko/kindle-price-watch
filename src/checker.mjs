@@ -4424,6 +4424,14 @@ export async function runDueChecks(options = {}) {
     });
     const remainingDue = countDueBooks(store.books, scheduleNow);
     const finishedAt = new Date().toISOString();
+    const seriesDiscoveryAdditions = seriesDiscoveryAdditionsForAutomation(store, seriesDiscovery);
+    const persistedSeriesDiscovery = seriesDiscovery
+      ? {
+          ...seriesDiscovery,
+          added: seriesDiscoveryAdditions.length,
+          additions: seriesDiscoveryAdditions
+        }
+      : seriesDiscovery;
     const result = {
       checked: results.length,
       remainingDue,
@@ -4436,7 +4444,7 @@ export async function runDueChecks(options = {}) {
       scheduledNominalAt: scheduleIntent?.nominalAt || '',
       executionBoundaryAt: scheduleIntent?.executionBoundaryAt || '',
       importQueue,
-      seriesDiscovery,
+      seriesDiscovery: persistedSeriesDiscovery,
       listPriceChallenge,
       priceIntegrityAudit,
       checkErrorSummary,
@@ -4464,12 +4472,13 @@ export async function runDueChecks(options = {}) {
           lastImportQueueProcessed: importQueue?.processed || 0,
           lastImportQueueImported: importQueue?.imported || 0,
           lastImportQueueErrors: importQueue?.errors?.length || 0,
-          lastSeriesDiscoveryChecked: seriesDiscovery?.checked || 0,
-          lastSeriesDiscoveryAdded: seriesDiscovery?.added || 0,
-          lastSeriesDiscoveryCompleted: seriesDiscovery?.completed || 0,
-          lastSeriesDiscoverySkipped: seriesDiscovery?.skippedNoRun || 0,
-          lastSeriesDiscoveryDeferred: seriesDiscovery?.deferred || 0,
-          lastSeriesDiscoveryErrors: seriesDiscovery?.errors?.length || 0,
+          lastSeriesDiscoveryChecked: persistedSeriesDiscovery?.checked || 0,
+          lastSeriesDiscoveryAdded: persistedSeriesDiscovery?.added || 0,
+          lastSeriesDiscoveryAdditions: persistedSeriesDiscovery?.additions || [],
+          lastSeriesDiscoveryCompleted: persistedSeriesDiscovery?.completed || 0,
+          lastSeriesDiscoverySkipped: persistedSeriesDiscovery?.skippedNoRun || 0,
+          lastSeriesDiscoveryDeferred: persistedSeriesDiscovery?.deferred || 0,
+          lastSeriesDiscoveryErrors: persistedSeriesDiscovery?.errors?.length || 0,
           lastListPriceChallengeEligible: listPriceChallenge?.eligible || 0,
           lastListPriceChallengeAttempted: listPriceChallenge?.attempted || 0,
           lastListPriceChallengeUpdated: listPriceChallenge?.updated || 0,
@@ -4492,7 +4501,7 @@ export async function runDueChecks(options = {}) {
     if (
       processedBookIds.size > 0 ||
       cronFields ||
-      hasSeriesDiscoveryWork(seriesDiscovery) ||
+      hasSeriesDiscoveryWork(persistedSeriesDiscovery) ||
       hasImportQueueWork(importQueue) ||
       hasListPriceChallengeWork(listPriceChallenge)
     ) {
@@ -4869,6 +4878,7 @@ async function runSeriesDiscoveryPlan(store, plan, options = {}) {
         seriesName: group.seriesName,
         checked: true,
         added: newBooks,
+        additions: compactSeriesDiscoveryAdditions(result.books || []),
         completed: seriesCompleted
       });
       recordSeriesDiscoveryCursorInStore(store, group, now);
@@ -4924,6 +4934,38 @@ async function runSeriesDiscoveryPlan(store, plan, options = {}) {
     results,
     errors
   };
+}
+
+function seriesDiscoveryAdditionsForAutomation(store, seriesDiscovery = null) {
+  const orderedAsins = [];
+  const seen = new Set();
+  for (const entry of seriesDiscovery?.results || []) {
+    for (const book of entry.additions || entry.books || []) {
+      const asin = String(book?.asin || '').trim();
+      if (!asin || seen.has(asin)) continue;
+      seen.add(asin);
+      orderedAsins.push(asin);
+    }
+  }
+  if (orderedAsins.length === 0) return [];
+
+  const booksByAsin = new Map((store.books || []).map((book) => [book.asin, book]));
+  return compactSeriesDiscoveryAdditions(orderedAsins.map((asin) => booksByAsin.get(asin)).filter(Boolean));
+}
+
+function compactSeriesDiscoveryAdditions(books = []) {
+  return books
+    .filter((book) => book && (book.id || book.asin))
+    .slice(0, 50)
+    .map((book) => ({
+      id: book.id ? String(book.id) : '',
+      asin: book.asin ? String(book.asin) : '',
+      title: truncateSummaryText(book.title || '', 120),
+      seriesName: truncateSummaryText(book.seriesName || '', 120),
+      sourceUrl: book.sourceUrl ? String(book.sourceUrl) : '',
+      createdAt: book.createdAt || '',
+      seriesLastDiscoveredAt: book.seriesLastDiscoveredAt || ''
+    }));
 }
 
 function mergeSeriesDiscoverySummaries(base, next) {
