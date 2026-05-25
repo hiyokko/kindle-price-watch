@@ -813,6 +813,26 @@ test('Amazon series completion parser ignores next-volume completion preview tex
   `), false);
 });
 
+test('Amazon series completion parser ignores customer review completion text', () => {
+  assert.equal(extractSeriesCompletionStatusFromHtml(`
+    <html>
+      <head><meta property="og:title" content="連載中シリーズ 9"></head>
+      <body>
+        <h1>連載中シリーズ 9</h1>
+        <div id="bookDescription_feature_div">
+          主人公たちの戦いは佳境へ。物語はまだ続いていく。
+        </div>
+        <div id="customerReviews">
+          日本からのトップレビュー:
+          いよいよ次巻で完結か。
+          完結性についても好評です。
+          正直、最終回かと思った。それぐらい熱いイベントだった。
+        </div>
+      </body>
+    </html>
+  `), false);
+});
+
 test('Amazon series completion parser does not treat current volume count as completed', () => {
   assert.equal(extractSeriesCompletionStatusFromHtml(`
     <html>
@@ -877,6 +897,20 @@ test('MangaZenkan completion parser requires matching title and volume count', (
     ),
     null
   );
+});
+
+test('MangaZenkan completion parser ignores latest-volume search results', () => {
+  const html = `
+    <main>
+      <aside>絞り込み検索 タグ 完結 紙書籍のみ</aside>
+      <div class="search-result-item book">
+        <a class="product-name">ベルセルク [新表紙版] (1-43巻 最新刊)</a>
+        <span>作者 三浦建太郎</span>
+      </div>
+    </main>
+  `;
+
+  assert.equal(extractMangaZenkanCompletionEvidenceFromHtml(html, 'ベルセルク', 43), null);
 });
 
 test('Amazon series parser reads child-list Kindle price and points', () => {

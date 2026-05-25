@@ -3633,8 +3633,7 @@ function extractSeriesCompletionStatus(html) {
     extractMeta(html, 'og:title'),
     extractTag(html, 'title'),
     extractTag(html, 'h1'),
-    ...completionEvidenceScopes(html),
-    ...completionKeywordScopes(html)
+    ...completionEvidenceScopes(html)
   ];
 
   return scopes.some((scope) => hasSeriesCompletionEvidence(scope));
@@ -3656,6 +3655,7 @@ function extractMangaZenkanCompletionEvidence(html, seriesName = '', expectedVol
 
     const count = extractVolumeCount(text) || mangaZenkanAllVolumeCount(text);
     if (count && count !== expected) continue;
+    if (hasMangaZenkanOngoingMarker(text)) continue;
     if (hasSeriesCompletionNegation(text)) continue;
 
     if (hasSeriesCompletionEvidence(text) || /タグ\s*完結|tags\s*:\s*["']完結["']/.test(text)) {
@@ -3667,6 +3667,11 @@ function extractMangaZenkanCompletionEvidence(html, seriesName = '', expectedVol
   }
 
   return null;
+}
+
+function hasMangaZenkanOngoingMarker(scope) {
+  const value = pageEvidenceText(scope);
+  return /(?:最新刊|続刊|連載中|未完結)/.test(value);
 }
 
 function completionEvidenceScopes(html) {
