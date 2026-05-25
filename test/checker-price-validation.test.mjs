@@ -1296,7 +1296,37 @@ test('store repair fixes known mixed-edition series volumes from stable ASINs', 
         effectivePrice: 1362,
         provider: 'amazon_series_bulk'
       },
-      ...[2, 3, ...Array.from({ length: 18 }, (_, index) => index + 5)].map((volume) => {
+      {
+        id: 'shamo-10',
+        asin: 'B00SICO3PA',
+        title: '軍鶏（２２） (イブニングコミックス)',
+        seriesName: '軍鶏',
+        seriesKey: 'series:asin:B074CG522D',
+        seriesExpectedCount: 34,
+        importMode: 'kindle_series',
+        volume: 22,
+        currentPrice: 792,
+        currentPoints: 0,
+        effectivePrice: 792,
+        provider: 'amazon_series_child'
+      },
+      {
+        id: 'shamo-22',
+        asin: 'B00WFOSQYG',
+        title: '軍鶏（３４） (イブニングコミックス)',
+        seriesName: '軍鶏',
+        seriesKey: 'series:asin:B074CG522D',
+        seriesExpectedCount: 34,
+        importMode: 'kindle_series',
+        volume: 34,
+        currentPrice: 792,
+        currentPoints: 0,
+        effectivePrice: 792,
+        provider: 'amazon_series_child'
+      },
+      ...[2, 3, ...Array.from({ length: 18 }, (_, index) => index + 5)]
+        .filter((volume) => ![10, 22].includes(volume))
+        .map((volume) => {
         return {
           id: `shamo-${volume}`,
           asin: `B00SHAMO${String(volume).padStart(2, '0')}`,
@@ -1329,6 +1359,8 @@ test('store repair fixes known mixed-edition series volumes from stable ASINs', 
     store.books.find((book) => book.asin === 'B00QAEZLAY').title,
     '極厚版『軍鶏』 巻之四 （１０～１２巻相当） (イブニングコミックス)'
   );
+  assert.equal(store.books.find((book) => book.asin === 'B00SICO3PA').volume, 10);
+  assert.equal(store.books.find((book) => book.asin === 'B00WFOSQYG').volume, 22);
   assert.deepEqual([...new Set(store.books.map((book) => book.seriesExpectedCount))], [22]);
 });
 

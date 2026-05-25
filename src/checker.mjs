@@ -54,6 +54,9 @@ const STALE_SERIES_EXPECTED_COUNT_OVERRIDES = new Map([
   ['series:asin:B0C6JS577Q', 4] // SPUNK - スパンク！
 ]);
 const STORED_SERIES_BOOK_FIXUPS = new Map([
+  // 軍鶏 is a mixed 22-entry Kindle series: 1-7 are 極厚版, 8-22 are regular volumes.
+  // The regular product pages keep their original volume numbers (20-34), so stored
+  // ordering must trust the series child-list position for this series.
   ['B00QAEZKNC', { volume: 1, title: '極厚版『軍鶏』 巻之壱 （１～３巻相当） (イブニングコミックス)' }],
   ['B00QAEZKZU', { volume: 2, title: '極厚版『軍鶏』 巻之弐 （４～６巻相当） (イブニングコミックス)' }],
   ['B00QAEZLDQ', { volume: 3, title: '極厚版『軍鶏』 巻之参 （７～９巻相当） (イブニングコミックス)' }],
@@ -61,7 +64,21 @@ const STORED_SERIES_BOOK_FIXUPS = new Map([
   ['B00RDYOB5Q', { volume: 5, title: '極厚版『軍鶏』 巻之伍 （１３～１５巻相当） (イブニングコミックス)' }],
   ['B00RDYOBCE', { volume: 6, title: '極厚版『軍鶏』 巻之六 （１６～１７巻相当） (イブニングコミックス)' }],
   ['B00RDYOFHK', { volume: 7, title: '極厚版『軍鶏』 巻之七 （１８～１９巻相当） (イブニングコミックス)' }],
+  ['B00SICO3LE', { volume: 8 }],
   ['B00SICO3NM', { volume: 9, title: '軍鶏 ９' }],
+  ['B00SICO3PA', { volume: 10 }],
+  ['B00SICO3NW', { volume: 11 }],
+  ['B00TQE8Z9O', { volume: 12 }],
+  ['B00TQE8ZMG', { volume: 13 }],
+  ['B00TQE8ZHG', { volume: 14 }],
+  ['B00TQE8ZJ4', { volume: 15 }],
+  ['B00V44OX3G', { volume: 16 }],
+  ['B00V44OX1S', { volume: 17 }],
+  ['B00V44OWZK', { volume: 18 }],
+  ['B00V44OX0O', { volume: 19 }],
+  ['B00WFOSTDO', { volume: 20 }],
+  ['B00WFOSQU0', { volume: 21 }],
+  ['B00WFOSQYG', { volume: 22 }],
   ['B082WZ2KT2', { volume: 2 }]
 ]);
 const MIXED_EDITION_SERIES_ASINS = new Set([
