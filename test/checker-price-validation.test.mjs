@@ -1414,6 +1414,10 @@ test('supplemental series title detection preserves series whose own name contai
     false
   );
   assert.equal(
+    isSupplementalSeriesBookTitle('極厚版『軍鶏』 合本 巻之壱 （１～３巻相当） (イブニングコミックス)', '軍鶏'),
+    false
+  );
+  assert.equal(
     isSupplementalSeriesBookTitle('カムイ伝全集 カムイ外伝 １', 'カムイ伝全集 カムイ外伝'),
     false
   );

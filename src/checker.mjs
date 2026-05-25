@@ -64,6 +64,15 @@ const STORED_SERIES_BOOK_FIXUPS = new Map([
   ['B00SICO3NM', { volume: 9, title: '軍鶏 ９' }],
   ['B082WZ2KT2', { volume: 2 }]
 ]);
+const MIXED_EDITION_SERIES_ASINS = new Set([
+  'B00QAEZKNC',
+  'B00QAEZKZU',
+  'B00QAEZLDQ',
+  'B00QAEZLAY',
+  'B00RDYOB5Q',
+  'B00RDYOBCE',
+  'B00RDYOFHK'
+]);
 
 export async function listBooks() {
   const store = await readStoreWithPriceRepairs();
@@ -568,11 +577,17 @@ function isAlternativeEditionSeriesItem(item) {
 }
 
 function alternativeEditionRank(item = {}) {
+  if (isKnownMixedEditionSeriesItem(item)) return 0;
   const title = String(item.title || '');
   if (/特装版|限定版|特別版|豪華版|愛蔵版|完全版|新装版|小冊子|付録|同梱|カラー版|フルカラー|合本|単話|分冊/i.test(title)) {
     return 10;
   }
   return 0;
+}
+
+function isKnownMixedEditionSeriesItem(item = {}) {
+  const asin = String(item.asin || '').toUpperCase();
+  return Boolean(asin && MIXED_EDITION_SERIES_ASINS.has(asin));
 }
 
 async function dropFutureReleaseNewSeriesItems(items = [], store = {}, errors = [], options = {}) {
@@ -3638,6 +3653,7 @@ export function isSupplementalSeriesBookTitle(title, seriesName) {
   const rawTitle = String(title || '').trim();
   const rawSeriesName = String(seriesName || '').trim();
   if (!rawTitle || !rawSeriesName || isGenericSeriesName(rawSeriesName)) return false;
+  if (rawSeriesName === '軍鶏' && /極厚版『?軍鶏』?/u.test(rawTitle)) return false;
   if (!seriesTitleContainsSeriesName(rawTitle, rawSeriesName)) return false;
 
   const normalizedTitle = normalizeSupplementalTitleText(rawTitle);
