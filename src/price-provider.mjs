@@ -3708,6 +3708,8 @@ function hasSeriesCompletionNegation(scope) {
   const value = pageEvidenceText(scope);
   return (
     /(?:未完結|完結していない|完結ではない|完結予定|完結間近|完結へ|最終回から|復活連載|連載再開)/.test(value) ||
+    /(?:次(?:巻|号|回|刊|作)|次の(?:巻|号|回|刊|作品)|続巻).{0,32}(?:完結|最終巻|最終回)/.test(value) ||
+    /(?:完結|最終巻|最終回).{0,32}(?:次(?:巻|号|回|刊|作)|次の(?:巻|号|回|刊|作品)|続巻)/.test(value) ||
     /(?:第\s*)?[一二三四五六七八九十0-9０-９]+\s*部.{0,32}完結/.test(value)
   );
 }

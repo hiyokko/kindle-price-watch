@@ -788,6 +788,31 @@ test('Amazon series completion parser detects final-volume description text', ()
   `), true);
 });
 
+test('Amazon series completion parser ignores next-volume completion preview text', () => {
+  assert.equal(extractSeriesCompletionStatusFromHtml(`
+    <html>
+      <head><meta property="og:title" content="宇宙兄弟（４５）"></head>
+      <body>
+        <div id="bookDescription_feature_div">
+          NASA、JAXA、ロスコスモスの共同作業によって、漂流中の六太の軌道を割り出すことに成功。
+          絶望の中、兄弟のランデヴーは成功するのかーーー。
+          次巻、ついに完結！
+        </div>
+      </body>
+    </html>
+  `), false);
+
+  assert.equal(extractSeriesCompletionStatusFromHtml(`
+    <html>
+      <body>
+        <div id="bookDescription_feature_div">
+          物語はいよいよ佳境へ。次巻が最終巻となる。
+        </div>
+      </body>
+    </html>
+  `), false);
+});
+
 test('Amazon series completion parser does not treat current volume count as completed', () => {
   assert.equal(extractSeriesCompletionStatusFromHtml(`
     <html>
