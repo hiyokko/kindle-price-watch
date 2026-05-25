@@ -47,39 +47,16 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const STALE_SERIES_EXPECTED_COUNT_OVERRIDES = new Map([
   ['series:asin:B00E5V5JMY', 3], // Wet Moon
   ['series:asin:B01IEGD30K', 3], // 青い空を、白い雲がかけてった
-  ['series:asin:B074CG522D', 22], // 軍鶏: Amazon lists the current Kindle series as 22 entries.
   ['series:asin:B07L2MX9LT', 18], // 東島丹三郎は仮面ライダーになりたい
   ['series:asin:B08R6X9DD5', 3], // サーチアンドデストロイ
   ['series:asin:B082WZ2KT2', 2], // セキララ結婚生活 / ７年目のセキララ結婚生活
   ['series:asin:B0C6JS577Q', 4] // SPUNK - スパンク！
 ]);
 const STORED_SERIES_BOOK_FIXUPS = new Map([
-  // 軍鶏 is a mixed 22-entry Kindle series: 1-7 are 極厚版, 8-22 are regular volumes.
-  // The regular product pages keep their original volume numbers (20-34), so stored
-  // ordering must trust the series child-list position for this series.
-  ['B00QAEZKNC', { volume: 1, title: '極厚版『軍鶏』 巻之壱 （１～３巻相当） (イブニングコミックス)' }],
-  ['B00QAEZKZU', { volume: 2, title: '極厚版『軍鶏』 巻之弐 （４～６巻相当） (イブニングコミックス)' }],
-  ['B00QAEZLDQ', { volume: 3, title: '極厚版『軍鶏』 巻之参 （７～９巻相当） (イブニングコミックス)' }],
-  ['B00QAEZLAY', { volume: 4, title: '極厚版『軍鶏』 巻之四 （１０～１２巻相当） (イブニングコミックス)' }],
-  ['B00RDYOB5Q', { volume: 5, title: '極厚版『軍鶏』 巻之伍 （１３～１５巻相当） (イブニングコミックス)' }],
-  ['B00RDYOBCE', { volume: 6, title: '極厚版『軍鶏』 巻之六 （１６～１７巻相当） (イブニングコミックス)' }],
-  ['B00RDYOFHK', { volume: 7, title: '極厚版『軍鶏』 巻之七 （１８～１９巻相当） (イブニングコミックス)' }],
-  ['B00SICO3LE', { volume: 8, title: '軍鶏 ８' }],
-  ['B00SICO3NM', { volume: 9, title: '軍鶏 ９' }],
-  ['B00SICO3PA', { volume: 10, title: '軍鶏 １０' }],
-  ['B00SICO3NW', { volume: 11, title: '軍鶏 １１' }],
-  ['B00TQE8Z9O', { volume: 12, title: '軍鶏 １２' }],
-  ['B00TQE8ZMG', { volume: 13, title: '軍鶏 １３' }],
-  ['B00TQE8ZHG', { volume: 14, title: '軍鶏 １４' }],
-  ['B00TQE8ZJ4', { volume: 15, title: '軍鶏 １５' }],
-  ['B00V44OX3G', { volume: 16, title: '軍鶏 １６' }],
-  ['B00V44OX1S', { volume: 17, title: '軍鶏 １７' }],
-  ['B00V44OWZK', { volume: 18, title: '軍鶏 １８' }],
-  ['B00V44OX0O', { volume: 19, title: '軍鶏 １９' }],
-  ['B00WFOSTDO', { volume: 20, title: '軍鶏 ２０' }],
-  ['B00WFOSQU0', { volume: 21, title: '軍鶏 ２１' }],
-  ['B00WFOSQYG', { volume: 22, title: '軍鶏 ２２' }],
   ['B082WZ2KT2', { volume: 2 }]
+]);
+const AUTHORITATIVE_MIXED_EDITION_SERIES_KEYS = new Set([
+  'series:asin:B074CG522D' // 軍鶏: child-list order is the canonical current Kindle lineup.
 ]);
 const MIXED_EDITION_SERIES_ASINS = new Set([
   'B00QAEZKNC',
@@ -378,11 +355,17 @@ async function importSeriesIntoStore(store, input, series, options = {}) {
   }
 
   const currentSeriesAsins = new Set(regularSeriesItems.map((item) => item.asin).filter(Boolean));
+  const currentListIsAuthoritative = isAuthoritativeMixedEditionCurrentList(
+    seriesIdentity,
+    series,
+    regularSeriesItems
+  );
   const obsoleteEpisodeIds = new Set(
     store.books
       .filter((book) => isKnownBookForSeries(book, seriesIdentity))
       .filter(
         (book) =>
+          (currentListIsAuthoritative && !currentSeriesAsins.has(book.asin)) ||
           isLikelyObsoleteSingleEpisodeSeriesBook(book, currentSeriesAsins, seriesName) ||
           isLikelyObsoleteAlternativeEditionSeriesBook(book, currentSeriesAsins, regularSeriesItems, seriesName)
       )
@@ -2621,7 +2604,8 @@ function repairTrustedStoredSeriesVolumes(store, options = {}) {
   for (const book of store.books || []) {
     if (!isSeriesBookRecord(book)) continue;
     const fixup = STORED_SERIES_BOOK_FIXUPS.get(String(book.asin || '').toUpperCase());
-    const trustedVolume = fixup?.volume || trustedVolumeFromStoredBookTitle(book);
+    const trustedVolume =
+      fixup?.volume || (shouldTrustStoredSeriesChildVolume(book) ? 0 : trustedVolumeFromStoredBookTitle(book));
     let changed = false;
     if (trustedVolume && Number(book.volume || 0) !== trustedVolume) {
       book.volume = trustedVolume;
@@ -2644,6 +2628,12 @@ function repairTrustedStoredSeriesVolumes(store, options = {}) {
     repaired,
     expectedCountUpdated
   };
+}
+
+function shouldTrustStoredSeriesChildVolume(book = {}) {
+  if (AUTHORITATIVE_MIXED_EDITION_SERIES_KEYS.has(seriesGroupKeyForBook(book))) return true;
+  const sourceAsin = extractAsin(book.sourceUrl || '');
+  return Boolean(sourceAsin && AUTHORITATIVE_MIXED_EDITION_SERIES_KEYS.has(`series:asin:${sourceAsin}`));
 }
 
 function repairDuplicateStoredSeriesVolumes(store, options = {}) {
@@ -3006,6 +2996,7 @@ function shouldRepairStoredSeriesBookTitle(book, previousNames = []) {
 function shouldCanonicalizeStoredSeriesBookTitle(book = {}) {
   const fixup = STORED_SERIES_BOOK_FIXUPS.get(String(book.asin || '').toUpperCase());
   if (fixup?.title && String(book.title || '').trim() === fixup.title) return false;
+  if (isKnownMixedEditionSeriesTitle(book.title, book.seriesName)) return false;
   if (!isSeriesDerivedPriceProvider(book.provider)) return false;
   if (!book.seriesName || storedBookVolume(book) <= 0) return false;
   const canonical = storedSeriesVolumeTitle(book.seriesName, storedBookVolume(book));
@@ -3619,6 +3610,25 @@ function isLikelyObsoleteAlternativeEditionSeriesBook(book, currentSeriesAsins, 
   const volume = storedBookVolume(book);
   if (!volume) return false;
   return currentItems.some((item) => seriesItemVolume(item) === volume && !isAlternativeEditionSeriesItem(item));
+}
+
+function isAuthoritativeMixedEditionCurrentList(seriesIdentity = {}, series = {}, items = []) {
+  if (!isAuthoritativeMixedEditionSeriesIdentity(seriesIdentity)) return false;
+  if (!Array.isArray(items) || items.length === 0) return false;
+
+  const expected = Math.max(Number(series.expectedVolumeCount || 0), items.length);
+  if (expected > 0 && items.length < expected) return false;
+
+  const volumes = items.map(seriesItemVolume).filter((volume) => Number.isFinite(volume) && volume > 0);
+  return isContiguousOneBasedVolumeSet(volumes, items.length);
+}
+
+function isAuthoritativeMixedEditionSeriesIdentity(seriesIdentity = {}) {
+  const key = String(seriesIdentity.seriesKey || '').trim();
+  if (AUTHORITATIVE_MIXED_EDITION_SERIES_KEYS.has(key)) return true;
+
+  const sourceAsin = String(seriesIdentity.sourceAsin || '').toUpperCase();
+  return Boolean(sourceAsin && AUTHORITATIVE_MIXED_EDITION_SERIES_KEYS.has(`series:asin:${sourceAsin}`));
 }
 
 function isSingleEpisodeLikeTitle(title) {
