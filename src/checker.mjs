@@ -3653,7 +3653,7 @@ export function isSupplementalSeriesBookTitle(title, seriesName) {
   const rawTitle = String(title || '').trim();
   const rawSeriesName = String(seriesName || '').trim();
   if (!rawTitle || !rawSeriesName || isGenericSeriesName(rawSeriesName)) return false;
-  if (rawSeriesName === '軍鶏' && /極厚版『?軍鶏』?/u.test(rawTitle)) return false;
+  if (isKnownMixedEditionSeriesTitle(rawTitle, rawSeriesName)) return false;
   if (!seriesTitleContainsSeriesName(rawTitle, rawSeriesName)) return false;
 
   const normalizedTitle = normalizeSupplementalTitleText(rawTitle);
@@ -3698,11 +3698,12 @@ function normalizeSupplementalTitleText(value) {
     .replace(/[！-～]/g, (char) => String.fromCharCode(char.charCodeAt(0) - 0xfee0));
 }
 
-function isClearlyDifferentSeriesTitle(title, seriesName) {
+export function isClearlyDifferentSeriesTitle(title, seriesName) {
   const rawTitle = String(title || '').trim();
   const rawSeriesName = String(seriesName || '').trim();
   if (!rawTitle || isGenericSeriesName(rawSeriesName)) return false;
   if (/^ASIN\s+[A-Z0-9]{10}$/i.test(rawTitle) || isAmazonErrorPageBookTitle(rawTitle)) return false;
+  if (isKnownMixedEditionSeriesTitle(rawTitle, rawSeriesName)) return false;
 
   const titleStem = seriesTitleComparisonStem(rawTitle);
   const seriesStem = seriesTitleComparisonStem(rawSeriesName);
@@ -3720,6 +3721,10 @@ function isClearlyDifferentSeriesTitle(title, seriesName) {
   if (commonPrefixLength(titleCore, seriesCore) >= Math.min(6, titleCore.length, seriesCore.length)) return false;
 
   return true;
+}
+
+function isKnownMixedEditionSeriesTitle(title, seriesName) {
+  return String(seriesName || '').trim() === '軍鶏' && /極厚版『?軍鶏』?/u.test(String(title || ''));
 }
 
 function isGenericSeriesName(seriesName) {

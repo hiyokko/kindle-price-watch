@@ -6,6 +6,7 @@ import {
   canonicalSeriesSourceAsin,
   needsDiscountExpiryRecheck,
   isActiveSeriesAggregateSnapshot,
+  isClearlyDifferentSeriesTitle,
   isFutureReleaseDate,
   isSupplementalSeriesBookTitle,
   isUsableIncompleteSeriesCandidate,
@@ -1415,6 +1416,10 @@ test('supplemental series title detection preserves series whose own name contai
   );
   assert.equal(
     isSupplementalSeriesBookTitle('極厚版『軍鶏』 合本 巻之壱 （１～３巻相当） (イブニングコミックス)', '軍鶏'),
+    false
+  );
+  assert.equal(
+    isClearlyDifferentSeriesTitle('極厚版『軍鶏』 巻之壱 （１～３巻相当） (イブニングコミックス)', '軍鶏'),
     false
   );
   assert.equal(
