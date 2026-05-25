@@ -1095,6 +1095,7 @@ function compareBooksWithinGroup(a, b) {
 
 function volumeFromTitle(title) {
   const value = String(title || '');
+  if (/巻之|相当|[0-9０-９]{1,3}\s*[~〜～\-－]\s*[0-9０-９]{1,3}\s*巻/u.test(value)) return null;
   const match =
     value.match(/(?:第)?([0-9０-９]+)\s*(?:巻|$)/) ||
     value.match(/[（(]\s*([0-9０-９]+)\s*[）)](?:\s*[（(][^（）()]{0,80}[）)])?\s*$/);

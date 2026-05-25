@@ -67,6 +67,40 @@ test('Amazon series parser keeps bulk volume when child list repeats the first v
   assert.equal(fourth.title, '進撃の巨人 ４');
 });
 
+test('Amazon series parser keeps child titles for mixed-edition lineups', () => {
+  const items = extractKindleSeriesItemsFromHtml(`
+    <meta property="og:title" content="軍鶏 (全22巻) Kindle版" />
+    <div id="series-childAsin-list"></div>
+    <div data-offer-asins="B00QAEZKNC,B00QAEZKXG,B00QAEZL4E,B00QAEZLAY,B00QAEZLIO,B00QAEZLSO,B00QAEZM2E,B00SICO3LE,B00SICO3MY,B00SICO3PA,B00SICO3QO,B00SICO3S2,B00SICO3TI,B00SICO3UW,B00WFOSQCE,B00WFOSQDQ,B00WFOSQF4,B00WFOSQGI,B00WFOSQHW,B00WFOSQJK,B00WFOSQXQ,B00WFOSQYG"></div>
+    <div id="series-childAsin-item_0" data-asin="B00QAEZKNC">
+      <a href="/dp/B00QAEZKNC" title="極厚版『軍鶏』 巻之壱 （１～３巻相当） (イブニングコミックス)">極厚版『軍鶏』 巻之壱 （１～３巻相当） (イブニングコミックス)</a>
+    </div>
+    <div id="series-childAsin-item_1" data-asin="B00QAEZKXG">
+      <a href="/dp/B00QAEZKXG" title="極厚版『軍鶏』 巻之弐 （４～６巻相当） (イブニングコミックス)">極厚版『軍鶏』 巻之弐 （４～６巻相当） (イブニングコミックス)</a>
+    </div>
+    <div id="series-childAsin-item_2" data-asin="B00QAEZL4E">
+      <a href="/dp/B00QAEZL4E" title="極厚版『軍鶏』 巻之参 （７～９巻相当） (イブニングコミックス)">極厚版『軍鶏』 巻之参 （７～９巻相当） (イブニングコミックス)</a>
+    </div>
+    <div id="series-childAsin-item_7" data-asin="B00SICO3LE">
+      <a href="/dp/B00SICO3LE" title="軍鶏（２０） (イブニングコミックス)">軍鶏（２０） (イブニングコミックス)</a>
+    </div>
+    <div id="series-childAsin-item_8" data-asin="B00SICO3MY">
+      <a href="/dp/B00SICO3MY" title="軍鶏（２１） (イブニングコミックス)">軍鶏（２１） (イブニングコミックス)</a>
+    </div>
+    <div id="series-childAsin-item_9" data-asin="B00SICO3PA">
+      <a href="/dp/B00SICO3PA" title="軍鶏（２２） (イブニングコミックス)">軍鶏（２２） (イブニングコミックス)</a>
+    </div>
+  `);
+
+  const twentieth = items.find((item) => item.asin === 'B00SICO3LE');
+  const twentySecond = items.find((item) => item.asin === 'B00SICO3PA');
+  assert.equal(items.length, 22);
+  assert.equal(twentieth.volume, 8);
+  assert.equal(twentieth.title, '軍鶏（２０） (イブニングコミックス)');
+  assert.equal(twentySecond.volume, 10);
+  assert.equal(twentySecond.title, '軍鶏（２２） (イブニングコミックス)');
+});
+
 test('Amazon series parser ignores unrelated bulk offer ASINs on standalone product pages', () => {
   const items = extractKindleSeriesItemsFromHtml(`
     <html>

@@ -1360,9 +1360,9 @@ test('store repair preserves authoritative mixed-edition child-list volumes over
     '極厚版『軍鶏』 巻之四 （１０～１２巻相当） (イブニングコミックス)'
   );
   assert.equal(store.books.find((book) => book.asin === 'B00SICO3PA').volume, 10);
-  assert.equal(store.books.find((book) => book.asin === 'B00SICO3PA').title, '軍鶏 １０');
+  assert.equal(store.books.find((book) => book.asin === 'B00SICO3PA').title, '軍鶏（２２） (イブニングコミックス)');
   assert.equal(store.books.find((book) => book.asin === 'B00WFOSQYG').volume, 22);
-  assert.equal(store.books.find((book) => book.asin === 'B00WFOSQYG').title, '軍鶏 ２２');
+  assert.equal(store.books.find((book) => book.asin === 'B00WFOSQYG').title, '軍鶏（３４） (イブニングコミックス)');
   assert.deepEqual([...new Set(store.books.map((book) => book.seriesExpectedCount))], [22]);
 });
 

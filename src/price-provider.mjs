@@ -957,7 +957,10 @@ export function extractKindleSeriesItemsFromHtml(html) {
   const bulkOfferItems = extractLargestBulkOfferItems(value, { seriesName, seriesImageUrl });
   if (shouldUseBulkOfferItemsForSeries(bulkOfferItems, childItems, value)) {
     const childByAsin = new Map(childItems.map((item) => [item.asin, item]));
-    return bulkOfferItems.map((item) => mergeBulkSeriesItem(item, childByAsin.get(item.asin)));
+    const mergeOptions = {
+      preferChildTitle: shouldPreferChildSeriesTitles(bulkOfferItems, childItems)
+    };
+    return bulkOfferItems.map((item) => mergeBulkSeriesItem(item, childByAsin.get(item.asin), mergeOptions));
   }
 
   if (childItems.length > 1) {
@@ -3136,13 +3139,16 @@ function mergeSeriesItemsWithChildItems(items = [], childItems = []) {
   if (!childItems.length) return items;
 
   const childByAsin = new Map(childItems.map((item) => [item.asin, item]));
+  const mergeOptions = {
+    preferChildTitle: shouldPreferChildSeriesTitles(items, childItems)
+  };
   const seen = new Set();
   const result = [];
 
   for (const item of items) {
     const asin = String(item?.asin || '').toUpperCase();
     const childItem = childByAsin.get(asin);
-    const merged = childItem ? mergeSeriesItemWithChildItem(item, childItem) : item;
+    const merged = childItem ? mergeSeriesItemWithChildItem(item, childItem, mergeOptions) : item;
     if (!merged?.asin || seen.has(merged.asin)) continue;
     seen.add(merged.asin);
     result.push(merged);
@@ -3157,10 +3163,10 @@ function mergeSeriesItemsWithChildItems(items = [], childItems = []) {
   return result;
 }
 
-function mergeSeriesItemWithChildItem(item, childItem) {
+function mergeSeriesItemWithChildItem(item, childItem, options = {}) {
   const merged = {
     ...item,
-    title: preferredSeriesItemTitle(item, childItem),
+    title: preferredSeriesItemTitle(item, childItem, options),
     imageUrl: childItem.imageUrl || item.imageUrl || '',
     imageSource: childItem.imageUrl ? childItem.imageSource || 'amazon_series_child' : item.imageSource || '',
     amazonUrl: childItem.amazonUrl || item.amazonUrl,
@@ -3311,11 +3317,11 @@ function countPricedItems(items) {
   return items.filter((item) => item.currentPrice != null).length;
 }
 
-function mergeBulkSeriesItem(bulkItem, childItem) {
+function mergeBulkSeriesItem(bulkItem, childItem, options = {}) {
   if (!childItem) return bulkItem;
   const merged = {
     ...bulkItem,
-    title: preferredSeriesItemTitle(bulkItem, childItem),
+    title: preferredSeriesItemTitle(bulkItem, childItem, options),
     imageUrl: childItem.imageUrl || bulkItem.imageUrl || '',
     imageSource: childItem.imageUrl ? childItem.imageSource || 'amazon_series_child' : bulkItem.imageSource || '',
     amazonUrl: childItem.amazonUrl || bulkItem.amazonUrl,
@@ -3324,9 +3330,13 @@ function mergeBulkSeriesItem(bulkItem, childItem) {
   return withPreferredSeriesPricing(merged, childItem, bulkItem);
 }
 
-function preferredSeriesItemTitle(primary = {}, secondary = {}) {
+function preferredSeriesItemTitle(primary = {}, secondary = {}, options = {}) {
   const primaryTitle = cleanText(primary.title);
   const secondaryTitle = cleanText(secondary.title);
+  if (options.preferChildTitle && secondaryTitle && !/^ASIN\s+[A-Z0-9]{10}$/i.test(secondaryTitle)) {
+    return betterText(secondaryTitle, primaryTitle);
+  }
+
   const primaryVolume = Number(primary.volume) || 0;
   const secondaryTitleVolume = extractExternalVolumeFromTitle(secondaryTitle);
 
@@ -3341,6 +3351,30 @@ function preferredSeriesItemTitle(primary = {}, secondary = {}) {
   }
 
   return betterText(secondaryTitle, primaryTitle);
+}
+
+function shouldPreferChildSeriesTitles(items = [], childItems = []) {
+  if (!items.length || !childItems.length) return false;
+
+  const childByAsin = new Map(childItems.map((item) => [String(item?.asin || '').toUpperCase(), item]));
+  const childTitleVolumes = [];
+  let mismatches = 0;
+
+  for (const item of items) {
+    const asin = String(item?.asin || '').toUpperCase();
+    const childItem = childByAsin.get(asin);
+    if (!childItem) continue;
+
+    const primaryVolume = Number(item?.volume) || 0;
+    const childTitleVolume = Number(extractExternalVolumeFromTitle(childItem.title)) || 0;
+    if (!childTitleVolume) continue;
+
+    childTitleVolumes.push(childTitleVolume);
+    if (primaryVolume > 0 && childTitleVolume !== primaryVolume) mismatches += 1;
+  }
+
+  if (mismatches === 0 || childTitleVolumes.length < 2) return false;
+  return new Set(childTitleVolumes).size === childTitleVolumes.length;
 }
 
 function withPreferredSeriesPricing(base, primary = {}, fallback = {}) {

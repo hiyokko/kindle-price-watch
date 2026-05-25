@@ -1946,12 +1946,26 @@ function shouldRefreshSeriesTitle(book, item) {
   if (isClearlyDifferentSeriesTitle(item.title, book.seriesName || item.seriesName)) return false;
   if (/^ASIN\s+[A-Z0-9]{10}$/i.test(book.title || '')) return true;
   if (isAmazonErrorPageBookTitle(book.title)) return true;
+  if (shouldTrustStoredSeriesChildVolume(book) && book.title !== item.title && isTrustedMixedEditionItemTitle(book, item)) {
+    return true;
+  }
 
   const bookVolume = volumeFromSeriesTitle(book.title);
   const itemVolume = seriesItemVolume(item);
   if (bookVolume && itemVolume && bookVolume !== itemVolume) return true;
 
   return book.provider === 'curated_series' && item.provider && item.provider !== 'curated_series' && book.title !== item.title;
+}
+
+function isTrustedMixedEditionItemTitle(book, item) {
+  const title = String(item?.title || '').trim();
+  if (!title || /^ASIN\s+[A-Z0-9]{10}$/i.test(title)) return false;
+  const seriesName = book.seriesName || item.seriesName || '';
+  if (isKnownMixedEditionSeriesTitle(title, seriesName)) return true;
+
+  const titleVolume = volumeFromSeriesTitle(title);
+  const itemVolume = Number(item?.volume) || 0;
+  return Boolean(titleVolume > 0 && itemVolume > 0 && titleVolume !== itemVolume);
 }
 
 function shouldRefreshSeriesPrice(book, item) {
@@ -3000,6 +3014,7 @@ function shouldCanonicalizeStoredSeriesBookTitle(book = {}) {
   if (fixup?.title && String(book.title || '').trim() === fixup.title) return false;
   if (isKnownMixedEditionSeriesTitle(book.title, book.seriesName)) return false;
   const childListVolumeIsTrusted = shouldTrustStoredSeriesChildVolume(book);
+  if (childListVolumeIsTrusted) return false;
   if (!childListVolumeIsTrusted && !isSeriesDerivedPriceProvider(book.provider)) return false;
   if (!book.seriesName || storedBookVolume(book) <= 0) return false;
   const canonical = storedSeriesVolumeTitle(book.seriesName, storedBookVolume(book));
