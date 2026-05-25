@@ -2877,7 +2877,9 @@ function repairStoredSeriesNames(store, options = {}) {
     if (!canonical) continue;
 
     const previousVolumes = new Map(books.map((book) => [book, book.volume]));
-    repairSequentialStoredSeriesVolumes(entries);
+    if (!books.some(shouldTrustStoredSeriesChildVolume)) {
+      repairSequentialStoredSeriesVolumes(entries);
+    }
     const previousNames = [...new Set(books.map((book) => String(book.seriesName || '').trim()).filter(Boolean))];
     for (const book of books) {
       let changed = false;
@@ -2997,7 +2999,8 @@ function shouldCanonicalizeStoredSeriesBookTitle(book = {}) {
   const fixup = STORED_SERIES_BOOK_FIXUPS.get(String(book.asin || '').toUpperCase());
   if (fixup?.title && String(book.title || '').trim() === fixup.title) return false;
   if (isKnownMixedEditionSeriesTitle(book.title, book.seriesName)) return false;
-  if (!isSeriesDerivedPriceProvider(book.provider)) return false;
+  const childListVolumeIsTrusted = shouldTrustStoredSeriesChildVolume(book);
+  if (!childListVolumeIsTrusted && !isSeriesDerivedPriceProvider(book.provider)) return false;
   if (!book.seriesName || storedBookVolume(book) <= 0) return false;
   const canonical = storedSeriesVolumeTitle(book.seriesName, storedBookVolume(book));
   if (String(book.title || '').trim() === canonical) return false;

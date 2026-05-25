@@ -1308,7 +1308,7 @@ test('store repair preserves authoritative mixed-edition child-list volumes over
         currentPrice: 792,
         currentPoints: 0,
         effectivePrice: 792,
-        provider: 'amazon_series_child'
+        provider: 'amazon_html'
       },
       {
         id: 'shamo-22',
@@ -1322,7 +1322,7 @@ test('store repair preserves authoritative mixed-edition child-list volumes over
         currentPrice: 792,
         currentPoints: 0,
         effectivePrice: 792,
-        provider: 'amazon_series_child'
+        provider: 'amazon_html'
       },
       ...[2, 3, ...Array.from({ length: 18 }, (_, index) => index + 5)]
         .filter((volume) => ![10, 22].includes(volume))
