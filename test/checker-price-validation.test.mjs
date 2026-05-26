@@ -979,6 +979,76 @@ test('store repair removes exact-title collection totals even when they collide 
   assert.deepEqual([...new Set(kichijojiBooks.map((book) => book.seriesExpectedCount))], [3]);
 });
 
+test('store repair removes source ASIN containers re-added as synthetic tail volumes', () => {
+  const store = {
+    books: [
+      {
+        id: 'sute-upper',
+        asin: 'B00CZCWC84',
+        title: '捨てがたき人々（上） (幻冬舎文庫)',
+        seriesName: '捨てがたき人々',
+        seriesKey: 'series:asin:B074CG66B3',
+        sourceUrl: 'https://www.amazon.co.jp/kindle-dbs/product/B074CG66B3',
+        seriesExpectedCount: 3,
+        importMode: 'kindle_series',
+        volume: 1,
+        currentPrice: 824,
+        currentPoints: 8,
+        effectivePrice: 816
+      },
+      {
+        id: 'sute-lower',
+        asin: 'B00CZCWBVC',
+        title: '捨てがたき人々（下） (幻冬舎文庫)',
+        seriesName: '捨てがたき人々',
+        seriesKey: 'series:asin:B074CG66B3',
+        sourceUrl: 'https://www.amazon.co.jp/kindle-dbs/product/B074CG66B3',
+        seriesExpectedCount: 3,
+        importMode: 'kindle_series',
+        volume: 2,
+        currentPrice: 824,
+        currentPoints: 8,
+        effectivePrice: 816
+      },
+      {
+        id: 'sute-container-tail',
+        asin: 'B074CG66B3',
+        title: '捨てがたき人々 ３',
+        seriesName: '捨てがたき人々',
+        seriesKey: 'series:asin:B074CG66B3',
+        sourceUrl: 'https://www.amazon.co.jp/kindle-dbs/product/B074CG66B3',
+        seriesExpectedCount: 3,
+        importMode: 'kindle_series',
+        volume: 3,
+        currentPrice: null,
+        currentPoints: 0,
+        effectivePrice: null,
+        provider: 'pending_series'
+      }
+    ],
+    priceHistory: [
+      { id: 'history-sute-container-tail', bookId: 'sute-container-tail', asin: 'B074CG66B3', checkedAt: '2026-05-25T10:00:00.000Z' }
+    ],
+    notifications: [
+      { id: 'notification-sute-container-tail', bookId: 'sute-container-tail', asin: 'B074CG66B3', status: 'pending' }
+    ],
+    seriesPriceHistory: []
+  };
+
+  const summary = repairStorePriceState(store, {
+    clearCurrent: false,
+    now: '2026-05-26T00:00:00.000Z'
+  });
+
+  assert.equal(summary.changed, true);
+  assert.equal(summary.removedSupplementalSeriesItems, 1);
+  assert.equal(summary.removedHistory, 1);
+  assert.equal(summary.removedNotifications, 1);
+  assert.equal(store.books.some((book) => book.asin === 'B074CG66B3'), false);
+  assert.deepEqual(store.books.map((book) => book.volume), [1, 2]);
+  assert.deepEqual([...new Set(store.books.map((book) => book.seriesExpectedCount))], [2]);
+});
+
 test('store repair removes unvalidated synthetic tail volumes re-added by an older workflow', () => {
   const store = {
     books: [

@@ -335,6 +335,10 @@ async function importSeriesIntoStore(store, input, series, options = {}) {
       seriesErrors.push(`${item.asin}: skipped supplemental series book (${item.title})`);
       continue;
     }
+    if (isLikelySeriesContainerCandidateItem(item, seriesIdentity, mergedSeriesItems, seriesName)) {
+      seriesErrors.push(`${item.asin}: skipped source container series book (${item.title})`);
+      continue;
+    }
     seriesItems.push(item);
   }
   let regularSeriesItems = dropDuplicateAlternativeEditionItems(seriesItems, seriesErrors);
@@ -366,6 +370,7 @@ async function importSeriesIntoStore(store, input, series, options = {}) {
       .filter(
         (book) =>
           (currentListIsAuthoritative && !currentSeriesAsins.has(book.asin)) ||
+          isLikelyObsoleteSeriesContainerBook(book, currentSeriesAsins, regularSeriesItems, seriesName) ||
           isLikelyObsoleteSingleEpisodeSeriesBook(book, currentSeriesAsins, seriesName) ||
           isLikelyObsoleteAlternativeEditionSeriesBook(book, currentSeriesAsins, regularSeriesItems, seriesName)
       )
@@ -2472,11 +2477,13 @@ function repairSupplementalSeriesItems(store, options = {}) {
 
 function isStoredSeriesCollectionContainerBook(book = {}, groupBooks = []) {
   if (!book?.asin || !book.seriesName) return false;
-  if (trustedVolumeFromStoredBookTitle(book) > 0) return false;
 
   const titleCore = seriesTitleComparisonCore(book.title);
   const seriesCore = seriesTitleComparisonCore(book.seriesName);
   if (!titleCore || !seriesCore || titleCore !== seriesCore) return false;
+  const sourceAsin = extractAsin(book.sourceUrl || book.seriesKey || '');
+  if (isLikelySeriesContainerCandidate(book, sourceAsin, groupBooks, book.seriesName)) return true;
+  if (trustedVolumeFromStoredBookTitle(book) > 0) return false;
 
   const siblingTrustedBooks = groupBooks
     .filter((item) => item?.id !== book.id)
@@ -2489,7 +2496,6 @@ function isStoredSeriesCollectionContainerBook(book = {}, groupBooks = []) {
   const maxSiblingVolume = Math.max(...siblingTrustedVolumes);
   if (!storedVolume || storedVolume > maxSiblingVolume) return true;
 
-  const sourceAsin = extractAsin(book.sourceUrl || '');
   const storedVolumeCollidesWithSibling = siblingTrustedVolumes.includes(storedVolume);
   if (
     (storedVolumeCollidesWithSibling || sourceAsin === String(book.asin || '').toUpperCase()) &&
@@ -3597,6 +3603,7 @@ function mergeWithKnownSeriesItems(items, books, options) {
   for (const book of books) {
     if (!isKnownBookForSeries(book, options) || merged.has(book.asin)) continue;
     if (isNonBookSeriesCandidateItem(book)) continue;
+    if (isLikelyObsoleteSeriesContainerBook(book, currentSeriesAsins, items, options.seriesName)) continue;
     if (isLikelyObsoleteSingleEpisodeSeriesBook(book, currentSeriesAsins, options.seriesName)) continue;
     merged.set(book.asin, seedFromExistingBook(book));
   }
@@ -3619,6 +3626,43 @@ function isLikelyObsoleteSingleEpisodeSeriesBook(book, currentSeriesAsins, serie
   if (isSupplementalSeriesBookTitle(book.title, seriesName || book.seriesName)) return true;
   if (isSingleEpisodeLikeTitle(book.title)) return true;
   return isCheapAmazonBulkSeriesBook(book);
+}
+
+function isLikelyObsoleteSeriesContainerBook(book, currentSeriesAsins, currentItems = [], seriesName = '') {
+  if (!book?.asin || currentSeriesAsins.has(book.asin)) return false;
+  const sourceAsin = sourceAsinForSeriesContainerCheck({}, book);
+  return isLikelySeriesContainerCandidate(book, sourceAsin, currentItems, seriesName || book.seriesName);
+}
+
+function isLikelySeriesContainerCandidateItem(item, seriesIdentity = {}, allItems = [], seriesName = '') {
+  const sourceAsin = sourceAsinForSeriesContainerCheck(seriesIdentity, item);
+  return isLikelySeriesContainerCandidate(item, sourceAsin, allItems, seriesName || seriesIdentity.seriesName || item?.seriesName);
+}
+
+function sourceAsinForSeriesContainerCheck(seriesIdentity = {}, record = {}) {
+  return String(seriesIdentity.sourceAsin || '').toUpperCase() ||
+    extractAsin(seriesIdentity.sourceUrl || record.sourceUrl || seriesIdentity.seriesKey || record.seriesKey || '');
+}
+
+function isLikelySeriesContainerCandidate(record = {}, sourceAsin = '', peerItems = [], seriesName = '') {
+  const asin = String(record?.asin || '').toUpperCase();
+  if (!asin || !sourceAsin || asin !== String(sourceAsin).toUpperCase()) return false;
+
+  const titleCore = seriesTitleComparisonCore(record.title);
+  const seriesCore = seriesTitleComparisonCore(seriesName || record.seriesName);
+  if (!titleCore || !seriesCore || titleCore !== seriesCore) return false;
+
+  const peerVolumes = peerItems
+    .filter((item) => String(item?.asin || '').toUpperCase() !== asin)
+    .map((item) => storedBookVolume(item) || seriesItemVolume(item))
+    .filter((volume) => Number.isFinite(volume) && volume > 0);
+  if (peerVolumes.length < 2) return false;
+
+  const ownVolume = storedBookVolume(record) || seriesItemVolume(record);
+  if (!ownVolume) return false;
+
+  const maxPeerVolume = Math.max(...peerVolumes);
+  return ownVolume > maxPeerVolume || peerVolumes.includes(ownVolume);
 }
 
 function isLikelyObsoleteAlternativeEditionSeriesBook(book, currentSeriesAsins, currentItems = [], seriesName = '') {
