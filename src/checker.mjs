@@ -2569,6 +2569,7 @@ function repairUnvalidatedSyntheticTailSeriesItems(store, options = {}) {
     for (const book of books) {
       if (!candidateIds.has(book.id)) continue;
       if (storedBookVolume(book) <= maxConfirmedVolume) continue;
+      if (isExpectedSingleUnvalidatedTailBook(book, candidateIds)) continue;
       ids.add(book.id);
       affectedKeys.add(key);
     }
@@ -2615,6 +2616,14 @@ function isUnvalidatedSyntheticStoredSeriesItem(book = {}) {
     return true;
   }
   return /シリーズ価格補完|価格を取得できません|タイムアウト|aborted/i.test(String(book.lastError || ''));
+}
+
+function isExpectedSingleUnvalidatedTailBook(book = {}, candidateIds = new Set()) {
+  if (candidateIds.size !== 1) return false;
+  if (isUnresolvedAsinPlaceholderTitle(book.title, book.asin)) return false;
+  const volume = storedBookVolume(book);
+  const expected = Number(book.seriesExpectedCount || 0);
+  return Number.isFinite(volume) && volume > 0 && Number.isFinite(expected) && expected === volume;
 }
 
 function repairTrustedStoredSeriesVolumes(store, options = {}) {

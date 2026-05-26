@@ -1180,6 +1180,56 @@ test('store repair removes unresolved ASIN placeholder tail volumes from a serie
   assert.deepEqual([...new Set(ajuBooks.map((book) => book.seriesExpectedCount))], [8]);
 });
 
+test('store repair keeps one expected pending tail volume from series discovery', () => {
+  const store = {
+    books: [
+      ...[1, 2, 3, 4].map((volume) => ({
+        id: `besshiki-${volume}`,
+        asin: `B00BESSHIKI${volume}`,
+        title: `別式（${volume}） (モーニングコミックス)`,
+        seriesName: '別式',
+        seriesKey: 'series:asin:B08FZP8KJ2',
+        sourceUrl: 'https://www.amazon.co.jp/kindle-dbs/product/B08FZP8KJ2',
+        seriesExpectedCount: 5,
+        importMode: 'kindle_series',
+        volume,
+        currentPrice: 792,
+        currentPoints: 0,
+        effectivePrice: 792
+      })),
+      {
+        id: 'besshiki-5',
+        asin: 'B081JHRLCB',
+        title: '別式 ５',
+        seriesName: '別式',
+        seriesKey: 'series:asin:B08FZP8KJ2',
+        sourceUrl: 'https://www.amazon.co.jp/kindle-dbs/product/B08FZP8KJ2',
+        seriesExpectedCount: 5,
+        importMode: 'kindle_series',
+        volume: 5,
+        currentPrice: null,
+        currentPoints: 0,
+        effectivePrice: null,
+        provider: 'pending_series',
+        lastError: 'シリーズ価格補完: Amazon HTMLで価格補完できませんでした'
+      }
+    ],
+    priceHistory: [],
+    notifications: [],
+    seriesPriceHistory: []
+  };
+
+  const summary = repairStorePriceState(store, {
+    clearCurrent: false,
+    now: '2026-05-26T01:00:00.000Z'
+  });
+
+  assert.equal(summary.removedUnvalidatedSeriesTailItems, 0);
+  assert.equal(store.books.some((book) => book.asin === 'B081JHRLCB'), true);
+  assert.deepEqual(store.books.map((book) => book.volume), [1, 2, 3, 4, 5]);
+  assert.deepEqual([...new Set(store.books.map((book) => book.seriesExpectedCount))], [5]);
+});
+
 test('store repair lowers stale expected count for completed contiguous series', () => {
   const store = {
     books: Array.from({ length: 7 }, (_, index) => ({
