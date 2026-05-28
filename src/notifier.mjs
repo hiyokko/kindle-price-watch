@@ -308,6 +308,14 @@ function listPriceChallengeSummaryText(summary = {}) {
     `除外 ${Number(summary.rejected || 0).toLocaleString('ja-JP')}`,
     `エラー ${Number(summary.errors || 0).toLocaleString('ja-JP')}`
   ];
+  let insertionIndex = 3;
+  if (Number(summary.observedFallback || 0) > 0) {
+    parts.splice(insertionIndex, 0, `履歴補完 ${Number(summary.observedFallback || 0).toLocaleString('ja-JP')}`);
+    insertionIndex += 1;
+  }
+  if (Number(summary.peerFallback || 0) > 0) {
+    parts.splice(insertionIndex, 0, `同シリーズ補完 ${Number(summary.peerFallback || 0).toLocaleString('ja-JP')}`);
+  }
   if (Number(summary.skippedByLimit || 0) > 0) {
     parts.push(`上限超過 ${Number(summary.skippedByLimit || 0).toLocaleString('ja-JP')}`);
   }

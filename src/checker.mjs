@@ -43,6 +43,8 @@ const DISCOUNT_RECHECK_RATIO = 0.7;
 const PRICE_INTEGRITY_SERIES_OUTLIER_RATIO = 0.55;
 const LIST_PRICE_CHALLENGE_MAX_PER_SERIES = 2;
 const LIST_PRICE_CHALLENGE_SAMPLE_LIMIT = 10;
+const OBSERVED_LIST_PRICE_PROVIDER = 'observed_price_history';
+const OBSERVED_PEER_LIST_PRICE_PROVIDER = 'observed_peer_price';
 const DAY_MS = 24 * 60 * 60 * 1000;
 const STALE_SERIES_EXPECTED_COUNT_OVERRIDES = new Map([
   ['series:asin:B00E5V5JMY', 3], // Wet Moon
@@ -3412,7 +3414,8 @@ function listPriceProviderForBook(book = {}) {
 }
 
 function applyMergedSnapshotListPrice(book, snapshot) {
-  const listPrice = mergedSnapshotListPrice(snapshot, book.listPrice);
+  const provider = listPriceProviderForBook(book);
+  const listPrice = mergedSnapshotListPrice(snapshot, book.listPrice, provider);
   book.listPrice = listPrice;
   if (listPrice == null) {
     book.listPriceProvider = '';
@@ -3421,13 +3424,19 @@ function applyMergedSnapshotListPrice(book, snapshot) {
   }
 }
 
-function mergedSnapshotListPrice(snapshot, existingListPrice) {
+export function mergedSnapshotListPrice(snapshot, existingListPrice, existingProvider = '') {
   if (snapshot?.listPrice != null) return snapshot.listPrice;
+  if (isObservedListPriceProvider(existingProvider)) return existingListPrice ?? null;
   return String(snapshot?.provider || '').toLowerCase() === 'amazon_html' ? null : existingListPrice;
 }
 
 function shouldIgnoreListPriceForProvider(currentPrice, listPrice, provider) {
   return isSeriesDerivedPriceProvider(provider);
+}
+
+function isObservedListPriceProvider(provider) {
+  const normalized = String(provider || '').toLowerCase();
+  return normalized === OBSERVED_LIST_PRICE_PROVIDER || normalized === OBSERVED_PEER_LIST_PRICE_PROVIDER;
 }
 
 function isSeriesDerivedPriceProvider(provider) {
@@ -4601,6 +4610,8 @@ export async function runDueChecks(options = {}) {
           lastListPriceChallengeEligible: listPriceChallenge?.eligible || 0,
           lastListPriceChallengeAttempted: listPriceChallenge?.attempted || 0,
           lastListPriceChallengeUpdated: listPriceChallenge?.updated || 0,
+          lastListPriceChallengeObservedFallback: listPriceChallenge?.observedFallback || 0,
+          lastListPriceChallengePeerFallback: listPriceChallenge?.peerFallback || 0,
           lastListPriceChallengeNotFound: listPriceChallenge?.notFound || 0,
           lastListPriceChallengeRejected: listPriceChallenge?.rejected || 0,
           lastListPriceChallengeErrors: listPriceChallenge?.errors?.length || 0,
@@ -5952,6 +5963,8 @@ async function runListPriceChallengeInStore(store, results = [], options = {}) {
     limit,
     attempted: 0,
     updated: 0,
+    observedFallback: 0,
+    peerFallback: 0,
     notFound: 0,
     rejected: 0,
     skippedRecentNotFound,
@@ -5965,12 +5978,35 @@ async function runListPriceChallengeInStore(store, results = [], options = {}) {
 
   const pacing = options.pacing || checkPacing();
   const now = new Date().toISOString();
+  let networkAttempts = 0;
   for (const book of books) {
     if (shouldStopBeforeListPriceChallenge(options.startedAt, options.maxRuntimeMs, options.saveReserveMs)) {
       summary.stoppedByRuntimeLimit = true;
       break;
     }
-    if (!(await waitBeforeCheck(pacing, summary.attempted, options.startedAt, options.maxRuntimeMs, options.saveReserveMs))) {
+
+    const localCandidate = localListPriceChallengeCandidateForBook(book, store);
+    if (localCandidate) {
+      summary.attempted += 1;
+      const validation = validateListPriceChallengeCandidate(book, localCandidate.listPrice, store);
+      if (!validation.ok) {
+        recordListPriceChallengeAttempt(book, now, 'rejected');
+        summary.rejected += 1;
+        incrementListPriceChallengeRejection(summary, validation.reason);
+        continue;
+      }
+
+      applyListPriceChallengeResult(book, localCandidate.listPrice, localCandidate.provider, now);
+      summary.updated += 1;
+      if (localCandidate.provider === OBSERVED_PEER_LIST_PRICE_PROVIDER) {
+        summary.peerFallback += 1;
+      } else {
+        summary.observedFallback += 1;
+      }
+      continue;
+    }
+
+    if (!(await waitBeforeCheck(pacing, networkAttempts, options.startedAt, options.maxRuntimeMs, options.saveReserveMs))) {
       summary.stoppedByRuntimeLimit = true;
       break;
     }
@@ -5980,6 +6016,7 @@ async function runListPriceChallengeInStore(store, results = [], options = {}) {
       capMs: listPriceChallengeSnapshotTimeoutMs()
     });
     summary.attempted += 1;
+    networkAttempts += 1;
     try {
       const snapshot = await fetchAmazonHtmlSnapshot(book.asin, amazonUrlForAsin(book.asin), {
         ...book,
@@ -6037,7 +6074,7 @@ export function selectListPriceChallengeCandidates(store = {}, results = [], lim
     if (!book) continue;
     if (!hasTrustedCurrentPrice(book)) continue;
     if (hasDirectStoredListPrice(book)) continue;
-    if (isRecentListPriceChallengeNotFound(book, nowMs)) {
+    if (isRecentListPriceChallengeNotFound(book, nowMs) && !localListPriceChallengeCandidateForBook(book, store)) {
       skippedRecentNotFound += 1;
       continue;
     }
@@ -6146,6 +6183,92 @@ export function validateListPriceChallengeCandidate(book = {}, listPrice, store 
   }
 
   return { ok: true, reason: '' };
+}
+
+export function observedListPriceCandidateForBook(book = {}, store = {}) {
+  const currentPrice = nullableNumber(book.currentPrice);
+  if (currentPrice == null || currentPrice <= 0) return null;
+
+  const history = listPriceChallengeHistoryContext(book, store);
+  if (!history.hasMeaningfulCeiling || history.maxObserved == null) return null;
+
+  const candidate = Math.round(history.maxObserved);
+  if (candidate <= currentPrice) return null;
+  return candidate;
+}
+
+export function observedPeerListPriceCandidateForBook(book = {}, store = {}) {
+  const currentPrice = nullableNumber(book.currentPrice);
+  if (currentPrice == null || currentPrice <= 0) return null;
+
+  const scopeKey = listPriceChallengeScopeKey(book);
+  if (!scopeKey || scopeKey.startsWith('book:')) return null;
+
+  const books = Array.isArray(store.books) ? store.books : [];
+  const booksById = new Map(books.map((item) => [item.id, item]));
+  const candidates = new Map();
+  const addCandidate = (value, peerId) => {
+    const number = nullableNumber(value);
+    if (number == null || number <= 0) return;
+    const candidate = Math.round(number);
+    if (!isMeaningfulListPriceAboveCurrent(candidate, currentPrice)) return;
+    if (!candidates.has(candidate)) {
+      candidates.set(candidate, { candidate, peerIds: new Set() });
+    }
+    candidates.get(candidate).peerIds.add(peerId);
+  };
+
+  for (const peer of books) {
+    if (!peer || peer.id === book.id) continue;
+    if (listPriceChallengeScopeKey(peer) !== scopeKey) continue;
+    const peerId = peer.id || peer.asin || peer.title || '';
+    if (!peerId) continue;
+
+    if (hasDirectStoredListPrice(peer)) {
+      addCandidate(peer.listPrice, peerId);
+    }
+    if (hasTrustedCurrentPrice(peer)) {
+      addCandidate(peer.currentPrice, peerId);
+    }
+  }
+
+  for (const entry of store.priceHistory || []) {
+    const peer = entry?.bookId ? booksById.get(entry.bookId) : books.find((item) => isPriceHistoryEntryForBook(entry, item));
+    if (!peer || peer.id === book.id || listPriceChallengeScopeKey(peer) !== scopeKey) continue;
+    if (isUnvalidatedSeriesPriceHistoryEntry(entry)) continue;
+    if (isSuspiciousHistoryEntry(entry, peer)) continue;
+    addCandidate(entry.price, peer.id || peer.asin || peer.title || '');
+  }
+
+  const ranked = [...candidates.values()]
+    .map((entry) => ({ candidate: entry.candidate, count: entry.peerIds.size }))
+    .filter((entry) => entry.count >= 2)
+    .sort((left, right) => {
+      if (left.count !== right.count) return right.count - left.count;
+      return left.candidate - right.candidate;
+    });
+
+  return ranked[0]?.candidate ?? null;
+}
+
+function localListPriceChallengeCandidateForBook(book = {}, store = {}) {
+  const observed = observedListPriceCandidateForBook(book, store);
+  if (observed != null) {
+    return { listPrice: observed, provider: OBSERVED_LIST_PRICE_PROVIDER };
+  }
+
+  const peer = observedPeerListPriceCandidateForBook(book, store);
+  if (peer != null) {
+    return { listPrice: peer, provider: OBSERVED_PEER_LIST_PRICE_PROVIDER };
+  }
+
+  return null;
+}
+
+function isMeaningfulListPriceAboveCurrent(listPrice, currentPrice) {
+  const candidate = nullableNumber(listPrice);
+  const current = nullableNumber(currentPrice);
+  return candidate != null && current != null && candidate >= current * 1.25 && candidate - current >= 100;
 }
 
 function listPriceChallengeHistoryContext(book = {}, store = {}) {
@@ -6562,6 +6685,8 @@ function cronSummaryPayload(result, context = {}) {
           limit: result.listPriceChallenge.limit || 0,
           attempted: result.listPriceChallenge.attempted || 0,
           updated: result.listPriceChallenge.updated || 0,
+          observedFallback: result.listPriceChallenge.observedFallback || 0,
+          peerFallback: result.listPriceChallenge.peerFallback || 0,
           notFound: result.listPriceChallenge.notFound || 0,
           rejected: result.listPriceChallenge.rejected || 0,
           skippedRecentNotFound: result.listPriceChallenge.skippedRecentNotFound || 0,

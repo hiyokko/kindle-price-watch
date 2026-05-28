@@ -11,6 +11,9 @@ import {
   isSupplementalSeriesBookTitle,
   isUsableIncompleteSeriesCandidate,
   isWeakSeriesImageUrl,
+  mergedSnapshotListPrice,
+  observedListPriceCandidateForBook,
+  observedPeerListPriceCandidateForBook,
   priceIntegrityIssueForBook,
   repairStorePriceState,
   selectListPriceChallengeCandidates,
@@ -1883,6 +1886,117 @@ test('list price challenge prioritizes books with observed discount evidence', (
   );
 
   assert.deepEqual(selected.books.map((book) => book.id), ['observed-drop', 'flat-price']);
+});
+
+test('list price challenge can use meaningful observed history as list price', () => {
+  const book = {
+    ...challengeBook('observed-list-price', ''),
+    currentPrice: 500,
+    effectivePrice: 495
+  };
+  const store = {
+    books: [book],
+    priceHistory: [
+      {
+        bookId: book.id,
+        asin: book.asin,
+        price: 900,
+        effectivePrice: 891,
+        provider: 'amazon_html'
+      }
+    ]
+  };
+
+  assert.equal(observedListPriceCandidateForBook(book, store), 900);
+  assert.deepEqual(validateListPriceChallengeCandidate(book, 900, store), { ok: true, reason: '' });
+});
+
+test('list price challenge does not use flat observed history as list price', () => {
+  const book = {
+    ...challengeBook('flat-observed-list-price', ''),
+    currentPrice: 500,
+    effectivePrice: 495
+  };
+  const store = {
+    books: [book],
+    priceHistory: [
+      {
+        bookId: book.id,
+        asin: book.asin,
+        price: 520,
+        effectivePrice: 515,
+        provider: 'amazon_html'
+      }
+    ]
+  };
+
+  assert.equal(observedListPriceCandidateForBook(book, store), null);
+});
+
+test('list price challenge can infer list price from repeated peer prices in the same series', () => {
+  const target = {
+    ...challengeBook('peer-target', 'series-peer'),
+    currentPrice: 330,
+    effectivePrice: 327
+  };
+  const store = {
+    books: [
+      target,
+      { ...challengeBook('peer-1', 'series-peer'), currentPrice: 660, effectivePrice: 654 },
+      { ...challengeBook('peer-2', 'series-peer'), currentPrice: 660, effectivePrice: 654 },
+      { ...challengeBook('other-series', 'series-other'), currentPrice: 990, effectivePrice: 981 }
+    ],
+    priceHistory: []
+  };
+
+  assert.equal(observedPeerListPriceCandidateForBook(target, store), 660);
+});
+
+test('list price challenge does not infer list price from a single peer price', () => {
+  const target = {
+    ...challengeBook('single-peer-target', 'series-peer'),
+    currentPrice: 330,
+    effectivePrice: 327
+  };
+  const store = {
+    books: [target, { ...challengeBook('peer-1', 'series-peer'), currentPrice: 660, effectivePrice: 654 }],
+    priceHistory: []
+  };
+
+  assert.equal(observedPeerListPriceCandidateForBook(target, store), null);
+});
+
+test('list price challenge retries recent not-found entries when local peer evidence exists', () => {
+  const recent = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  const target = {
+    ...challengeBook('recent-peer-target', 'series-peer'),
+    currentPrice: 330,
+    effectivePrice: 327,
+    listPriceLastNotFoundAt: recent,
+    listPriceNotFoundCount: 1
+  };
+  const store = {
+    books: [
+      target,
+      { ...challengeBook('peer-1', 'series-peer'), currentPrice: 660, effectivePrice: 654 },
+      { ...challengeBook('peer-2', 'series-peer'), currentPrice: 660, effectivePrice: 654 }
+    ],
+    priceHistory: []
+  };
+
+  const selected = selectListPriceChallengeCandidates(store, [{ ok: true, book: { id: target.id } }], 50);
+
+  assert.equal(selected.skippedRecentNotFound, 0);
+  assert.deepEqual(selected.books.map((book) => book.id), [target.id]);
+});
+
+test('amazon html checks preserve observed-history list prices when direct list price is absent', () => {
+  assert.equal(
+    mergedSnapshotListPrice({ provider: 'amazon_html', listPrice: null }, 900, 'observed_price_history'),
+    900
+  );
+  assert.equal(mergedSnapshotListPrice({ provider: 'amazon_html', listPrice: null }, 900, 'observed_peer_price'), 900);
+  assert.equal(mergedSnapshotListPrice({ provider: 'amazon_html', listPrice: null }, 900, 'amazon_html'), null);
 });
 
 test('list price challenge spreads attempts across series before trying more volumes', () => {
