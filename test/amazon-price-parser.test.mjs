@@ -246,6 +246,82 @@ test('Amazon reader fallback follows real collection link and ignores recommenda
   }
 });
 
+test('Amazon series fetch probes reader fallback for small completed DBS subsets', async () => {
+  const originalFetch = globalThis.fetch;
+  const seen = [];
+  globalThis.fetch = async (url) => {
+    const href = String(url);
+    seen.push(href);
+    const parsed = new URL(href);
+
+    if (parsed.hostname === 'r.jina.ai') {
+      return new Response(`
+        # 違国日記 1 Kindle版
+
+        [全11巻中第1巻: 違国日記](https://www.amazon.co.jp/dp/B222222222?binding=kindle_edition&ref=dbs_dp_rwt_sb_pc_tkin)
+      `, { status: 200, headers: { 'content-type': 'text/plain' } });
+    }
+
+    if (/\/kindle-dbs\/product\/B111111111/.test(parsed.pathname)) {
+      return new Response(`
+        <html>
+          <head><meta property="og:title" content="違国日記 (全4巻) Kindle版"></head>
+          <body>
+            <div id="bookDescription_feature_div">全4巻完結。</div>
+            <div id="series-childAsin-list">
+              ${[1, 2, 3, 4].map((volume) => `
+                <div id="series-childAsin-item_${volume}" class="series-childAsin-item">
+                  <a class="itemImageLink" title="違国日記 ${volume}" href="/gp/product/B11111110${volume}?storeType=ebooks"></a>
+                  <span class="a-size-large a-color-price">￥594</span>
+                </div>
+              `).join('')}
+            </div>
+          </body>
+        </html>
+      `, { status: 200, headers: { 'content-type': 'text/html' } });
+    }
+
+    if (parsed.pathname === '/dp/B222222222') {
+      return new Response(`
+        <html>
+          <head><meta property="og:title" content="違国日記 (全11巻) Kindle版"></head>
+          <body>
+            <div id="series-childAsin-list">
+              ${Array.from({ length: 11 }, (_, index) => {
+                const volume = index + 1;
+                return `
+                  <div id="series-childAsin-item_${volume}" class="series-childAsin-item">
+                    <a class="itemImageLink" title="違国日記 ${volume}" href="/gp/product/B2222222${String(volume).padStart(2, '0')}?storeType=ebooks"></a>
+                    <span class="a-size-large a-color-price">￥594</span>
+                  </div>
+                `;
+              }).join('')}
+            </div>
+          </body>
+        </html>
+      `, { status: 200, headers: { 'content-type': 'text/html' } });
+    }
+
+    return new Response('not found', { status: 404 });
+  };
+
+  try {
+    const series = await fetchKindleSeriesItems('https://www.amazon.co.jp/kindle-dbs/product/B111111111', {
+      retries: 0,
+      timeoutMs: 1000,
+      skipThrottle: true,
+      probeSeriesCompletion: false
+    });
+
+    assert.equal(series.sourceAsin, 'B222222222');
+    assert.equal(series.items.length, 11);
+    assert.equal(series.expectedVolumeCount, 11);
+    assert.ok(seen.some((url) => new URL(url).hostname === 'r.jina.ai'));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('Amazon product fetch resolves kindle-dbs product input through canonical dp URL', async () => {
   const originalFetch = globalThis.fetch;
   const seen = [];

@@ -84,7 +84,7 @@ export async function fetchKindleSeriesItems(input, options = {}) {
     }
   }
 
-  if (options.allowReaderFallback !== false && shouldTryAmazonSeriesReaderFallback(amazonResult, amazonError)) {
+  if (options.allowReaderFallback !== false && shouldTryAmazonSeriesReaderFallback(amazonResult, amazonError, input)) {
     try {
       const readerResult = await fetchKindleSeriesItemsFromAmazonReader(input, options);
       if (isBetterKindleSeriesResult(readerResult, amazonResult)) return readerResult;
@@ -251,13 +251,23 @@ function normalizeKindleSeriesItemVolumes(items) {
   }));
 }
 
-function shouldTryAmazonSeriesReaderFallback(series, error) {
+function shouldTryAmazonSeriesReaderFallback(series, error, input = '') {
   if (!shouldUseAmazonReaderFallback()) return false;
   if (error || !series) return true;
   if (!Array.isArray(series.items) || series.items.length <= 1) return true;
 
   const expected = Number(series.expectedVolumeCount) || 0;
-  return expected > series.items.length;
+  return expected > series.items.length || isPotentiallyPartialCompletedKindleDbsSeries(series, input);
+}
+
+function isPotentiallyPartialCompletedKindleDbsSeries(series = {}, input = '') {
+  if (!series.completed || !isKindleDbsProductUrl(input)) return false;
+
+  const items = Array.isArray(series.items) ? series.items : [];
+  if (items.length < 2 || items.length > 4) return false;
+
+  const expected = Number(series.expectedVolumeCount) || 0;
+  return expected === 0 || expected <= items.length;
 }
 
 function isBetterKindleSeriesResult(candidate, current) {
