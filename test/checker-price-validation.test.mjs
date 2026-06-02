@@ -18,6 +18,7 @@ import {
   repairStorePriceState,
   selectListPriceChallengeCandidates,
   seriesKeyForSeries,
+  seriesDiscoveryResultMismatchReason,
   seriesSourceUrlFor,
   seriesAggregateSnapshot,
   seriesSnapshotFromKindleSeriesForBook,
@@ -378,6 +379,127 @@ test('store repair defers nonfatal series discovery source errors for complete k
   assert.equal(summary.seriesDiscoveryDeferred, 1);
   assert.equal(store.books.every((book) => book.seriesDiscoveryStatus === 'deferred'), true);
   assert.equal(store.books.every((book) => book.seriesDiscoveryError === ''), true);
+});
+
+test('series discovery rejects stale source URLs that now resolve to a different series', () => {
+  const reason = seriesDiscoveryResultMismatchReason('ハイパーインフレーション', {
+    seriesName: '「幼馴染みがほしい」と呟いたらよく一緒に遊ぶ女友達の様子が変になったんだが',
+    items: [
+      {
+        asin: 'B0FF4L57XB',
+        title: '「幼馴染みがほしい」と呟いたらよく一緒に遊ぶ女友達の様子が変になったんだが【分冊版】１'
+      },
+      {
+        asin: 'B0FF4KS2XY',
+        title: '「幼馴染みがほしい」と呟いたらよく一緒に遊ぶ女友達の様子が変になったんだが【分冊版】２'
+      },
+      {
+        asin: 'B0FF4LDRTW',
+        title: '「幼馴染みがほしい」と呟いたらよく一緒に遊ぶ女友達の様子が変になったんだが ３'
+      }
+    ]
+  });
+
+  assert.match(reason, /別作品/);
+  assert.match(reason, /ハイパーインフレーション/);
+});
+
+test('store repair removes mixed-in books from a different series identity', () => {
+  const seriesKey = 'series:asin:B09BF1HSBY';
+  const sourceUrl = 'https://www.amazon.co.jp/kindle-dbs/product/B09BF1HSBY';
+  const store = {
+    books: [
+      ...[1, 2, 3, 4, 5, 6].map((volume) => ({
+        id: `hyper-${volume}`,
+        asin: `B00HYPER0${volume}`,
+        title: `ハイパーインフレーション ${volume} (ジャンプコミックスDIGITAL)`,
+        seriesName: 'ハイパーインフレーション',
+        seriesKey,
+        sourceUrl,
+        importMode: 'kindle_series',
+        volume,
+        seriesExpectedCount: 6,
+        currentPrice: 680,
+        effectivePrice: 680,
+        currentPoints: 0,
+        provider: 'amazon_series_child'
+      })),
+      ...[1, 2, 3].map((volume) => ({
+        id: `wrong-${volume}`,
+        asin: `B00WRONG0${volume}`,
+        title: `「幼馴染みがほしい」と呟いたらよく一緒に遊ぶ女友達の様子が変になったんだが ${volume}`,
+        seriesName: '「幼馴染みがほしい」と呟いたらよく一緒に遊ぶ女友達の様子が変になったんだが',
+        seriesKey,
+        sourceUrl,
+        importMode: 'kindle_series',
+        volume,
+        seriesExpectedCount: 9,
+        currentPrice: 165,
+        effectivePrice: 165,
+        currentPoints: 0,
+        provider: 'amazon_series_child'
+      }))
+    ],
+    priceHistory: [
+      { bookId: 'wrong-1', checkedAt: '2026-06-02T12:20:14.346Z', currentPrice: 165 },
+      { bookId: 'hyper-1', checkedAt: '2026-06-02T12:20:14.346Z', currentPrice: 680 }
+    ],
+    notifications: [{ bookId: 'wrong-2', notifiedAt: '2026-06-02T12:20:14.346Z' }],
+    seriesPriceHistory: []
+  };
+
+  const summary = repairStorePriceState(store, {
+    clearCurrent: false,
+    now: '2026-06-03T00:00:00.000Z'
+  });
+
+  assert.equal(summary.removedSeriesIdentityMismatchItems, 3);
+  assert.equal(store.books.length, 6);
+  assert.equal(store.books.every((book) => book.seriesName === 'ハイパーインフレーション'), true);
+  assert.equal(store.priceHistory.some((entry) => entry.bookId === 'wrong-1'), false);
+  assert.equal(store.notifications.some((entry) => entry.bookId === 'wrong-2'), false);
+});
+
+test('series discovery accepts matching source URLs even when item titles have imprints', () => {
+  assert.equal(
+    seriesDiscoveryResultMismatchReason('ハイパーインフレーション', {
+      seriesName: 'ハイパーインフレーション',
+      items: [
+        {
+          asin: 'B00HYPER01',
+          title: 'ハイパーインフレーション 1 (ジャンプコミックスDIGITAL)'
+        },
+        {
+          asin: 'B00HYPER02',
+          title: 'ハイパーインフレーション 2 (ジャンプコミックスDIGITAL)'
+        }
+      ]
+    }),
+    ''
+  );
+});
+
+test('series discovery accepts noisy series names when item titles match the expected series', () => {
+  assert.equal(
+    seriesDiscoveryResultMismatchReason('Wet Moon', {
+      seriesName: 'Amazon.co.jp: Wet Moon 1 ウェットムーン (ビームコミックス) eBook : カネコアツシ: Kindleストア',
+      items: [
+        {
+          asin: 'B00WETMO01',
+          title: 'Wet Moon 1 ウェットムーン (ビームコミックス)'
+        },
+        {
+          asin: 'B00WETMO02',
+          title: 'Wet Moon 2 ウェットムーン (ビームコミックス)'
+        },
+        {
+          asin: 'B00WETMO03',
+          title: 'Wet Moon 3 ウェットムーン (ビームコミックス)'
+        }
+      ]
+    }),
+    ''
+  );
 });
 
 test('series snapshots prefer validated series page prices for checked series books', () => {

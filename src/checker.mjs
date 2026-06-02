@@ -212,6 +212,13 @@ async function addSeriesBooksFromInputInStore(store, input, options = {}) {
     throw error;
   }
 
+  const mismatchReason = seriesDiscoveryResultMismatchReason(options.expectedSeriesName, series);
+  if (mismatchReason) {
+    const error = new Error(mismatchReason);
+    error.status = 422;
+    throw error;
+  }
+
   return importSeriesIntoStore(store, input, series, {
     fetchDetails: String(process.env.SERIES_IMPORT_FETCH_DETAILS || '').toLowerCase() === 'true',
     now: options.now || new Date().toISOString(),
@@ -2227,6 +2234,7 @@ export function repairStorePriceState(store, options = {}) {
       seriesDiscoveryDeferred: 0,
       removedSeriesNavigationItems: 0,
       removedSupplementalSeriesItems: 0,
+      removedSeriesIdentityMismatchItems: 0,
       removedUnvalidatedSeriesTailItems: 0,
       removedDuplicateSeriesVolumeItems: 0,
       repairedSeriesVolumes: 0,
@@ -2246,6 +2254,7 @@ export function repairStorePriceState(store, options = {}) {
     seriesDiscoveryDeferred: 0,
     removedSeriesNavigationItems: 0,
     removedSupplementalSeriesItems: 0,
+    removedSeriesIdentityMismatchItems: 0,
     removedUnvalidatedSeriesTailItems: 0,
     removedDuplicateSeriesVolumeItems: 0,
     repairedSeriesVolumes: 0,
@@ -2268,6 +2277,15 @@ export function repairStorePriceState(store, options = {}) {
     summary.removedHistory += supplementalItemRepair.removedHistory;
     summary.removedNotifications += supplementalItemRepair.removedNotifications;
     summary.booksRepaired += supplementalItemRepair.expectedCountUpdated;
+  }
+
+  const identityMismatchRepair = repairSeriesIdentityMismatchItems(store, { now });
+  if (identityMismatchRepair.changed) {
+    summary.changed = true;
+    summary.removedSeriesIdentityMismatchItems += identityMismatchRepair.removed;
+    summary.removedHistory += identityMismatchRepair.removedHistory;
+    summary.removedNotifications += identityMismatchRepair.removedNotifications;
+    summary.booksRepaired += identityMismatchRepair.expectedCountUpdated;
   }
 
   const unvalidatedTailRepair = repairUnvalidatedSyntheticTailSeriesItems(store, { now });
@@ -2475,6 +2493,78 @@ function repairSupplementalSeriesItems(store, options = {}) {
     removedNotifications: beforeNotifications - store.notifications.length,
     expectedCountUpdated
   };
+}
+
+function repairSeriesIdentityMismatchItems(store, options = {}) {
+  const now = options.now || new Date().toISOString();
+  const groups = new Map();
+  for (const book of store.books || []) {
+    if (!isSeriesBookRecord(book)) continue;
+    const key = seriesGroupKeyForBook(book);
+    if (!key) continue;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(book);
+  }
+
+  const targets = [];
+  for (const books of groups.values()) {
+    if (books.length < 3) continue;
+    const canonical = canonicalSeriesNameByBookCount(books);
+    if (!canonical) continue;
+
+    for (const book of books) {
+      const currentName = cleanStoredSeriesName(book.seriesName || '');
+      if (!currentName || currentName === canonical) continue;
+      if (!isClearlyDifferentSeriesTitle(book.title, canonical)) continue;
+      targets.push(book);
+    }
+  }
+
+  if (targets.length === 0) {
+    return {
+      changed: false,
+      removed: 0,
+      removedHistory: 0,
+      removedNotifications: 0,
+      expectedCountUpdated: 0
+    };
+  }
+
+  const ids = new Set(targets.map((book) => book.id));
+  const affectedKeys = new Set(targets.map(seriesGroupKeyForBook).filter(Boolean));
+  const beforeHistory = store.priceHistory.length;
+  const beforeNotifications = store.notifications.length;
+  removeStoreBooksById(store, ids);
+  const expectedCountUpdated = normalizeExpectedCountForSeriesKeys(store, affectedKeys, now);
+
+  return {
+    changed: true,
+    removed: targets.length,
+    removedHistory: beforeHistory - store.priceHistory.length,
+    removedNotifications: beforeNotifications - store.notifications.length,
+    expectedCountUpdated
+  };
+}
+
+function canonicalSeriesNameByBookCount(books = []) {
+  const counts = new Map();
+  for (const book of books) {
+    const name = cleanStoredSeriesName(book.seriesName || '');
+    if (!name || isGenericSeriesName(name)) continue;
+    const current = counts.get(name) || { name, count: 0, firstVolume: Number.POSITIVE_INFINITY };
+    current.count += 1;
+    const volume = storedBookVolume(book);
+    if (volume > 0) current.firstVolume = Math.min(current.firstVolume, volume);
+    counts.set(name, current);
+  }
+  if (counts.size < 2) return '';
+
+  const ranked = [...counts.values()].sort((left, right) => {
+    if (right.count !== left.count) return right.count - left.count;
+    return left.firstVolume - right.firstVolume;
+  });
+  if (ranked[0].count === ranked[1].count) return '';
+  return ranked[0].name;
 }
 
 function isStoredSeriesCollectionContainerBook(book = {}, groupBooks = []) {
@@ -4993,7 +5083,8 @@ async function runSeriesDiscoveryPlan(store, plan, options = {}) {
         result = await addSeriesBooksFromInputInStore(store, seriesDiscoveryInput(group.sourceUrl, group.seriesKey), {
           now,
           signal: runtime.signal,
-          seriesCandidateCache: options.seriesCandidateCache
+          seriesCandidateCache: options.seriesCandidateCache,
+          expectedSeriesName: group.seriesName
         });
       } finally {
         runtime.cleanup();
@@ -5014,16 +5105,16 @@ async function runSeriesDiscoveryPlan(store, plan, options = {}) {
       recordSeriesDiscoveryCursorInStore(store, group, now);
     } catch (error) {
       const message = error.message || String(error);
-      if (shouldDeferSeriesDiscoveryError(group, message)) {
-        const reason = 'source_unavailable';
+      const deferReason = seriesDiscoveryDeferReason(group, message);
+      if (deferReason) {
         deferredEntries.push({
           seriesKey: group.seriesKey,
           sourceUrl: group.sourceUrl,
           seriesName: group.seriesName,
-          reason,
+          reason: deferReason,
           error: message
         });
-        markSeriesDiscoveryDeferredInStore(store, group, now, reason);
+        markSeriesDiscoveryDeferredInStore(store, group, now, deferReason);
         recordSeriesDiscoveryCursorInStore(store, group, now);
         continue;
       }
@@ -5319,6 +5410,7 @@ function bookImportQueueKey(input) {
 
 function planSeriesDiscovery(store, options = {}) {
   const allGroups = seriesDiscoveryGroups(store.books);
+  const blockedGroups = allGroups.filter(isBlockedSeriesDiscoveryGroup);
   const completedGroups = allGroups.filter((group) => group.completed);
   const completedRecheckGroups = completedGroups.filter((group) => shouldRecheckCompletedSeriesGroup(group, options.now));
   const completedNoRunGroups = completedGroups.filter((group) => !completedRecheckGroups.includes(group));
@@ -5327,7 +5419,10 @@ function planSeriesDiscovery(store, options = {}) {
     reason: 'completed'
   });
   const groups = rotateSeriesGroupsAfterCursor(
-    [...allGroups.filter((group) => !group.completed), ...completedRecheckGroups],
+    [
+      ...allGroups.filter((group) => !group.completed && !blockedGroups.includes(group)),
+      ...completedRecheckGroups.filter((group) => !blockedGroups.includes(group))
+    ],
     store.seriesDiscoveryCursor?.lastSeriesKey
   );
   const limit = floorNumber(process.env.SERIES_DISCOVERY_BATCH_SIZE, 1, 50);
@@ -5335,13 +5430,14 @@ function planSeriesDiscovery(store, options = {}) {
     groups: groups.slice(0, limit),
     totalEligible: groups.length,
     skippedCompleted: completedNoRunGroups.length,
-    skippedNoRun: completedNoRunGroups.length,
+    skippedNoRun: completedNoRunGroups.length + blockedGroups.length,
     markedNoRun
   };
 }
 
 function planSeriesDiscoveryForGroups(store, groups, options = {}) {
   const uniqueGroups = uniqueSeriesDiscoveryGroups(groups);
+  const blockedGroups = uniqueGroups.filter(isBlockedSeriesDiscoveryGroup);
   const completedGroups = uniqueGroups.filter((group) => group.completed);
   const completedRecheckGroups = completedGroups.filter((group) => shouldRecheckCompletedSeriesGroup(group, options.now));
   const completedNoRunGroups = completedGroups.filter((group) => !completedRecheckGroups.includes(group));
@@ -5354,14 +5450,27 @@ function planSeriesDiscoveryForGroups(store, groups, options = {}) {
     1,
     50
   );
-  const runnableGroups = [...uniqueGroups.filter((group) => !group.completed), ...completedRecheckGroups].slice(0, limit);
+  const runnableGroups = [
+    ...uniqueGroups.filter((group) => !group.completed && !blockedGroups.includes(group)),
+    ...completedRecheckGroups.filter((group) => !blockedGroups.includes(group))
+  ].slice(0, limit);
   return {
     groups: runnableGroups,
     totalEligible: runnableGroups.length,
     skippedCompleted: completedNoRunGroups.length,
-    skippedNoRun: completedNoRunGroups.length,
+    skippedNoRun: completedNoRunGroups.length + blockedGroups.length,
     markedNoRun
   };
+}
+
+function isBlockedSeriesDiscoveryGroup(group = {}) {
+  const books = Array.isArray(group.books) ? group.books : [];
+  if (books.length === 0) return false;
+  return books.every(
+    (book) =>
+      book.seriesDiscoveryStatus === 'deferred' &&
+      ['source_mismatch', 'source_unavailable'].includes(String(book.seriesDiscoverySkipReason || ''))
+  );
 }
 
 export function shouldRecheckCompletedSeriesGroup(group = {}, now = new Date().toISOString()) {
@@ -5485,9 +5594,37 @@ function bookBelongsToSeriesDiscoveryGroup(book, group) {
   return false;
 }
 
-function shouldDeferSeriesDiscoveryError(group, error) {
-  if (!/シリーズ内のKindle ASINを取得できませんでした/.test(String(error || ''))) return false;
-  return hasCompleteKnownSeriesCoverage(group);
+function seriesDiscoveryDeferReason(group, error) {
+  const message = String(error || '');
+  if (/シリーズ探索結果が別作品の可能性があります/.test(message)) return 'source_mismatch';
+  if (/シリーズ内のKindle ASINを取得できませんでした/.test(message) && hasCompleteKnownSeriesCoverage(group)) {
+    return 'source_unavailable';
+  }
+  return '';
+}
+
+export function seriesDiscoveryResultMismatchReason(expectedSeriesName = '', series = {}) {
+  const expected = cleanStoredSeriesName(expectedSeriesName || '');
+  const actual = cleanStoredSeriesName(series?.seriesName || '');
+  if (!expected || isGenericSeriesName(expected)) return '';
+  if (!actual || isGenericSeriesName(actual)) return '';
+
+  const items = Array.isArray(series?.items) ? series.items : [];
+  const comparableItems = items.filter((item) => String(item?.title || '').trim());
+  const differentItems = comparableItems.filter((item) => isClearlyDifferentSeriesTitle(item.title, expected));
+  const matchingItems = comparableItems.filter((item) => !isClearlyDifferentSeriesTitle(item.title, expected));
+  const actualDiffers = isClearlyDifferentSeriesTitle(actual, expected);
+  const itemMajorityDiffers =
+    comparableItems.length >= 3 &&
+    differentItems.length >= Math.ceil(comparableItems.length * 0.8) &&
+    differentItems.length > matchingItems.length;
+  const allItemsDiffer = comparableItems.length >= 2 && differentItems.length === comparableItems.length;
+  const itemEvidenceDiffers = itemMajorityDiffers || allItemsDiffer;
+
+  if (!actualDiffers && !itemEvidenceDiffers) return '';
+  if (actualDiffers && comparableItems.length > 0 && !itemEvidenceDiffers) return '';
+
+  return `シリーズ探索結果が別作品の可能性があります: expected "${expected}", got "${actual}"`;
 }
 
 function hasCompleteKnownSeriesCoverage(group = {}) {
