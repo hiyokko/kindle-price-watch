@@ -5,7 +5,7 @@ on:
   schedule:
     # GitHub schedule events can be missed. This watchdog stays inside GitHub
     # and catches the latest unfinished 03:54/15:54 JST execution window.
-    - cron: "20,50 * * * *"
+    - cron: "*/10 * * * *"
 
 concurrency:
   group: kindle-price-check
