@@ -19,7 +19,7 @@ async function main() {
 
   const startedAt = Date.now();
   const target = selectWatchdogTarget(startedAt, {
-    minLagMinutes: readNumberEnv('CHECK_WATCHDOG_MIN_LAG_MINUTES', 20),
+    minLagMinutes: readNumberEnv('CHECK_WATCHDOG_MIN_LAG_MINUTES', 5),
     maxLagMinutes: readNumberEnv('CHECK_WATCHDOG_MAX_LAG_MINUTES', 360)
   });
 

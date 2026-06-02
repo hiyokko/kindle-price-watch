@@ -44,6 +44,17 @@ test('watchdog targets the 03:54 JST window in the morning', () => {
   assert.equal(target.skipReason, undefined);
 });
 
+test('watchdog catches a delayed pre-window schedule after the morning boundary', () => {
+  const target = selectWatchdogTarget(new Date('2026-06-02T19:04:38.000Z').getTime(), {
+    minLagMinutes: 5,
+    maxLagMinutes: 360
+  });
+
+  assert.equal(target.label, '03:54 JST');
+  assert.equal(target.cron, '54 18 * * *');
+  assert.equal(target.skipReason, undefined);
+});
+
 test('watchdog dispatches the price-check workflow as a backup without force-all', () => {
   assert.deepEqual(workflowDispatchInputs({ cron: '54 6 * * *' }), {
     force_all: 'false',
