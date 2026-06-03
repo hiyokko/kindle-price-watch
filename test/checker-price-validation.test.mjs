@@ -11,6 +11,7 @@ import {
   isSupplementalSeriesBookTitle,
   isUsableIncompleteSeriesCandidate,
   isWeakSeriesImageUrl,
+  mergeBulkCheckStoreForPersist,
   mergedSnapshotListPrice,
   observedListPriceCandidateForBook,
   observedPeerListPriceCandidateForBook,
@@ -29,6 +30,157 @@ import {
   suspiciousPriceReason,
   validateListPriceChallengeCandidate
 } from '../src/checker.mjs';
+
+test('bulk check persistence preserves books added after the run started', () => {
+  const baseStore = {
+    books: [
+      {
+        id: 'base-1',
+        asin: 'B000000001',
+        title: 'Base 1',
+        currentPrice: 500,
+        updatedAt: '2026-06-03T00:00:00.000Z'
+      }
+    ],
+    priceHistory: [
+      {
+        id: 'history-base',
+        bookId: 'base-1',
+        asin: 'B000000001',
+        price: 500,
+        effectivePrice: 500,
+        checkedAt: '2026-06-03T00:00:00.000Z'
+      }
+    ],
+    notifications: [],
+    seriesPriceHistory: [],
+    checkCursor: { lastBookId: 'base-1', checkedAt: '2026-06-03T00:00:00.000Z' },
+    seriesDiscoveryCursor: { lastSeriesKey: '', checkedAt: '' },
+    importQueue: { pending: [], completed: [], errors: [] }
+  };
+  const runStore = {
+    ...baseStore,
+    books: [
+      {
+        ...baseStore.books[0],
+        currentPrice: 450,
+        effectivePrice: 450,
+        updatedAt: '2026-06-03T01:00:00.000Z'
+      }
+    ],
+    priceHistory: [
+      ...baseStore.priceHistory,
+      {
+        id: 'history-run',
+        bookId: 'base-1',
+        asin: 'B000000001',
+        price: 450,
+        effectivePrice: 450,
+        checkedAt: '2026-06-03T01:00:00.000Z'
+      }
+    ],
+    checkCursor: { lastBookId: 'base-1', checkedAt: '2026-06-03T01:00:00.000Z' }
+  };
+  const currentStore = {
+    ...baseStore,
+    books: [
+      baseStore.books[0],
+      {
+        id: 'concurrent-1',
+        asin: 'B000000002',
+        title: 'Concurrent 1',
+        currentPrice: 700,
+        updatedAt: '2026-06-03T00:30:00.000Z'
+      }
+    ],
+    priceHistory: [
+      ...baseStore.priceHistory,
+      {
+        id: 'history-current',
+        bookId: 'concurrent-1',
+        asin: 'B000000002',
+        price: 700,
+        effectivePrice: 700,
+        checkedAt: '2026-06-03T00:30:00.000Z'
+      }
+    ]
+  };
+
+  const merged = mergeBulkCheckStoreForPersist(currentStore, runStore, baseStore);
+
+  assert.equal(merged.books.length, 2);
+  assert.equal(merged.books.find((book) => book.asin === 'B000000001').currentPrice, 450);
+  assert.equal(merged.books.find((book) => book.asin === 'B000000002').currentPrice, 700);
+  assert.deepEqual(
+    merged.priceHistory.map((entry) => entry.id).sort(),
+    ['history-base', 'history-current', 'history-run'].sort()
+  );
+  assert.equal(merged.checkCursor.checkedAt, '2026-06-03T01:00:00.000Z');
+});
+
+test('price repair keeps real unresolved series tail books with specific titles', () => {
+  const seriesKey = 'series:asin:B074CKKCZR';
+  const store = {
+    books: [
+      ...[1, 2, 3, 4, 5].map((volume) => ({
+        id: `known-${volume}`,
+        asin: `B00000000${volume}`,
+        title: `ワイルドマウンテン（${volume}） (IKKI COMIX)`,
+        seriesKey,
+        seriesName: 'ワイルドマウンテン',
+        volume,
+        seriesExpectedCount: 8,
+        importMode: 'kindle_series',
+        currentPrice: 693,
+        effectivePrice: 686,
+        provider: 'amazon_html',
+        sourceUrl: 'https://www.amazon.co.jp/kindle-dbs/product/B074CKKCZR'
+      })),
+      {
+        id: 'tail-6',
+        asin: 'B00WHQI4AS',
+        title: 'ワイルドマウンテン（６） (IKKI COMIX)',
+        seriesKey,
+        seriesName: 'ワイルドマウンテン',
+        volume: 6,
+        seriesExpectedCount: 8,
+        importMode: 'kindle_series',
+        currentPrice: null,
+        effectivePrice: null,
+        provider: 'pending_series',
+        sourceUrl: 'https://www.amazon.co.jp/kindle-dbs/product/B074CKKCZR',
+        seriesLastDiscoveredAt: '2026-06-03T11:39:40.351Z',
+        lastError: 'シリーズ一括登録: 次回チェックで詳細取得します'
+      },
+      {
+        id: 'tail-7',
+        asin: 'B00WHQI4FI',
+        title: 'ワイルドマウンテン（７） (IKKI COMIX)',
+        seriesKey,
+        seriesName: 'ワイルドマウンテン',
+        volume: 7,
+        seriesExpectedCount: 8,
+        importMode: 'kindle_series',
+        currentPrice: null,
+        effectivePrice: null,
+        provider: 'pending_series',
+        sourceUrl: 'https://www.amazon.co.jp/kindle-dbs/product/B074CKKCZR',
+        seriesLastDiscoveredAt: '2026-06-03T11:39:40.351Z',
+        lastError: 'シリーズ一括登録: 次回チェックで詳細取得します'
+      }
+    ],
+    priceHistory: [],
+    seriesPriceHistory: [],
+    notifications: []
+  };
+
+  const repair = repairStorePriceState(store, { now: '2026-06-04T00:00:00.000Z' });
+
+  assert.equal(repair.removedUnvalidatedSeriesTailItems, 0);
+  assert.equal(store.books.length, 7);
+  assert.ok(store.books.some((book) => book.asin === 'B00WHQI4AS'));
+  assert.ok(store.books.some((book) => book.asin === 'B00WHQI4FI'));
+});
 
 test('price validation rejects tiny Amazon HTML prices without a prior reference', () => {
   assert.match(
