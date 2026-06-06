@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { gunzipSync } from 'node:zlib';
 
-import { buildBodyResponse } from '../src/http-response.mjs';
+import { buildBodyResponse, buildPrecompressedGzipResponse } from '../src/http-response.mjs';
 
 test('large API responses can be sent as gzip with weak ETag and Vary', () => {
   const body = Buffer.from(JSON.stringify({ books: [{ title: 'book'.repeat(400) }] }));
@@ -58,4 +58,30 @@ test('gzip is skipped when the client does not advertise support', () => {
   assert.equal(response.headers['Content-Encoding'], undefined);
   assert.equal(response.body, body);
   assert.equal(response.headers.Vary, 'Accept-Encoding');
+});
+
+test('precompressed gzip responses preserve blob ETag and encoding headers', () => {
+  const response = buildPrecompressedGzipResponse(200, Buffer.from('compressed'), {
+    etag: '"blob-etag"',
+    cacheControl: 'private, no-cache, max-age=0'
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.ETag, '"blob-etag"');
+  assert.equal(response.headers['Content-Encoding'], 'gzip');
+  assert.equal(response.headers.Vary, 'Accept-Encoding');
+  assert.equal(response.headers['Cache-Control'], 'private, no-cache, max-age=0');
+});
+
+test('precompressed 304 responses keep validators without a content encoding', () => {
+  const response = buildPrecompressedGzipResponse(304, Buffer.alloc(0), {
+    etag: '"blob-etag"',
+    cacheControl: 'private, no-cache, max-age=0'
+  });
+
+  assert.equal(response.status, 304);
+  assert.equal(response.headers.ETag, '"blob-etag"');
+  assert.equal(response.headers['Content-Encoding'], undefined);
+  assert.equal(response.headers.Vary, 'Accept-Encoding');
+  assert.equal(response.body.length, 0);
 });

@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { gzipSync } from 'node:zlib';
 import {
   amazonUrlForAsin,
   extractAsin,
@@ -16,7 +17,16 @@ import {
   isProbablyBookAsin,
   isKindleSeriesUrl
 } from './price-provider.mjs';
-import { readStore, updateStore, publicBook } from './store.mjs';
+import {
+  hasBlobConfig,
+  publicBook,
+  readStore,
+  readStoreWithMetadata,
+  registerStoreWriteListener,
+  updateStore,
+  writeBlobBookListPayload
+} from './store.mjs';
+import { bookListPayload } from './book-list-payload.mjs';
 import { readWebhookStore, writeWebhookStore } from './webhook-store.mjs';
 import {
   buildCronSummaryNotification,
@@ -71,7 +81,19 @@ const MIXED_EDITION_SERIES_ASINS = new Set([
 ]);
 
 export async function listBooks() {
-  const store = await readStoreWithPriceRepairs();
+  const { store } = await readStoreWithPriceRepairsWithMetadata();
+  return publicBooksFromStore(store);
+}
+
+export async function listBooksWithStoreMetadata() {
+  const { store, etag } = await readStoreWithPriceRepairsWithMetadata();
+  return {
+    books: publicBooksFromStore(store),
+    storeEtag: etag || ''
+  };
+}
+
+export function publicBooksFromStore(store) {
   const seriesHistory = seriesHistorySummaries(store);
   const discountReferences = observedDiscountReferenceSummaries(store);
   return store.books
@@ -79,16 +101,28 @@ export async function listBooks() {
     .sort(sortBooks);
 }
 
-async function readStoreWithPriceRepairs(options = {}) {
-  const now = options.now || new Date().toISOString();
-  const store = await readStore();
-  const repair = repairStorePriceState(store, { ...options, now });
-  if (!repair.changed) return store;
+registerStoreWriteListener(async (store, metadata = {}) => {
+  if (!hasBlobConfig() || !metadata.etag) return;
+  const body = Buffer.from(JSON.stringify(bookListPayload(publicBooksFromStore(store))));
+  await writeBlobBookListPayload(metadata.etag, gzipSync(body));
+});
 
-  return updateStore((currentStore) => {
+async function readStoreWithPriceRepairs(options = {}) {
+  const { store } = await readStoreWithPriceRepairsWithMetadata(options);
+  return store;
+}
+
+async function readStoreWithPriceRepairsWithMetadata(options = {}) {
+  const now = options.now || new Date().toISOString();
+  const metadata = await readStoreWithMetadata();
+  const repair = repairStorePriceState(metadata.store, { ...options, now });
+  if (!repair.changed) return metadata;
+
+  await updateStore((currentStore) => {
     repairStorePriceState(currentStore, { ...options, now });
     return currentStore;
   });
+  return readStoreWithMetadata();
 }
 
 export async function addSeriesImports(imports, options = {}) {

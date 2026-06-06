@@ -23,12 +23,23 @@ export function buildBodyResponse(status, body, options = {}) {
   return { status, headers, body: responseBody };
 }
 
+export function buildPrecompressedGzipResponse(status, body, options = {}) {
+  const headers = {
+    'Content-Type': options.contentType || 'application/json; charset=utf-8',
+    'Cache-Control': options.cacheControl || 'no-store',
+    Vary: appendHeaderValue(options.vary, 'Accept-Encoding')
+  };
+  if (options.etag) headers.ETag = options.etag;
+  if (status !== 304) headers['Content-Encoding'] = 'gzip';
+  return { status, headers, body };
+}
+
 function shouldGzipBody(status, body, req, options = {}) {
   if (!options.gzip || status !== 200 || body.length < gzipMinBytes()) return false;
   return requestAcceptsEncoding(req, 'gzip');
 }
 
-function requestAcceptsEncoding(req, encoding) {
+export function requestAcceptsEncoding(req, encoding) {
   const value = String(req?.headers?.['accept-encoding'] || '').toLowerCase();
   return value
     .split(',')
@@ -54,7 +65,7 @@ function responseEtag(body, options = {}) {
   return options.weak ? `W/${value}` : value;
 }
 
-function requestEtagMatches(req, etag) {
+export function requestEtagMatches(req, etag) {
   const value = String(req?.headers?.['if-none-match'] || '');
   if (!value) return false;
   const normalizedEtag = normalizeEtag(etag);

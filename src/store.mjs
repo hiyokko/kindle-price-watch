@@ -1,4 +1,5 @@
 import { promises as fs } from 'node:fs';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { amazonUrlForAsin } from './price-provider.mjs';
 
@@ -84,6 +85,12 @@ let blobStoreCache = {
   metadata: null,
   promise: null
 };
+let blobBookListPayloadCache = {
+  expiresAt: 0,
+  metadata: null,
+  body: null
+};
+const storeWriteListeners = new Set();
 
 async function ensureStore() {
   await fs.mkdir(dataDir, { recursive: true });
@@ -128,13 +135,22 @@ function mergeSettings(settings = {}) {
 }
 
 export async function readStore() {
+  const { store } = await readStoreWithMetadata();
+  return store;
+}
+
+export async function readStoreWithMetadata(options = {}) {
   if (hasBlobConfig()) {
-    return readBlobStore();
+    return readBlobStoreWithMetadata(options);
   }
 
   await ensureStore();
   const raw = await fs.readFile(storePath, 'utf8');
-  return mergeStore(JSON.parse(raw));
+  return {
+    store: mergeStore(JSON.parse(raw)),
+    etag: responseEtag(raw),
+    size: Buffer.byteLength(raw)
+  };
 }
 
 export async function updateStore(mutator) {
@@ -148,6 +164,7 @@ export async function updateStore(mutator) {
     const tmpPath = `${storePath}.${Date.now()}.tmp`;
     await fs.writeFile(tmpPath, JSON.stringify(next, null, 2));
     await fs.rename(tmpPath, storePath);
+    await notifyStoreWritten(next, { etag: '', size: 0 });
     return next;
   });
 
@@ -335,20 +352,16 @@ function normalizeSeriesDiscoveryAdditions(additions) {
     }));
 }
 
-function hasBlobConfig() {
+export function hasBlobConfig() {
   return Boolean(process.env.BLOB_READ_WRITE_TOKEN);
-}
-
-async function readBlobStore() {
-  const { store } = await readBlobStoreWithMetadata();
-  return store;
 }
 
 async function updateBlobStore(mutator) {
   writeQueue = writeQueue.then(async () => {
     const { store } = await readBlobStoreWithMetadata({ force: true });
     const next = mergeStoreMutationResult(await mutator(store));
-    await writeBlobStore(next);
+    const metadata = await writeBlobStore(next);
+    await notifyStoreWritten(next, metadata);
     return next;
   });
 
@@ -392,30 +405,158 @@ async function readBlobStoreWithMetadata(options = {}) {
   }
 }
 
+export async function readStoreHeadMetadata(options = {}) {
+  if (!hasBlobConfig()) {
+    const { etag, size } = await readStoreWithMetadata();
+    return { etag, size };
+  }
+
+  const now = Date.now();
+  if (!options.force && blobStoreCache.metadata?.etag && blobStoreCache.expiresAt > now) {
+    return {
+      etag: blobStoreCache.metadata.etag || '',
+      size: blobStoreCache.metadata.size || 0
+    };
+  }
+
+  const { head } = await getBlobSdk();
+  const result = await head(blobStorePath);
+  return {
+    etag: result?.etag || '',
+    size: result?.size || 0
+  };
+}
+
+export async function readBlobBookListPayload(storeEtag, options = {}) {
+  if (!hasBlobConfig() || !storeEtag) return null;
+  const pathname = blobBookListPayloadPath(storeEtag);
+  const ifNoneMatch = String(options.ifNoneMatch || '').trim();
+  const now = Date.now();
+
+  if (blobBookListPayloadCache.metadata?.pathname === pathname && blobBookListPayloadCache.expiresAt > now) {
+    const cached = blobBookListPayloadCache;
+    if (etagHeaderMatches(ifNoneMatch, cached.metadata.etag)) {
+      return {
+        statusCode: 304,
+        etag: cached.metadata.etag,
+        body: Buffer.alloc(0),
+        pathname
+      };
+    }
+    if (cached.body) {
+      return {
+        statusCode: 200,
+        etag: cached.metadata.etag,
+        body: Buffer.from(cached.body),
+        pathname,
+        size: cached.metadata.size || cached.body.length
+      };
+    }
+  }
+
+  const { get } = await getBlobSdk();
+  const result = await get(pathname, {
+    access: 'private',
+    ifNoneMatch: ifNoneMatch || undefined
+  });
+  if (!result) return null;
+
+  if (result.statusCode === 304) {
+    const metadata = {
+      pathname,
+      etag: result.blob?.etag || '',
+      size: 0
+    };
+    setBlobBookListPayloadCache(metadata, null);
+    return {
+      statusCode: 304,
+      etag: metadata.etag,
+      body: Buffer.alloc(0),
+      pathname
+    };
+  }
+
+  const body = Buffer.from(await new Response(result.stream).arrayBuffer());
+  const metadata = {
+    pathname,
+    etag: result.blob?.etag || '',
+    size: result.blob?.size || body.length
+  };
+  setBlobBookListPayloadCache(metadata, body);
+  return {
+    statusCode: 200,
+    etag: metadata.etag,
+    body,
+    pathname,
+    size: metadata.size
+  };
+}
+
+export async function writeBlobBookListPayload(storeEtag, body) {
+  if (!hasBlobConfig() || !storeEtag || !body) return null;
+  const pathname = blobBookListPayloadPath(storeEtag);
+  const bytes = Buffer.from(body);
+  const { put } = await getBlobSdk();
+  const result = await put(pathname, bytes, {
+    access: 'private',
+    allowOverwrite: true,
+    contentType: 'application/json',
+    cacheControlMaxAge: 60 * 60 * 24 * 30
+  });
+  const metadata = {
+    pathname,
+    etag: result?.etag || '',
+    size: bytes.length
+  };
+  setBlobBookListPayloadCache(metadata, bytes);
+  return metadata;
+}
+
+export function registerStoreWriteListener(listener) {
+  storeWriteListeners.add(listener);
+  return () => storeWriteListeners.delete(listener);
+}
+
+async function notifyStoreWritten(store, metadata = {}) {
+  if (storeWriteListeners.size === 0) return;
+  await Promise.all(
+    [...storeWriteListeners].map(async (listener) => {
+      try {
+        await listener(store, metadata);
+      } catch (error) {
+        console.error('Store write listener failed', error);
+      }
+    })
+  );
+}
+
 async function fetchBlobStoreWithMetadata() {
   const { get } = await getBlobSdk();
   const result = await get(blobStorePath, { access: 'private', useCache: false });
 
   if (result?.statusCode !== 200 || !result.stream) {
-    return { store: mergeStore(defaultStore), etag: '' };
+    return { store: mergeStore(defaultStore), etag: '', size: 0 };
   }
 
   const raw = await new Response(result.stream).text();
   return {
     store: mergeStore(JSON.parse(raw)),
-    etag: result.blob?.etag || ''
+    etag: result.blob?.etag || '',
+    size: result.blob?.size || raw.length
   };
 }
 
 async function writeBlobStore(store) {
   const { put } = await getBlobSdk();
-  await put(blobStorePath, JSON.stringify(compactStoreForWrite(store)), {
+  const result = await put(blobStorePath, JSON.stringify(compactStoreForWrite(store)), {
     access: 'private',
     allowOverwrite: true,
     contentType: 'application/json',
     cacheControlMaxAge: 0
   });
-  setBlobStoreCache({ store, etag: '' });
+  const metadata = { store, etag: result?.etag || '', size: 0 };
+  setBlobStoreCache(metadata);
+  return metadata;
 }
 
 function compactStoreForWrite(store) {
@@ -535,6 +676,50 @@ function compactImportQueueForWrite(queue = {}) {
   });
 }
 
+function setBlobBookListPayloadCache(metadata, body) {
+  blobBookListPayloadCache = {
+    expiresAt: Date.now() + blobBookListPayloadMemoryCacheMs(),
+    metadata: {
+      pathname: metadata.pathname || '',
+      etag: metadata.etag || '',
+      size: metadata.size || 0
+    },
+    body: body ? Buffer.from(body) : null
+  };
+}
+
+function blobBookListPayloadPath(storeEtag) {
+  const directory = blobStoreDirectory();
+  const key = sanitizePathSegment(normalizeEtag(storeEtag)) || 'unknown';
+  return `${directory ? `${directory}/` : ''}books-payloads/${key}.json.gz`;
+}
+
+function blobStoreDirectory() {
+  const index = blobStorePath.lastIndexOf('/');
+  return index === -1 ? '' : blobStorePath.slice(0, index);
+}
+
+function sanitizePathSegment(value) {
+  return String(value || '').replace(/[^A-Za-z0-9_-]/g, '_');
+}
+
+function etagHeaderMatches(header, etag) {
+  if (!header || !etag) return false;
+  const normalizedEtag = normalizeEtag(etag);
+  return String(header)
+    .split(',')
+    .map((item) => normalizeEtag(item.trim()))
+    .includes(normalizedEtag);
+}
+
+function normalizeEtag(value) {
+  return String(value || '').replace(/^W\//, '').replace(/^"|"$/g, '');
+}
+
+function responseEtag(value) {
+  return `"${createHash('sha256').update(String(value)).digest('base64url')}"`;
+}
+
 function compactAgainstDefaults(value = {}, defaults = {}) {
   const compacted = {};
   for (const [key, currentValue] of Object.entries(value || {})) {
@@ -583,7 +768,8 @@ function setBlobStoreCache(metadata) {
 function cloneBlobMetadata(metadata) {
   return {
     store: cloneJson(metadata.store),
-    etag: metadata.etag || ''
+    etag: metadata.etag || '',
+    size: metadata.size || 0
   };
 }
 
@@ -593,5 +779,10 @@ function cloneJson(value) {
 
 function blobStoreMemoryCacheMs() {
   const value = Number(process.env.BLOB_STORE_MEMORY_CACHE_MS);
+  return Number.isFinite(value) && value >= 0 ? Math.round(value) : 15000;
+}
+
+function blobBookListPayloadMemoryCacheMs() {
+  const value = Number(process.env.BLOB_BOOK_LIST_PAYLOAD_MEMORY_CACHE_MS);
   return Number.isFinite(value) && value >= 0 ? Math.round(value) : 15000;
 }

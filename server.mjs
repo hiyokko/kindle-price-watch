@@ -13,7 +13,7 @@ import {
   deleteSeriesPayload,
   historyPayload,
   importQueuePayload,
-  listBooksPayload,
+  listBooksPayloadResponse,
   runChecksPayload,
   saveSettingsPayload,
   saveImportQueuePayload,
@@ -79,12 +79,7 @@ async function handleApi(req, res, url) {
   const pathParts = url.pathname.split('/').filter(Boolean);
 
   if (method === 'GET' && url.pathname === '/api/books') {
-    sendJson(res, 200, await listBooksPayload(), {
-      req,
-      etag: true,
-      gzip: true,
-      cacheControl: 'private, no-cache, max-age=0'
-    });
+    sendResponse(res, await listBooksPayloadResponse(req));
     return;
   }
 
@@ -475,6 +470,10 @@ function sendJson(res, status, payload, options = {}) {
 
 function sendBody(res, status, body, options = {}) {
   const response = buildBodyResponse(status, body, options);
+  sendResponse(res, response);
+}
+
+function sendResponse(res, response) {
   res.writeHead(response.status, response.headers);
   res.end(response.body);
 }
