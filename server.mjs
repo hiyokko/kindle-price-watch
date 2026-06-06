@@ -1,9 +1,10 @@
 import { createServer } from 'node:http';
 import { promises as fs } from 'node:fs';
-import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadEnv, readNumberEnv } from './src/env.mjs';
+import { buildBodyResponse } from './src/http-response.mjs';
 import {
   addBooksPayload,
   checkBookPayload,
@@ -81,6 +82,7 @@ async function handleApi(req, res, url) {
     sendJson(res, 200, await listBooksPayload(), {
       req,
       etag: true,
+      gzip: true,
       cacheControl: 'private, no-cache, max-age=0'
     });
     return;
@@ -472,35 +474,9 @@ function sendJson(res, status, payload, options = {}) {
 }
 
 function sendBody(res, status, body, options = {}) {
-  const headers = {
-    'Content-Type': 'application/json; charset=utf-8',
-    'Cache-Control': options.cacheControl || 'no-store'
-  };
-  if (options.contentType) headers['Content-Type'] = options.contentType;
-  if (options.etag) {
-    const etag = responseEtag(body);
-    headers.ETag = etag;
-    if (status === 200 && requestEtagMatches(options.req, etag)) {
-      res.writeHead(304, headers);
-      res.end();
-      return;
-    }
-  }
-  res.writeHead(status, headers);
-  res.end(body);
-}
-
-function responseEtag(body) {
-  return `"${createHash('sha256').update(body).digest('base64url')}"`;
-}
-
-function requestEtagMatches(req, etag) {
-  const value = String(req?.headers?.['if-none-match'] || '');
-  if (!value) return false;
-  return value
-    .split(',')
-    .map((item) => item.trim().replace(/^W\//, ''))
-    .includes(etag);
+  const response = buildBodyResponse(status, body, options);
+  res.writeHead(response.status, response.headers);
+  res.end(response.body);
 }
 
 function contentType(filePath) {
