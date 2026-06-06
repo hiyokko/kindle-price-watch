@@ -4096,8 +4096,8 @@ function trustedVolumeFromSeriesTitle(title, seriesName = '') {
 
   const numericMatch =
     value.match(/(?:第)?([0-9０-９]{1,3})\s*巻/u) ||
-    value.match(/[（(]\s*([0-9０-９]{1,3})\s*[）)](?:\s*[（(][^（）()]{0,80}[）)])?\s*$/u) ||
-    value.match(/(?:^|[\s　:：\-－ー—])([0-9０-９]{1,3})(?:\s*[）)]|\s*[（(][^（）()]{0,80}[）)]|\s*$)/u);
+    value.match(/[（(]\s*([0-9０-９]{1,3})\s*[）)](?:\s*(?:[（(][^（）()]{0,80}[）)]|【[^】]{0,80}】|［[^］]{0,80}］|\[[^\]]{0,80}\]))*\s*$/u) ||
+    value.match(/(?:^|[\s　:：\-－ー—])([0-9０-９]{1,3})(?:\s*[）)]|\s*(?:[（(][^（）()]{0,80}[）)]|【[^】]{0,80}】|［[^］]{0,80}］|\[[^\]]{0,80}\]))*\s*$/u);
   if (!numericMatch) return 0;
   return Number(String(numericMatch[1]).replace(/[０-９]/g, (char) => String(char.charCodeAt(0) - 0xff10))) || 0;
 }
@@ -4117,8 +4117,8 @@ function volumeFromSeriesTitle(title) {
   const value = String(title || '');
   const match =
     value.match(/(?:第)?([0-9０-９]{1,3})\s*巻/) ||
-    value.match(/[（(]\s*([0-9０-９]{1,3})\s*[）)](?:\s*[（(][^（）()]{0,80}[）)])?\s*$/) ||
-    value.match(/[　\s（(]([0-9０-９]{1,3})[）)]?\s*$/);
+    value.match(/[（(]\s*([0-9０-９]{1,3})\s*[）)](?:\s*(?:[（(][^（）()]{0,80}[）)]|【[^】]{0,80}】|［[^］]{0,80}］|\[[^\]]{0,80}\]))*\s*$/) ||
+    value.match(/[　\s（(]([0-9０-９]{1,3})[）)]?(?:\s*(?:[（(][^（）()]{0,80}[）)]|【[^】]{0,80}】|［[^］]{0,80}］|\[[^\]]{0,80}\]))*\s*$/);
   if (!match) return 0;
   return Number(String(match[1]).replace(/[０-９]/g, (char) => String(char.charCodeAt(0) - 0xff10)));
 }

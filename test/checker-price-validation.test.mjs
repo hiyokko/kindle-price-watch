@@ -1022,6 +1022,73 @@ test('store repair removes supplemental books mixed into main series volumes', (
   assert.equal(kamuiBooks.length, 2);
 });
 
+test('store repair keeps real tail volumes with digital bonus title qualifiers', () => {
+  const store = {
+    books: [
+      ...Array.from({ length: 31 }, (_, index) => ({
+        id: `hyakki-${index + 1}`,
+        asin: `B00HYAKKI${String(index + 1).padStart(2, '0')}`,
+        title: `百鬼夜行抄 ${index + 1}`,
+        seriesName: '百鬼夜行抄',
+        seriesKey: 'series:asin:B074CFV2YG',
+        sourceUrl: 'https://www.amazon.co.jp/kindle-dbs/product/B074CFV2YG',
+        seriesExpectedCount: 32,
+        seriesCompleted: true,
+        importMode: 'kindle_series',
+        volume: index + 1,
+        currentPrice: 871,
+        currentPoints: 0,
+        effectivePrice: 871,
+        provider: 'amazon_series_bulk'
+      })),
+      {
+        id: 'hyakki-32',
+        asin: 'B0GSYB27M6',
+        title: '百鬼夜行抄（32）【電子限定特典付き】 (Nemuki+コミックス)',
+        seriesName: '百鬼夜行抄',
+        seriesKey: 'series:asin:B074CFV2YG',
+        sourceUrl: 'https://www.amazon.co.jp/kindle-dbs/product/B074CFV2YG',
+        seriesExpectedCount: 32,
+        seriesCompleted: true,
+        importMode: 'kindle_series',
+        volume: 32,
+        imageUrl: 'https://m.media-amazon.com/images/I/51rKjpaUyOL._SY300_.jpg',
+        amazonUrl: 'https://www.amazon.co.jp/dp/B0GSYB27M6',
+        currentPrice: 871,
+        currentPoints: 0,
+        effectivePrice: 871,
+        provider: 'amazon_series_bulk'
+      }
+    ],
+    priceHistory: [
+      {
+        id: 'history-hyakki-32',
+        bookId: 'hyakki-32',
+        asin: 'B0GSYB27M6',
+        price: 871,
+        points: 0,
+        effectivePrice: 871,
+        checkedAt: '2026-06-04T19:35:32.540Z'
+      }
+    ],
+    notifications: [],
+    seriesPriceHistory: []
+  };
+
+  const summary = repairStorePriceState(store, {
+    clearCurrent: false,
+    now: '2026-06-05T10:17:12.000Z'
+  });
+
+  const hyakkiBooks = store.books.filter((book) => book.seriesName === '百鬼夜行抄');
+  assert.equal(summary.removedSupplementalSeriesItems, 0);
+  assert.equal(summary.removedUnvalidatedSeriesTailItems, 0);
+  assert.equal(summary.removedDuplicateSeriesVolumeItems, 0);
+  assert.equal(hyakkiBooks.length, 32);
+  assert.equal(hyakkiBooks.some((book) => book.asin === 'B0GSYB27M6'), true);
+  assert.deepEqual(hyakkiBooks.map((book) => book.volume), Array.from({ length: 32 }, (_, index) => index + 1));
+});
+
 test('store repair removes short-name related books and collection containers from a series', () => {
   const store = {
     books: [
