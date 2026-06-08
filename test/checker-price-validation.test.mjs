@@ -229,6 +229,20 @@ test('price validation accepts explicitly displayed tiny Kindle yen prices', () 
   );
 });
 
+test('price validation rejects tiny point-like Amazon HTML prices against common manga list prices', () => {
+  assert.match(
+    suspiciousPriceReason({
+      price: 6,
+      points: 5,
+      effectivePrice: 1,
+      listPrice: 550,
+      provider: 'amazon_html',
+      explicitPriceDisplay: true
+    }),
+    /割引率またはポイント率/
+  );
+});
+
 test('price validation accepts explicitly free Kindle prices', () => {
   assert.equal(
     suspiciousPriceReason({
@@ -1598,6 +1612,36 @@ test('store repair lowers stale expected count for completed contiguous series',
   const summary = repairStorePriceState(store, {
     clearCurrent: false,
     now: '2026-05-21T03:00:00.000Z'
+  });
+
+  assert.equal(summary.changed, true);
+  assert.equal(summary.repairedSeriesExpectedCounts, 7);
+  assert.deepEqual([...new Set(store.books.map((book) => book.seriesExpectedCount))], [7]);
+});
+
+test('store repair lowers known stale expected count for current Mamiya lineup', () => {
+  const store = {
+    books: Array.from({ length: 7 }, (_, index) => ({
+      id: `mamiya-${index + 1}`,
+      asin: `B00MAMIYA${index + 1}`,
+      title: `闇麻のマミヤ ${index + 1}`,
+      seriesName: '闇麻のマミヤ',
+      seriesKey: 'series:asin:B08VDDHQF8',
+      seriesExpectedCount: 8,
+      importMode: 'kindle_series',
+      volume: index + 1,
+      currentPrice: 495,
+      currentPoints: 5,
+      effectivePrice: 490
+    })),
+    priceHistory: [],
+    notifications: [],
+    seriesPriceHistory: []
+  };
+
+  const summary = repairStorePriceState(store, {
+    clearCurrent: false,
+    now: '2026-06-09T00:00:00.000Z'
   });
 
   assert.equal(summary.changed, true);
