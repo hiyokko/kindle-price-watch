@@ -82,45 +82,45 @@ test('discount sort primarily orders by series discount rate', () => {
   assert.equal(compareGroupsByDiscountRate(incompleteHigherDiscount, completeLowerDiscount) < 0, true);
 });
 
-test('average price sort orders by per-book average before total price', () => {
+test('average price sort orders by per-book effective average before total price', () => {
   const { compareGroupsByAveragePrice } = loadAppSortContext();
-  const lowerAverageHigherTotal = {
-    title: 'lower average higher total',
+  const lowerEffectiveAverageHigherTotal = {
+    title: 'lower effective average higher total',
     totalMetrics: {
       pricedCount: 5,
       complete: true,
-      totalPrice: 1000,
-      effectiveTotal: 1000,
-      averagePrice: 200,
-      averageEffectivePrice: 200
+      totalPrice: 1500,
+      effectiveTotal: 750,
+      averagePrice: 300,
+      averageEffectivePrice: 150
     }
   };
-  const higherAverageLowerTotal = {
-    title: 'higher average lower total',
+  const higherEffectiveAverageLowerTotal = {
+    title: 'higher effective average lower total',
     totalMetrics: {
       pricedCount: 2,
       complete: true,
       totalPrice: 600,
-      effectiveTotal: 600,
+      effectiveTotal: 400,
       averagePrice: 300,
-      averageEffectivePrice: 300
+      averageEffectivePrice: 200
     }
   };
 
-  assert.equal(compareGroupsByAveragePrice(lowerAverageHigherTotal, higherAverageLowerTotal) < 0, true);
+  assert.equal(compareGroupsByAveragePrice(lowerEffectiveAverageHigherTotal, higherEffectiveAverageLowerTotal) < 0, true);
 });
 
-test('series total label includes per-book average price', () => {
+test('series total label includes per-book average effective price', () => {
   const { seriesTotalLabel } = loadAppSortContext();
   const label = seriesTotalLabel({
     books: [
-      { currentPrice: 300, currentPoints: 0, effectivePrice: 300 },
-      { currentPrice: 500, currentPoints: 0, effectivePrice: 500 }
+      { currentPrice: 300, currentPoints: 50, effectivePrice: 250 },
+      { currentPrice: 500, currentPoints: 50, effectivePrice: 450 }
     ],
     expectedCount: 2
   });
 
-  assert.match(label, /合計 ¥800 \/ 平均 ¥400/);
+  assert.match(label, /合計 ¥800 \/ 平均 ¥350 \/ 100pt（実質 ¥700）/);
 });
 
 test('series meta uses representative author, publisher, and series ASIN', () => {

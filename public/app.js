@@ -978,10 +978,11 @@ function compareGroupsByAveragePrice(a, b) {
   const ar = totalPriceSortRank(am);
   const br = totalPriceSortRank(bm);
   if (ar !== br) return ar - br;
-  if (am.averagePrice !== bm.averagePrice) return (am.averagePrice ?? Infinity) - (bm.averagePrice ?? Infinity);
   if (am.averageEffectivePrice !== bm.averageEffectivePrice) {
     return (am.averageEffectivePrice ?? Infinity) - (bm.averageEffectivePrice ?? Infinity);
   }
+  if (am.averagePrice !== bm.averagePrice) return (am.averagePrice ?? Infinity) - (bm.averagePrice ?? Infinity);
+  if (am.effectiveTotal !== bm.effectiveTotal) return am.effectiveTotal - bm.effectiveTotal;
   if (am.totalPrice !== bm.totalPrice) return am.totalPrice - bm.totalPrice;
   return String(a.title || '').localeCompare(String(b.title || ''), 'ja');
 }
@@ -1211,11 +1212,11 @@ function formatPrice(book) {
 }
 
 function seriesTotalLabel(group) {
-  const { pricedCount, totalPrice, totalPoints, effectiveTotal, averagePrice, missing, unregistered, discountRate } =
+  const { pricedCount, totalPrice, totalPoints, effectiveTotal, averageEffectivePrice, missing, unregistered, discountRate } =
     group.totalMetrics || seriesTotalMetrics(group);
   if (pricedCount === 0) return '合計 未取得';
 
-  const average = averagePrice == null ? '' : ` / 平均 ${yen(averagePrice)}`;
+  const average = averageEffectivePrice == null ? '' : ` / 平均 ${yen(averageEffectivePrice)}`;
   const points = totalPoints > 0 ? ` / ${totalPoints.toLocaleString('ja-JP')}pt（実質 ${yen(effectiveTotal)}）` : '';
   const discount = discountRate == null ? '' : ` / 割引 ${discountRateLabel(discountRate)}`;
   const missingText = missing > 0 ? ` / 未取得${missing}冊` : '';
