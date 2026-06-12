@@ -1024,6 +1024,23 @@ test('MangaZenkan completion parser ignores latest-volume search results', () =>
   assert.equal(extractMangaZenkanCompletionEvidenceFromHtml(html, 'ベルセルク', 43), null);
 });
 
+test('MangaZenkan completion parser accepts matching all-volume search results', () => {
+  const html = `
+    <main>
+      <div class="search-result-item book">
+        <a class="product-name">あしたのジョー (1-20巻 全巻)</a>
+        <span>作者 高森朝雄 ちばてつや</span>
+      </div>
+    </main>
+  `;
+
+  assert.deepEqual(extractMangaZenkanCompletionEvidenceFromHtml(html, 'あしたのジョー', 20), {
+    completed: true,
+    source: 'mangazenkan_all_volume'
+  });
+  assert.equal(extractMangaZenkanCompletionEvidenceFromHtml(html, 'あしたのジョー', 21), null);
+});
+
 test('known series completion override marks curated completed series', () => {
   const series = applyKnownSeriesCompletionOverride({
     seriesName: 'ピンポン',

@@ -3760,6 +3760,13 @@ function extractMangaZenkanCompletionEvidence(html, seriesName = '', expectedVol
         source: 'mangazenkan_search'
       };
     }
+
+    if (hasMangaZenkanAllVolumeCompletionEvidence(text, expected)) {
+      return {
+        completed: true,
+        source: 'mangazenkan_all_volume'
+      };
+    }
   }
 
   return null;
@@ -3768,6 +3775,13 @@ function extractMangaZenkanCompletionEvidence(html, seriesName = '', expectedVol
 function hasMangaZenkanOngoingMarker(scope) {
   const value = pageEvidenceText(scope);
   return /(?:最新刊|続刊|連載中|未完結)/.test(value);
+}
+
+function hasMangaZenkanAllVolumeCompletionEvidence(scope, expectedVolumeCount = 0) {
+  const expected = Number(expectedVolumeCount) || 0;
+  if (expected <= 1) return false;
+  const count = mangaZenkanAllVolumeCount(scope);
+  return count > 1 && count === expected;
 }
 
 function completionEvidenceScopes(html) {
