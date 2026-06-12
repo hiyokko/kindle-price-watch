@@ -25,7 +25,7 @@ on:
 
 concurrency:
   group: kindle-price-check
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   check:

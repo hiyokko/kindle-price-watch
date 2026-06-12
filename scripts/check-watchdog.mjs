@@ -4,6 +4,9 @@ import { loadEnv } from '../src/env.mjs';
 import { cronWindowCompletionState, resolveCronScheduleIntent } from '../src/checker.mjs';
 import { readStore } from '../src/store.mjs';
 
+const PRICE_CHECK_WORKFLOW = 'kindle-price-check.yml';
+const ACTIVE_RUN_STATUSES = new Set(['queued', 'in_progress', 'waiting', 'pending', 'requested']);
+
 const EXECUTION_WINDOWS = [
   { label: '03:54 JST', cron: '54 18 * * *', hour: 3, minute: 54 },
   { label: '15:54 JST', cron: '54 6 * * *', hour: 15, minute: 54 }
@@ -16,6 +19,7 @@ if (isMainModule()) {
 async function main() {
   loadEnv();
   validateActionEnvironment();
+  const runReconciliation = await reconcilePriceCheckRuns();
 
   const startedAt = Date.now();
   const target = selectWatchdogTarget(startedAt, {
@@ -26,7 +30,8 @@ async function main() {
   if (!target) {
     console.log(JSON.stringify({
       skipped: true,
-      reason: 'no_watchdog_target'
+      reason: 'no_watchdog_target',
+      runReconciliation
     }, null, 2));
     return;
   }
@@ -35,7 +40,8 @@ async function main() {
     console.log(JSON.stringify({
       skipped: true,
       reason: target.skipReason,
-      target
+      target,
+      runReconciliation
     }, null, 2));
     return;
   }
@@ -46,7 +52,8 @@ async function main() {
       skipped: true,
       reason: scheduleIntent?.stale ? 'stale_schedule' : 'unresolved_schedule',
       target,
-      scheduleIntent
+      scheduleIntent,
+      runReconciliation
     }, null, 2));
     return;
   }
@@ -58,7 +65,19 @@ async function main() {
       skipped: true,
       reason: 'target_window_completed',
       target,
-      completion
+      completion,
+      runReconciliation
+    }, null, 2));
+    return;
+  }
+
+  if (runReconciliation.activeCurrentRuns.length > 0) {
+    console.log(JSON.stringify({
+      skipped: true,
+      reason: 'price_check_in_progress',
+      target,
+      completion,
+      runReconciliation
     }, null, 2));
     return;
   }
@@ -68,6 +87,7 @@ async function main() {
     watchdog: true,
     dispatched: true,
     target,
+    runReconciliation,
     dispatch
   }, null, 2));
 }
@@ -119,8 +139,112 @@ async function dispatchPriceCheckWorkflow(target) {
   return {
     repository,
     ref,
-    workflow: 'kindle-price-check.yml',
+    workflow: PRICE_CHECK_WORKFLOW,
     inputs: workflowDispatchInputs(target)
+  };
+}
+
+async function reconcilePriceCheckRuns() {
+  const repository = process.env.GITHUB_REPOSITORY || 'hiyokko/kindle-price-watch';
+  const token = String(process.env.GITHUB_TOKEN || '').trim();
+  const currentSha = String(process.env.GITHUB_SHA || '').trim();
+  if (!token || !currentSha) {
+    return {
+      skipped: true,
+      reason: token ? 'missing_github_sha' : 'missing_github_token',
+      activeCurrentRuns: [],
+      staleRuns: [],
+      cancelledStaleRuns: [],
+      cancelErrors: []
+    };
+  }
+
+  const runs = await fetchPriceCheckRuns(repository, token);
+  const classification = classifyPriceCheckRuns(runs, currentSha);
+  const cancelledStaleRuns = [];
+  const cancelErrors = [];
+
+  for (const run of classification.staleRuns) {
+    try {
+      await cancelPriceCheckRun(repository, token, run.id);
+      cancelledStaleRuns.push(publicWorkflowRun(run));
+    } catch (error) {
+      cancelErrors.push({
+        id: run.id,
+        message: error.message || String(error)
+      });
+    }
+  }
+
+  return {
+    skipped: false,
+    currentSha,
+    activeCurrentRuns: classification.activeCurrentRuns.map(publicWorkflowRun),
+    staleRuns: classification.staleRuns.map(publicWorkflowRun),
+    cancelledStaleRuns,
+    cancelErrors
+  };
+}
+
+async function fetchPriceCheckRuns(repository, token) {
+  const response = await githubFetch(
+    repository,
+    token,
+    `/actions/workflows/${encodeURIComponent(PRICE_CHECK_WORKFLOW)}/runs?per_page=20`
+  );
+  if (!response.ok) await throwGitHubApiError(response, 'Failed to list price-check workflow runs');
+  const data = await response.json();
+  return data.workflow_runs || [];
+}
+
+async function cancelPriceCheckRun(repository, token, runId) {
+  const response = await githubFetch(repository, token, `/actions/runs/${encodeURIComponent(runId)}/cancel`, {
+    method: 'POST'
+  });
+  if (response.ok || response.status === 202 || response.status === 409) return;
+  await throwGitHubApiError(response, `Failed to cancel price-check workflow run ${runId}`);
+}
+
+async function githubFetch(repository, token, route, options = {}) {
+  return fetch(`https://api.github.com/repos/${repository}${route}`, {
+    ...options,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+      ...(options.headers || {})
+    }
+  });
+}
+
+async function throwGitHubApiError(response, prefix) {
+  let detail = '';
+  try {
+    const body = await response.json();
+    detail = body.message ? `: ${body.message}` : '';
+  } catch {
+    detail = '';
+  }
+  throw new Error(`${prefix} (${response.status})${detail}`);
+}
+
+export function classifyPriceCheckRuns(runs = [], currentSha = '') {
+  const activeRuns = runs.filter((run) => ACTIVE_RUN_STATUSES.has(String(run.status || '')));
+  return {
+    activeCurrentRuns: activeRuns.filter((run) => String(run.head_sha || '') === currentSha),
+    staleRuns: activeRuns.filter((run) => String(run.head_sha || '') !== currentSha)
+  };
+}
+
+function publicWorkflowRun(run = {}) {
+  return {
+    id: run.id,
+    status: run.status,
+    event: run.event,
+    headSha: run.head_sha,
+    createdAt: run.created_at,
+    startedAt: run.run_started_at,
+    url: run.html_url
   };
 }
 

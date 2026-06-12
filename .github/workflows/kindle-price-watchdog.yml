@@ -8,8 +8,8 @@ on:
     - cron: "*/10 * * * *"
 
 concurrency:
-  group: kindle-price-check
-  cancel-in-progress: false
+  group: kindle-price-watchdog
+  cancel-in-progress: true
 
 permissions:
   actions: write

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { selectWatchdogTarget, workflowDispatchInputs } from '../scripts/check-watchdog.mjs';
+import { classifyPriceCheckRuns, selectWatchdogTarget, workflowDispatchInputs } from '../scripts/check-watchdog.mjs';
 
 test('watchdog targets the 15:54 JST window after the minimum lag', () => {
   const target = selectWatchdogTarget(new Date('2026-05-18T07:20:00.000Z').getTime(), {
@@ -61,4 +61,16 @@ test('watchdog dispatches the price-check workflow as a backup without force-all
     schedule_cron: '54 6 * * *',
     backup: 'true'
   });
+});
+
+test('watchdog classifies active old price-check runs as stale cancellation targets', () => {
+  const result = classifyPriceCheckRuns([
+    { id: 1, status: 'in_progress', head_sha: 'old-sha' },
+    { id: 2, status: 'pending', head_sha: 'old-sha' },
+    { id: 3, status: 'queued', head_sha: 'current-sha' },
+    { id: 4, status: 'completed', head_sha: 'old-sha' }
+  ], 'current-sha');
+
+  assert.deepEqual(result.staleRuns.map((run) => run.id), [1, 2]);
+  assert.deepEqual(result.activeCurrentRuns.map((run) => run.id), [3]);
 });
