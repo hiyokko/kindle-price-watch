@@ -1036,6 +1036,61 @@ test('store repair removes supplemental books mixed into main series volumes', (
   assert.equal(kamuiBooks.length, 2);
 });
 
+test('store repair removes episode-sale books mixed into collected series volumes', () => {
+  const store = {
+    books: [
+      ...Array.from({ length: 10 }, (_, index) => ({
+        id: `darwin-${index + 1}`,
+        asin: `B00DARWIN${index + 1}`,
+        title: `ダーウィン事変 ${index + 1}`,
+        seriesName: 'ダーウィン事変',
+        seriesKey: 'series:asin:B08N68FBQB',
+        seriesExpectedCount: 11,
+        importMode: 'kindle_series',
+        volume: index + 1,
+        currentPrice: 792,
+        currentPoints: 39,
+        effectivePrice: 753
+      })),
+      {
+        id: 'darwin-episode',
+        asin: 'B0DXF9KHWD',
+        title: '【話販売】ダーウィン事変',
+        seriesName: 'ダーウィン事変',
+        seriesKey: 'series:asin:B08N68FBQB',
+        seriesExpectedCount: 11,
+        importMode: 'kindle_series',
+        volume: 11,
+        provider: 'series_diff_pending',
+        currentPrice: null,
+        currentPoints: 0,
+        effectivePrice: null,
+        lastError: 'タイトルを取得できませんでした'
+      }
+    ],
+    priceHistory: [
+      { id: 'history-darwin-episode', bookId: 'darwin-episode', asin: 'B0DXF9KHWD', checkedAt: '2026-06-13T00:00:00.000Z' }
+    ],
+    notifications: [
+      { id: 'notification-darwin-episode', bookId: 'darwin-episode', asin: 'B0DXF9KHWD', status: 'pending' }
+    ],
+    seriesPriceHistory: []
+  };
+
+  const summary = repairStorePriceState(store, {
+    clearCurrent: false,
+    now: '2026-06-13T01:00:00.000Z'
+  });
+
+  assert.equal(summary.changed, true);
+  assert.equal(summary.removedSupplementalSeriesItems, 1);
+  assert.equal(summary.removedHistory, 1);
+  assert.equal(summary.removedNotifications, 1);
+  assert.equal(store.books.some((book) => book.asin === 'B0DXF9KHWD'), false);
+  assert.deepEqual([...new Set(store.books.map((book) => book.seriesExpectedCount))], [10]);
+  assert.deepEqual(store.books.map((book) => book.volume), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+});
+
 test('store repair keeps real tail volumes with digital bonus title qualifiers', () => {
   const store = {
     books: [

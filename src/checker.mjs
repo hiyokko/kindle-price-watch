@@ -2496,6 +2496,7 @@ function repairSupplementalSeriesItems(store, options = {}) {
   for (const books of groups.values()) {
     for (const book of books) {
       if (
+        isNonBookSeriesCandidateItem(book) ||
         isSupplementalSeriesBookTitle(book.title, book.seriesName) ||
         isClearlyDifferentSeriesTitle(book.title, book.seriesName) ||
         isStoredSeriesCollectionContainerBook(book, books)
@@ -3863,8 +3864,8 @@ function isAuthoritativeMixedEditionSeriesIdentity(seriesIdentity = {}) {
 }
 
 function isSingleEpisodeLikeTitle(title) {
-  const value = String(title || '');
-  return /単話|分冊|全\s*[0-9０-９]{1,4}\s*話中第\s*[0-9０-９]{1,4}\s*話|第\s*[0-9０-９]{1,4}\s*話/u.test(value);
+  const value = String(title || '').normalize('NFKC');
+  return /話販売|単話|分冊|全\s*[0-9]{1,4}\s*話中第\s*[0-9]{1,4}\s*話|第\s*[0-9]{1,4}\s*話/u.test(value);
 }
 
 function isSeriesNavigationPseudoItem(item = {}) {
@@ -3872,7 +3873,7 @@ function isSeriesNavigationPseudoItem(item = {}) {
 }
 
 function isNonBookSeriesCandidateItem(item = {}) {
-  return isSeriesNavigationPseudoItem(item) || isAmazonRatingOrReviewTitle(item.title);
+  return isSeriesNavigationPseudoItem(item) || isAmazonRatingOrReviewTitle(item.title) || isSingleEpisodeLikeTitle(item.title);
 }
 
 function isSeriesNavigationPseudoTitle(title) {
