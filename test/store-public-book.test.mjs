@@ -51,3 +51,18 @@ test('public book output keeps direct list price source when current price came 
   assert.equal(book.listPrice, 594);
   assert.equal(book.discountRate, 82);
 });
+
+test('public book output exposes release dates for preorder volumes', () => {
+  const book = publicBook({
+    id: 'book-4',
+    asin: 'B0H4PQCXY9',
+    title: 'ダーウィン事変（１１） (アフタヌーンコミックス)',
+    currentPrice: 792,
+    currentPoints: 8,
+    effectivePrice: 784,
+    releaseDate: '2026-06-23',
+    provider: 'amazon_html'
+  });
+
+  assert.equal(book.releaseDate, '2026-06-23');
+});

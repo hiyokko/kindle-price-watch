@@ -9,6 +9,7 @@ import {
   isClearlyDifferentSeriesTitle,
   isFutureReleaseDate,
   isSupplementalSeriesBookTitle,
+  isValidatedFutureReleaseSeriesItem,
   isUsableIncompleteSeriesCandidate,
   isWeakSeriesImageUrl,
   mergeBulkCheckStoreForPersist,
@@ -260,6 +261,48 @@ test('future release dates are evaluated in JST', () => {
   assert.equal(isFutureReleaseDate('2026-06-04', '2026-05-13T00:00:00+09:00'), true);
   assert.equal(isFutureReleaseDate('2026-05-13', '2026-05-13T00:00:00+09:00'), false);
   assert.equal(isFutureReleaseDate('2026-05-12', '2026-05-13T00:00:00+09:00'), false);
+});
+
+test('validated future release series volumes are kept as preorder books', () => {
+  assert.equal(
+    isValidatedFutureReleaseSeriesItem(
+      {
+        asin: 'B0H4PQCXY9',
+        title: 'ダーウィン事変（１１） (アフタヌーンコミックス)',
+        seriesName: 'ダーウィン事変',
+        volume: 11,
+        releaseDate: '2026-06-23',
+        currentPrice: 792,
+        currentPoints: 8,
+        effectivePrice: 784,
+        provider: 'amazon_html'
+      },
+      {
+        seriesName: 'ダーウィン事変',
+        now: '2026-06-13T00:00:00+09:00'
+      }
+    ),
+    true
+  );
+
+  assert.equal(
+    isValidatedFutureReleaseSeriesItem(
+      {
+        asin: 'B0DXF9KHWD',
+        title: '【話販売】ダーウィン事変',
+        seriesName: 'ダーウィン事変',
+        volume: 11,
+        releaseDate: '2026-06-23',
+        currentPrice: 110,
+        provider: 'amazon_html'
+      },
+      {
+        seriesName: 'ダーウィン事変',
+        now: '2026-06-13T00:00:00+09:00'
+      }
+    ),
+    false
+  );
 });
 
 test('snapshot validation does not reject explicit Amazon HTML prices against stale stored list price', () => {

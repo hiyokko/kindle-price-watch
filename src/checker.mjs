@@ -652,22 +652,22 @@ async function dropFutureReleaseNewSeriesItems(items = [], store = {}, errors = 
   for (const item of targets) {
     try {
       const snapshot = await fetchAmazonHtmlSnapshotForSeriesBackfill(item.asin, item, options);
-      if (isFutureReleaseDate(snapshot.releaseDate, options.now)) {
-        droppedAsins.add(item.asin);
-        errors.push(`${item.asin}: skipped future release (${snapshot.releaseDate})`);
-        continue;
-      }
-      if (isSupplementalSeriesBookTitle(snapshot.title, options.seriesName)) {
-        droppedAsins.add(item.asin);
-        errors.push(`${item.asin}: skipped supplemental series book (${snapshot.title})`);
-        continue;
-      }
-      if (isClearlyDifferentSeriesTitle(snapshot.title, options.seriesName)) {
-        droppedAsins.add(item.asin);
-        errors.push(`${item.asin}: skipped title outside series (${snapshot.title})`);
-        continue;
-      }
       Object.assign(item, mergeAmazonSnapshotIntoSeriesItem(item, snapshot));
+      if (isFutureReleaseDate(item.releaseDate, options.now) && !isValidatedFutureReleaseSeriesItem(item, options)) {
+        droppedAsins.add(item.asin);
+        errors.push(`${item.asin}: skipped unvalidated future release (${item.releaseDate})`);
+        continue;
+      }
+      if (isSupplementalSeriesBookTitle(item.title, options.seriesName)) {
+        droppedAsins.add(item.asin);
+        errors.push(`${item.asin}: skipped supplemental series book (${item.title})`);
+        continue;
+      }
+      if (isClearlyDifferentSeriesTitle(item.title, options.seriesName)) {
+        droppedAsins.add(item.asin);
+        errors.push(`${item.asin}: skipped title outside series (${item.title})`);
+        continue;
+      }
       if (isUnvalidatedSyntheticTailSeriesItem(item, options.seriesName, knownMaxVolume)) {
         droppedAsins.add(item.asin);
         errors.push(`${item.asin}: deferred unvalidated tail candidate (${item.title})`);
@@ -1559,10 +1559,23 @@ function dropFutureReleaseItems(itemsByAsin, options = {}) {
   const dropped = [];
   for (const [asin, item] of itemsByAsin.entries()) {
     if (!isFutureReleaseDate(item?.releaseDate, options.now)) continue;
+    if (isValidatedFutureReleaseSeriesItem(item, options)) continue;
     dropped.push(item);
     itemsByAsin.delete(asin);
   }
   return dropped;
+}
+
+export function isValidatedFutureReleaseSeriesItem(item = {}, options = {}) {
+  if (!isFutureReleaseDate(item.releaseDate, options.now)) return false;
+  if (item.currentPrice == null) return false;
+  if (isNonBookSeriesCandidateItem(item)) return false;
+
+  const seriesName = options.seriesName || item.seriesName || '';
+  if (isSupplementalSeriesBookTitle(item.title, seriesName)) return false;
+  if (isClearlyDifferentSeriesTitle(item.title, seriesName)) return false;
+
+  return confirmedSeriesItemVolume(item, seriesName) > 0 || seriesItemVolume(item) > 0;
 }
 
 export function isFutureReleaseDate(value, now = new Date()) {
@@ -1915,6 +1928,10 @@ function updateExistingSeriesBook(book, item, options) {
   if (shouldRefreshSeriesImage(book, item, options)) {
     book.imageUrl = item.imageUrl;
     book.imageSource = item.imageSource || item.provider || '';
+    changed = true;
+  }
+  if (item.releaseDate && book.releaseDate !== item.releaseDate) {
+    book.releaseDate = item.releaseDate;
     changed = true;
   }
   if (shouldRefreshSeriesPrice(book, item)) {
@@ -7233,6 +7250,7 @@ async function buildBookFromAsin(asin, options = {}) {
     imageUrl: seed.imageUrl || '',
     imageSource: seed.imageSource || '',
     amazonUrl: seed.amazonUrl || amazonUrlForAsin(asin),
+    releaseDate: seed.releaseDate || '',
     currentPrice: fallbackCurrentPrice,
     currentPoints: seedPriceIsUnvalidated ? 0 : seed.currentPoints ?? 0,
     effectivePrice: seedPriceIsUnvalidated ? null : seed.effectivePrice ?? effectivePriceFromSeed(seed),
@@ -7259,6 +7277,7 @@ async function buildBookFromAsin(asin, options = {}) {
     imageUrl: snapshot.imageUrl,
     imageSource: snapshot.imageSource || seed.imageSource || snapshot.provider || '',
     amazonUrl: snapshot.amazonUrl,
+    releaseDate: snapshot.releaseDate || seed.releaseDate || '',
     currentPrice: snapshot.currentPrice,
     currentPoints: snapshot.currentPoints,
     effectivePrice: snapshot.effectivePrice,
@@ -7295,6 +7314,7 @@ function mergeSnapshot(fallback, snapshot) {
     imageUrl: snapshot.imageUrl || fallback.imageUrl,
     imageSource: snapshot.imageUrl ? snapshot.provider || fallback.imageSource : fallback.imageSource,
     amazonUrl: snapshot.amazonUrl || fallback.amazonUrl,
+    releaseDate: snapshot.releaseDate || fallback.releaseDate || '',
     currentPrice: snapshot.currentPrice ?? fallback.currentPrice,
     currentPoints: snapshot.currentPoints ?? fallback.currentPoints,
     effectivePrice: snapshot.effectivePrice ?? fallback.effectivePrice,

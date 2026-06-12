@@ -187,6 +187,7 @@ export function publicBook(book) {
     importMode: book.importMode || 'single',
     imageUrl: book.imageUrl || amazonImageUrlForKey(book.imageKey),
     amazonUrl: book.amazonUrl || amazonUrlForAsin(book.asin),
+    releaseDate: book.releaseDate || '',
     currentPrice: book.currentPrice,
     currentPoints: book.currentPoints,
     effectivePrice: book.effectivePrice,
