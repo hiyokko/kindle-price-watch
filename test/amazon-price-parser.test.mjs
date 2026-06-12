@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  applyKnownSeriesCompletionOverride,
   cleanAmazonSeriesName,
   extractAsin,
   extractAmazonHtmlSnapshotFromHtml,
@@ -1021,6 +1022,42 @@ test('MangaZenkan completion parser ignores latest-volume search results', () =>
   `;
 
   assert.equal(extractMangaZenkanCompletionEvidenceFromHtml(html, 'ベルセルク', 43), null);
+});
+
+test('known series completion override marks curated completed series', () => {
+  const series = applyKnownSeriesCompletionOverride({
+    seriesName: 'ピンポン',
+    sourceAsin: 'B075FTFV56',
+    expectedVolumeCount: 5,
+    completed: false,
+    items: [
+      { asin: 'B000000001', title: 'ピンポン 1', volume: '1' },
+      { asin: 'B000000002', title: 'ピンポン 2', volume: '2' },
+      { asin: 'B000000003', title: 'ピンポン 3', volume: '3' },
+      { asin: 'B000000004', title: 'ピンポン 4', volume: '4' },
+      { asin: 'B000000005', title: 'ピンポン 5', volume: '5' }
+    ]
+  });
+
+  assert.equal(series.completed, true);
+  assert.equal(series.completionSource, 'curated_series_completion');
+});
+
+test('known series completion override keeps curated ongoing series incomplete', () => {
+  const series = applyKnownSeriesCompletionOverride({
+    seriesName: '預言者ピッピ',
+    sourceAsin: 'B075P5J6VW',
+    expectedVolumeCount: 2,
+    completed: true,
+    completionSource: 'mangazenkan_search',
+    items: [
+      { asin: 'B000000001', title: '預言者ピッピ 1', volume: '1' },
+      { asin: 'B000000002', title: '預言者ピッピ 2', volume: '2' }
+    ]
+  });
+
+  assert.equal(series.completed, false);
+  assert.equal(series.completionSource, 'curated_series_incomplete');
 });
 
 test('Amazon series parser reads child-list Kindle price and points', () => {

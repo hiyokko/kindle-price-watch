@@ -19,6 +19,18 @@ const AMAZON_USER_AGENTS = [
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15',
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0'
 ];
+const SERIES_COMPLETION_OVERRIDES = [
+  { sourceAsin: 'B075FTFV56', names: ['ピンポン'], expectedVolumeCount: 5, completed: true },
+  { sourceAsin: 'B0756XMNQ5', names: ['火の鳥'], expectedVolumeCount: 16, completed: true },
+  { sourceAsin: 'B074CJS8RT', names: ['ホットロード'], expectedVolumeCount: 4, completed: true },
+  { sourceAsin: 'B07876DFH4', names: ['亜獣譚'], expectedVolumeCount: 8, completed: true },
+  { sourceAsin: 'B075V4W6R3', names: ['羊のうた'], expectedVolumeCount: 7, completed: true },
+  { sourceAsin: 'B013WFXD5I', names: ['花男'], expectedVolumeCount: 3, completed: true },
+  { sourceAsin: 'B075P5J6VW', names: ['預言者ピッピ'], expectedVolumeCount: 2, completed: false }
+].map((entry) => ({
+  ...entry,
+  normalizedNames: entry.names.map((name) => normalizeSeriesCompletionOverrideName(name))
+}));
 
 export function extractAsin(input) {
   const value = String(input || '').trim();
@@ -145,9 +157,22 @@ function shouldTryAmazonSeriesHtmlCandidate(series, error, input, attemptedUrls)
 function buildKindleSeriesResult(series) {
   const limit = readPositiveInteger(process.env.SERIES_IMPORT_LIMIT, null);
   const items = normalizeKindleSeriesItemVolumes((series.items || []).filter(isUsableKindleSeriesItem));
-  return {
+  return applyKnownSeriesCompletionOverride({
     ...series,
     items: limit == null ? items : items.slice(0, limit)
+  });
+}
+
+export function applyKnownSeriesCompletionOverride(series = {}) {
+  const override = knownSeriesCompletionOverrideFor(series);
+  if (!override) return series;
+  const source = override.completed ? 'curated_series_completion' : 'curated_series_incomplete';
+
+  return {
+    ...series,
+    completed: override.completed,
+    completionSource: source,
+    completionOverride: source
   };
 }
 
@@ -178,6 +203,7 @@ function isAmazonRatingOrReviewTitle(title) {
 }
 
 async function withSeriesCompletionProbe(series, options = {}) {
+  if (isKnownSeriesCompletionOverride(series, false)) return applyKnownSeriesCompletionOverride(series);
   if (series?.completed || options.probeSeriesCompletion === false) return series;
   if (!Array.isArray(series?.items) || series.items.length <= 1) return series;
 
@@ -209,6 +235,32 @@ async function withSeriesCompletionProbe(series, options = {}) {
   } catch {
     return series;
   }
+}
+
+function knownSeriesCompletionOverrideFor(series = {}) {
+  const sourceAsin = String(series.sourceAsin || extractAsin(series.sourceUrl) || '').toUpperCase();
+  const items = Array.isArray(series.items) ? series.items : [];
+  const expectedVolumeCount = Math.max(
+    Number(series.expectedVolumeCount) || 0,
+    maxSeriesItemVolume(items),
+    items.length
+  );
+  const normalizedName = normalizeSeriesCompletionOverrideName(series.seriesName);
+
+  return SERIES_COMPLETION_OVERRIDES.find((override) => {
+    if (sourceAsin && sourceAsin === override.sourceAsin) return true;
+    if (!normalizedName || !override.normalizedNames.includes(normalizedName)) return false;
+    return !override.expectedVolumeCount || expectedVolumeCount === override.expectedVolumeCount;
+  }) || null;
+}
+
+function isKnownSeriesCompletionOverride(series = {}, completed) {
+  const override = knownSeriesCompletionOverrideFor(series);
+  return Boolean(override && override.completed === completed);
+}
+
+function normalizeSeriesCompletionOverrideName(value) {
+  return normalizeSeriesNameForMatch(value);
 }
 
 function highestVolumeSeriesItem(items = []) {
