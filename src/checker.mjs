@@ -2694,10 +2694,17 @@ function repairUnvalidatedSyntheticTailSeriesItems(store, options = {}) {
     if (confirmedVolumes.length < 3) continue;
 
     const maxConfirmedVolume = Math.max(...confirmedVolumes);
+    const confirmedVolumesAreContiguous = isContiguousOneBasedVolumeSet(confirmedVolumes, maxConfirmedVolume);
     for (const book of books) {
       if (!candidateIds.has(book.id)) continue;
       if (storedBookVolume(book) <= maxConfirmedVolume) continue;
-      if (isExpectedSingleUnvalidatedTailBook(book, candidateIds)) continue;
+      if (
+        confirmedVolumesAreContiguous &&
+        storedBookVolume(book) === maxConfirmedVolume + 1 &&
+        isExpectedSingleUnvalidatedTailBook(book, candidateIds)
+      ) {
+        continue;
+      }
       ids.add(book.id);
       affectedKeys.add(key);
     }
@@ -2753,9 +2760,9 @@ function isUnvalidatedSyntheticStoredSeriesItem(book = {}) {
 }
 
 function hasSpecificStoredSeriesChildEvidence(book = {}, volume = 0) {
-  if (book.imageUrl) return true;
   if (isUnresolvedAsinPlaceholderTitle(book.title, book.asin)) return false;
-  return !isBareSyntheticStoredSeriesVolumeTitle(book.title, book.seriesName, volume);
+  if (isBareSyntheticStoredSeriesVolumeTitle(book.title, book.seriesName, volume)) return false;
+  return true;
 }
 
 function isBareSyntheticStoredSeriesVolumeTitle(title = '', seriesName = '', volume = 0) {

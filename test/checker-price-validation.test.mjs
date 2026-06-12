@@ -1066,6 +1066,22 @@ test('store repair removes episode-sale books mixed into collected series volume
         currentPoints: 0,
         effectivePrice: null,
         lastError: 'タイトルを取得できませんでした'
+      },
+      {
+        id: 'darwin-unvalidated-12',
+        asin: 'B0H4PQCXY9',
+        title: 'ダーウィン事変 １２',
+        seriesName: 'ダーウィン事変',
+        seriesKey: 'series:asin:B08N68FBQB',
+        seriesExpectedCount: 11,
+        importMode: 'kindle_series',
+        volume: 12,
+        provider: 'pending_series',
+        imageUrl: 'https://m.media-amazon.com/images/I/darwin-12.jpg',
+        currentPrice: null,
+        currentPoints: 0,
+        effectivePrice: null,
+        lastError: 'シリーズ価格補完: Amazon HTMLで価格補完できませんでした'
       }
     ],
     priceHistory: [
@@ -1084,9 +1100,11 @@ test('store repair removes episode-sale books mixed into collected series volume
 
   assert.equal(summary.changed, true);
   assert.equal(summary.removedSupplementalSeriesItems, 1);
+  assert.equal(summary.removedUnvalidatedSeriesTailItems, 1);
   assert.equal(summary.removedHistory, 1);
   assert.equal(summary.removedNotifications, 1);
   assert.equal(store.books.some((book) => book.asin === 'B0DXF9KHWD'), false);
+  assert.equal(store.books.some((book) => book.asin === 'B0H4PQCXY9'), false);
   assert.deepEqual([...new Set(store.books.map((book) => book.seriesExpectedCount))], [10]);
   assert.deepEqual(store.books.map((book) => book.volume), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
 });
