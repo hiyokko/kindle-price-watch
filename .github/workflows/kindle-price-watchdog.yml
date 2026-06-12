@@ -9,6 +9,10 @@ on:
       - ".github/workflows/kindle-price-check.yml"
       - ".github/workflows/kindle-price-watchdog.yml"
       - "scripts/check-watchdog.mjs"
+      - "scripts/check-once.mjs"
+      - "src/**"
+      - "package.json"
+      - "package-lock.json"
   schedule:
     # GitHub schedule events can be missed. This watchdog stays inside GitHub
     # and catches the latest unfinished 03:54/15:54 JST execution window.
