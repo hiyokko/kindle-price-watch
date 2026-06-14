@@ -51,6 +51,8 @@ const AMAZON_HTML_TINY_PRICE_MAX = 10;
 const DISCOUNT_RECHECK_DEFAULT_HOURS = 24;
 const DISCOUNT_RECHECK_RATIO = 0.7;
 const PRICE_INTEGRITY_SERIES_OUTLIER_RATIO = 0.55;
+const PRICE_INTEGRITY_SERIES_PEER_DISCOUNT_RATIO = 0.35;
+const PRICE_INTEGRITY_SERIES_PEER_STALE_RATIO = 0.1;
 const LIST_PRICE_CHALLENGE_MAX_PER_SERIES = 2;
 const LIST_PRICE_CHALLENGE_SAMPLE_LIMIT = 10;
 const OBSERVED_LIST_PRICE_PROVIDER = 'observed_price_history';
@@ -5004,7 +5006,19 @@ function priceIntegrityAuditTargets(store, results = []) {
       .map((entry) => entry?.book?.id)
       .filter(Boolean)
   );
+  addSeriesPeerDiscountMismatchTargets(ids, store, results);
   return (store.books || []).filter((book) => ids.has(book.id));
+}
+
+function addSeriesPeerDiscountMismatchTargets(ids, store, results = []) {
+  for (const result of results || []) {
+    const book = result?.book;
+    if (!book || !hasStrongSeriesPointDiscount(book)) continue;
+    for (const peer of store?.books || []) {
+      if (!isPotentialStaleSeriesPointPeer(book, peer)) continue;
+      ids.add(peer.id);
+    }
+  }
 }
 
 export function priceIntegrityIssueForBook(book, store) {
@@ -5013,6 +5027,14 @@ export function priceIntegrityIssueForBook(book, store) {
     return {
       severity: 'suspicious',
       reason: strictReason
+    };
+  }
+
+  const peerDiscountReason = seriesPeerDiscountMismatchReason(book, store);
+  if (peerDiscountReason) {
+    return {
+      severity: 'suspicious',
+      reason: peerDiscountReason
     };
   }
 
@@ -5025,6 +5047,39 @@ export function priceIntegrityIssueForBook(book, store) {
   }
 
   return null;
+}
+
+function seriesPeerDiscountMismatchReason(book, store) {
+  const price = nullableNumber(book?.currentPrice);
+  const points = nullableNumber(book?.currentPoints) || 0;
+  if (price == null || price <= 0) return '';
+  if (!book.seriesKey && !book.sourceUrl) return '';
+  if (points > price * PRICE_INTEGRITY_SERIES_PEER_STALE_RATIO) return '';
+
+  const peer = (store?.books || []).find((item) => isPotentialStaleSeriesPointPeer(item, book));
+  if (!peer) return '';
+
+  return `同価格のシリーズ巻 ${peer.volume || peer.title || peer.asin || ''} が ${Math.round(Number(peer.currentPoints || 0)).toLocaleString('ja-JP')}pt 還元のためポイントが低すぎます`;
+}
+
+function hasStrongSeriesPointDiscount(book) {
+  const price = nullableNumber(book?.currentPrice);
+  const points = nullableNumber(book?.currentPoints) || 0;
+  return price != null && price > 0 && points >= price * PRICE_INTEGRITY_SERIES_PEER_DISCOUNT_RATIO;
+}
+
+function isPotentialStaleSeriesPointPeer(discountedBook, peer) {
+  if (!discountedBook || !peer || discountedBook.id === peer.id) return false;
+  if (!isSamePriceIntegritySeries(discountedBook, peer)) return false;
+
+  const discountedPrice = nullableNumber(discountedBook.currentPrice);
+  const discountedPoints = nullableNumber(discountedBook.currentPoints) || 0;
+  const peerPrice = nullableNumber(peer.currentPrice);
+  const peerPoints = nullableNumber(peer.currentPoints) || 0;
+  if (discountedPrice == null || peerPrice == null || discountedPrice <= 0 || peerPrice <= 0) return false;
+  if (Math.round(discountedPrice) !== Math.round(peerPrice)) return false;
+  if (discountedPoints < discountedPrice * PRICE_INTEGRITY_SERIES_PEER_DISCOUNT_RATIO) return false;
+  return peerPoints <= peerPrice * PRICE_INTEGRITY_SERIES_PEER_STALE_RATIO;
 }
 
 function priceIntegrityFinding(book, issue) {

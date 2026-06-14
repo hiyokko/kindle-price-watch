@@ -498,6 +498,39 @@ test('price integrity audit warns on low-confidence series outliers', () => {
   assert.match(issue.reason, /シリーズ中央値/);
 });
 
+test('price integrity audit flags stale points against discounted same-price series peers', () => {
+  const store = {
+    books: [
+      {
+        id: 'book-1',
+        asin: 'B00TEST001',
+        title: 'ポイント監査シリーズ 1',
+        seriesKey: 'series:asin:B00SERIES1',
+        volume: 1,
+        currentPrice: 660,
+        currentPoints: 7,
+        effectivePrice: 653,
+        provider: 'listasin'
+      },
+      {
+        id: 'book-2',
+        asin: 'B00TEST002',
+        title: 'ポイント監査シリーズ 2',
+        seriesKey: 'series:asin:B00SERIES1',
+        volume: 2,
+        currentPrice: 660,
+        currentPoints: 330,
+        effectivePrice: 330,
+        provider: 'amazon_series_child'
+      }
+    ]
+  };
+
+  const issue = priceIntegrityIssueForBook(store.books[0], store);
+  assert.equal(issue.severity, 'suspicious');
+  assert.match(issue.reason, /ポイントが低すぎます/);
+});
+
 test('price integrity audit trusts plausible Amazon HTML sale prices', () => {
   const store = {
     books: [
