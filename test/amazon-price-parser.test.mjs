@@ -519,6 +519,46 @@ test('Amazon series parser prefers collected-volume bulk form over episode bulk 
   assert.equal(items[1].asin, 'B01NCLNN5C');
 });
 
+test('Amazon series parser distributes bulk offer points across hidden offer items', () => {
+  const items = extractKindleSeriesItemsFromHtml(`
+    <meta property="og:title" content="喧嘩稼業 (全3巻) Kindle版" />
+    <div id="series-childAsin-list">
+      <div id="series-childAsin-item_1" class="series-childAsin-item">
+        <a class="itemImageLink" title="喧嘩稼業 1" href="/gp/product/B00JDYKL3A?storeType=ebooks"></a>
+        <span class="a-size-large a-color-price">￥792</span>
+      </div>
+      <div id="series-childAsin-item_2" class="series-childAsin-item">
+        <a class="itemImageLink" title="喧嘩稼業 2" href="/gp/product/B00N8JJ312?storeType=ebooks"></a>
+        <span class="a-size-large a-color-price">￥792</span>
+      </div>
+    </div>
+    <div class="_hulk-buy-card_style_offer-details__1t8Fv" data-offer-id="offer_0">
+      <span>Kindle 価格: ￥2,376</span>
+      <div>
+        <span>獲得ポイント:</span>
+        <span>1,188 pt (50%)</span>
+      </div>
+      <form>
+        <input name="items[0].action.asin" value="B00JDYKL3A">
+        <input name="items[0].action.displayedPrice.value" value="792">
+        <input name="items[0].action.displayedPrice.currency" value="JPY">
+        <input name="items[1].action.asin" value="B00N8JJ312">
+        <input name="items[1].action.displayedPrice.value" value="792">
+        <input name="items[1].action.displayedPrice.currency" value="JPY">
+        <input name="items[2].action.asin" value="B00RDYOBD8">
+        <input name="items[2].action.displayedPrice.value" value="792">
+        <input name="items[2].action.displayedPrice.currency" value="JPY">
+      </form>
+    </div>
+  `);
+
+  assert.equal(items.length, 3);
+  assert.deepEqual(items.map((item) => item.currentPoints), [396, 396, 396]);
+  assert.deepEqual(items.map((item) => item.effectivePrice), [396, 396, 396]);
+  assert.equal(items[0].provider, 'amazon_series_bulk');
+  assert.equal(items[2].provider, 'amazon_series_bulk');
+});
+
 test('Amazon HTML parser keeps explicit Kindle price separate from discount and points', () => {
   const snapshot = extractAmazonHtmlSnapshotFromHtml(productHtml({
     title: '火の鳥 3',

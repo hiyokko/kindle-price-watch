@@ -3242,9 +3242,10 @@ function extractLargestBulkOfferItems(html, options = {}) {
   let result = [];
 
   for (const match of value.matchAll(/<form\b[\s\S]*?<\/form>/gi)) {
-    const items = extractBulkOfferItemsFromFragment(match[0], {
+    const fragment = bulkOfferFormContext(value, match.index, match[0]);
+    const items = extractBulkOfferItemsFromFragment(fragment, {
       ...options,
-      seriesFormatKind: bulkOfferContextKind(value, match.index, match[0])
+      seriesFormatKind: bulkOfferContextKind(value, match.index, fragment)
     });
     if (isBetterBulkOfferCandidate(items, result)) result = items;
   }
@@ -3271,6 +3272,24 @@ function extractLargestBulkOfferItems(html, options = {}) {
   return dedupeSeriesItems(result);
 }
 
+function bulkOfferFormContext(pageHtml, formIndex, formHtml) {
+  const value = String(pageHtml || '');
+  const index = Number(formIndex);
+  if (!Number.isFinite(index) || index <= 0) return String(formHtml || '');
+
+  const windowStart = Math.max(0, index - 6000);
+  const before = value.slice(windowStart, index);
+  const markers = [
+    '獲得ポイント',
+    'data-component-id="buyboxPriceComponent"',
+    'data-component-id="buyBoxPriceComponent"',
+    'Kindle 価格'
+  ];
+  const relativeStart = Math.max(...markers.map((marker) => before.lastIndexOf(marker)));
+  const start = relativeStart >= 0 ? windowStart + relativeStart : index;
+  return value.slice(start, index + String(formHtml || '').length);
+}
+
 function extractLargestBulkOfferAsins(html) {
   return extractLargestBulkOfferItems(html).map((item) => item.asin);
 }
@@ -3295,7 +3314,7 @@ function extractBulkOfferItemsFromFragment(fragment, options = {}) {
     records.set(index, record);
   }
 
-  return [...records.entries()]
+  const items = [...records.entries()]
     .sort(([left], [right]) => left - right)
     .map(([index, record]) => {
       if (record.currency && !/^JPY$/i.test(record.currency)) return null;
@@ -3310,6 +3329,84 @@ function extractBulkOfferItemsFromFragment(fragment, options = {}) {
       return item;
     })
     .filter(Boolean);
+  return withBulkOfferTotalPoints(items, fragment);
+}
+
+function withBulkOfferTotalPoints(items = [], fragment = '') {
+  if (!items.length) return items;
+
+  const totalPoints = extractBulkOfferTotalPoints(fragment);
+  if (totalPoints == null || totalPoints <= 0) return items;
+
+  const allocations = allocateBulkOfferPoints(items, totalPoints);
+  if (!allocations.size) return items;
+
+  return items.map((item, index) => {
+    const points = allocations.get(index);
+    if (points == null || item.currentPrice == null) return item;
+
+    const currentPrice = Number(item.currentPrice);
+    const currentPoints = sanitizePoints(points, currentPrice);
+    return {
+      ...item,
+      currentPoints,
+      effectivePrice: Math.max(0, Math.round(currentPrice - currentPoints))
+    };
+  });
+}
+
+function extractBulkOfferTotalPoints(fragment = '') {
+  const text = cleanText(fragment);
+  const patterns = [
+    /獲得ポイント\s*:?\s*([0-9０-９,，]+)\s*(?:pt|ポイント)/iu,
+    /([0-9０-９,，]+)\s*pt\s*\(\s*[0-9０-９]{1,3}\s*%\s*\)/iu
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    const points = parseOptionalPoints(toHalfWidthNumber(match?.[1] || ''));
+    if (points != null) return points;
+  }
+
+  return null;
+}
+
+function allocateBulkOfferPoints(items = [], totalPoints) {
+  const pointTotal = Math.round(Number(totalPoints));
+  if (!Number.isFinite(pointTotal) || pointTotal <= 0) return new Map();
+
+  const priced = items
+    .map((item, index) => ({
+      index,
+      price: Number(item?.currentPrice)
+    }))
+    .filter((entry) => Number.isFinite(entry.price) && entry.price > 0);
+  const totalPrice = priced.reduce((sum, entry) => sum + entry.price, 0);
+  if (totalPrice <= 0 || pointTotal > totalPrice) return new Map();
+
+  const allocations = new Map();
+  let assigned = 0;
+  const fractional = priced.map((entry) => {
+    const raw = (pointTotal * entry.price) / totalPrice;
+    const base = Math.min(entry.price, Math.floor(raw));
+    allocations.set(entry.index, base);
+    assigned += base;
+    return {
+      ...entry,
+      fraction: raw - base
+    };
+  });
+
+  let remaining = pointTotal - assigned;
+  for (const entry of fractional.sort((left, right) => right.fraction - left.fraction)) {
+    if (remaining <= 0) break;
+    const current = allocations.get(entry.index) || 0;
+    if (current >= entry.price) continue;
+    allocations.set(entry.index, current + 1);
+    remaining -= 1;
+  }
+
+  return remaining === 0 ? allocations : new Map();
 }
 
 function bulkOfferItemFromAsin(asin, index, options = {}) {
@@ -3440,7 +3537,7 @@ function shouldPreferChildSeriesTitles(items = [], childItems = []) {
 }
 
 function withPreferredSeriesPricing(base, primary = {}, fallback = {}) {
-  const priced = primary.currentPrice != null ? primary : fallback.currentPrice != null ? fallback : null;
+  const priced = preferredSeriesPricingSeed(primary, fallback);
   if (!priced) return base;
 
   const currentPrice = Number(priced.currentPrice);
@@ -3456,6 +3553,27 @@ function withPreferredSeriesPricing(base, primary = {}, fallback = {}) {
     listPrice: shouldDropSeriesItemListPrice(provider) ? null : priced.listPrice ?? base.listPrice ?? null,
     provider
   };
+}
+
+function preferredSeriesPricingSeed(primary = {}, fallback = {}) {
+  if (primary.currentPrice == null) return fallback.currentPrice != null ? fallback : null;
+  if (fallback.currentPrice == null) return primary;
+
+  const primaryPrice = Number(primary.currentPrice);
+  const fallbackPrice = Number(fallback.currentPrice);
+  const primaryPoints = Number(primary.currentPoints || 0);
+  const fallbackPoints = Number(fallback.currentPoints || 0);
+  if (
+    Number.isFinite(primaryPrice) &&
+    Number.isFinite(fallbackPrice) &&
+    primaryPrice === fallbackPrice &&
+    primaryPoints <= 0 &&
+    fallbackPoints > 0
+  ) {
+    return fallback;
+  }
+
+  return primary;
 }
 
 function shouldDropSeriesItemListPrice(provider) {
