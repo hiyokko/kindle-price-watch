@@ -1,6 +1,35 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { sendDiscordNotification } from '../src/notifier.mjs';
+import { buildPriceNotification, sendDiscordNotification } from '../src/notifier.mjs';
+
+test('series Discord notification includes average effective price', () => {
+  const message = buildPriceNotification(
+    {
+      title: '通知テスト',
+      seriesName: '通知テスト',
+      amazonUrl: 'https://www.amazon.co.jp/dp/B000000001',
+      currentPrice: 1320,
+      currentPoints: 660,
+      effectivePrice: 660,
+      lowestEffectivePrice: 660,
+      provider: 'series_total',
+      notificationScope: 'series',
+      bookCount: 2
+    },
+    {
+      type: 'price_drop',
+      scope: 'series',
+      previousEffectivePrice: 1320,
+      dropPercent: 50
+    }
+  );
+
+  const fields = message.embeds[0].fields;
+  assert.deepEqual(
+    fields.find((field) => field.name === '平均実質'),
+    { name: '平均実質', value: '¥330 / 冊', inline: true }
+  );
+});
 
 test('sendDiscordNotification retries Discord 429 using retry_after', async () => {
   const waits = [];

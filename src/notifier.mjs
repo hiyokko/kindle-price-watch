@@ -185,6 +185,7 @@ export function buildPriceNotification(book, event) {
   const lowestLine =
     book.lowestEffectivePrice != null ? `過去最安: ${formatYen(book.lowestEffectivePrice)}` : null;
   const isSeries = book.notificationScope === 'series' || event.scope === 'series';
+  const averageEffectiveLine = isSeries ? formatAverageSeriesEffectiveLine(book) : null;
   const title = isSeries ? book.seriesName || book.title : book.title;
   const footerText = isSeries
     ? `${Number(book.bookCount || 0).toLocaleString('ja-JP')}冊合計 / ${book.provider || 'series_total'}`
@@ -204,6 +205,7 @@ export function buildPriceNotification(book, event) {
             ? { name: '前回', value: formatYen(event.previousEffectivePrice), inline: true }
             : null,
           isSeries ? { name: '対象', value: `${Number(book.bookCount || 0).toLocaleString('ja-JP')}冊合計`, inline: true } : null,
+          averageEffectiveLine ? { name: '平均実質', value: averageEffectiveLine, inline: true } : null,
           lowestLine ? { name: '記録', value: lowestLine, inline: true } : null,
           dropLine ? { name: '変化', value: dropLine, inline: true } : null
         ].filter(Boolean),
@@ -362,6 +364,13 @@ function formatPriceLine(book) {
     return `${base} / ${book.currentPoints.toLocaleString('ja-JP')}pt / 実質 ${formatYen(book.effectivePrice)}`;
   }
   return book.effectivePrice != null ? formatYen(book.effectivePrice) : base;
+}
+
+function formatAverageSeriesEffectiveLine(book) {
+  const bookCount = Number(book.bookCount || 0);
+  const effectiveTotal = Number(book.effectivePrice);
+  if (!Number.isFinite(bookCount) || bookCount <= 0 || !Number.isFinite(effectiveTotal)) return '';
+  return `${formatYen(Math.round(effectiveTotal / bookCount))} / 冊`;
 }
 
 function formatYen(value) {
