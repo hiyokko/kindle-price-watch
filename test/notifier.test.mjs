@@ -26,8 +26,8 @@ test('series Discord notification includes average effective price', () => {
 
   const fields = message.embeds[0].fields;
   assert.deepEqual(
-    fields.find((field) => field.name === '平均実質'),
-    { name: '平均実質', value: '¥330 / 冊', inline: true }
+    fields.find((field) => field.name === '対象'),
+    { name: '対象', value: '2冊合計\n平均実質 ¥330 / 冊', inline: true }
   );
 });
 
