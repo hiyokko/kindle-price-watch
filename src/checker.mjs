@@ -6137,7 +6137,7 @@ async function checkOneBook(bookRef, options = {}) {
   const referenceStore = options.store || await readStoreWithPriceRepairs();
   const snapshotResult = await settleSnapshot(bookRef.asin, bookRef, {
     signal: options.signal,
-    timeoutMs: options.timeoutMs,
+    timeoutMs: snapshotTimeoutMsForBook(bookRef, options),
     seriesCandidateCache: options.seriesCandidateCache,
     store: referenceStore
   });
@@ -6157,7 +6157,7 @@ async function checkOneBookInStore(store, bookRef, options = {}) {
   const now = new Date().toISOString();
   const snapshotResult = await settleSnapshot(bookRef.asin, bookRef, {
     signal: options.signal,
-    timeoutMs: options.timeoutMs,
+    timeoutMs: snapshotTimeoutMsForBook(bookRef, options),
     seriesCandidateCache: options.seriesCandidateCache,
     store
   });
@@ -6167,6 +6167,12 @@ async function checkOneBookInStore(store, bookRef, options = {}) {
     notificationStore: store
   });
   return checkResultPayload(applied.checkedBook, snapshotResult, applied.events, sent);
+}
+
+export function snapshotTimeoutMsForBook(book = {}, options = {}) {
+  if (options.timeoutMs != null) return options.timeoutMs;
+  if (!isUnresolvedSeriesBook(book)) return options.timeoutMs;
+  return clampNumber(process.env.UNRESOLVED_SERIES_FETCH_TIMEOUT_MS, 1000, 60000, 15000);
 }
 
 function checkResultApplyOptions(options = {}) {

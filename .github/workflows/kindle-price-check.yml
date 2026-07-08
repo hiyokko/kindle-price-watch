@@ -55,6 +55,7 @@ jobs:
       HTTP_FETCH_TIMEOUT_MS: "6500"
       HTTP_AMAZON_FETCH_RETRIES: "1"
       HTTP_FETCH_RETRY_DELAY_MS: "1200"
+      UNRESOLVED_SERIES_FETCH_TIMEOUT_MS: "15000"
       LISTASIN_EARLY_FALLBACK: "true"
       FORCE_CHECK_ALL: ${{ github.event_name == 'workflow_dispatch' && (inputs.force_all == true || inputs.force_all == 'true') }}
       CHECK_SCHEDULE_CRON: ${{ github.event_name == 'schedule' && github.event.schedule || inputs.schedule_cron }}

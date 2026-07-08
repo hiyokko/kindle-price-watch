@@ -27,6 +27,7 @@ import {
   seriesSnapshotFromKindleSeriesForBook,
   shouldRecheckCompletedSeriesGroup,
   snapshotInputUrlForBook,
+  snapshotTimeoutMsForBook,
   summarizeCheckResultErrors,
   suspiciousSnapshotReason,
   suspiciousPriceReason,
@@ -296,6 +297,32 @@ test('recent failed checks with a checked timestamp still respect retry cooldown
   };
 
   assert.equal(isCheckRetryCoolingDown(book, now), true);
+});
+
+test('unpriced series additions use a longer snapshot timeout in automation', () => {
+  const previous = process.env.UNRESOLVED_SERIES_FETCH_TIMEOUT_MS;
+  process.env.UNRESOLVED_SERIES_FETCH_TIMEOUT_MS = '18000';
+  try {
+    const unresolvedSeriesBook = {
+      importMode: 'kindle_series',
+      seriesName: '望郷太郎',
+      currentPrice: null,
+      effectivePrice: null
+    };
+    const pricedSeriesBook = {
+      importMode: 'kindle_series',
+      seriesName: '望郷太郎',
+      currentPrice: 792,
+      effectivePrice: 784
+    };
+
+    assert.equal(snapshotTimeoutMsForBook(unresolvedSeriesBook), 18000);
+    assert.equal(snapshotTimeoutMsForBook(pricedSeriesBook), undefined);
+    assert.equal(snapshotTimeoutMsForBook(unresolvedSeriesBook, { timeoutMs: 60000 }), 60000);
+  } finally {
+    if (previous == null) delete process.env.UNRESOLVED_SERIES_FETCH_TIMEOUT_MS;
+    else process.env.UNRESOLVED_SERIES_FETCH_TIMEOUT_MS = previous;
+  }
 });
 
 test('validated future release series volumes are kept as preorder books', () => {
