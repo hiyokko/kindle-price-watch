@@ -6695,6 +6695,7 @@ function applyCheckResultToStore(store, bookRef, snapshotResult, now, options = 
       book.lastCheckedAt = now;
     } else if (
       isUnresolvedSingleBook(book) ||
+      isUnresolvedSeriesBook(book) ||
       (repair.currentCleared && !repair.currentRestored) ||
       isSuspiciousSnapshotError(snapshotResult.error)
     ) {
@@ -7425,6 +7426,12 @@ function isUnresolvedSingleBook(book) {
     isAmazonErrorPageBookTitle(title) ||
     book.provider === 'pending'
   );
+}
+
+function isUnresolvedSeriesBook(book) {
+  if (!book || book.currentPrice != null) return false;
+  if (book.effectivePrice != null) return false;
+  return book.importMode === 'kindle_series' || Boolean(book.seriesKey || book.seriesName);
 }
 
 export function canonicalSeriesSourceAsin(input, series = {}) {
@@ -8273,7 +8280,7 @@ function checkPriorityScore(book, context, now) {
     score += Math.max(0, 3000 - series.aggregateMissing * 30);
   }
 
-  if (isBlockingSnapshotError(book.lastError)) score -= 5000;
+  if (isBlockingSnapshotError(book.lastError) && !hasTrustedCurrentPrice(book)) score -= 5000;
   return score;
 }
 
@@ -8333,9 +8340,10 @@ export function needsDiscountExpiryRecheck(book, now = Date.now()) {
   return effective <= listPrice * DISCOUNT_RECHECK_RATIO;
 }
 
-function isCheckRetryCoolingDown(book, now) {
+export function isCheckRetryCoolingDown(book, now) {
   if (!isTransientSnapshotError(book?.lastError) && !isBlockingSnapshotError(book?.lastError)) return false;
   if (isDiscardedUnvalidatedSeriesPrice(book)) return false;
+  if (book?.currentPrice == null && !book?.lastCheckedAt) return false;
 
   const checkedAt = new Date(book.lastCheckedAt || book.updatedAt || book.createdAt || 0).getTime();
   if (!Number.isFinite(checkedAt) || checkedAt <= 0) return false;

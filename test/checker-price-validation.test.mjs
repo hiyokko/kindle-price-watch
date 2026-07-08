@@ -8,6 +8,7 @@ import {
   isActiveSeriesAggregateSnapshot,
   isClearlyDifferentSeriesTitle,
   isFutureReleaseDate,
+  isCheckRetryCoolingDown,
   isSupplementalSeriesBookTitle,
   isValidatedFutureReleaseSeriesItem,
   isUsableIncompleteSeriesCandidate,
@@ -261,6 +262,40 @@ test('future release dates are evaluated in JST', () => {
   assert.equal(isFutureReleaseDate('2026-06-04', '2026-05-13T00:00:00+09:00'), true);
   assert.equal(isFutureReleaseDate('2026-05-13', '2026-05-13T00:00:00+09:00'), false);
   assert.equal(isFutureReleaseDate('2026-05-12', '2026-05-13T00:00:00+09:00'), false);
+});
+
+test('unpriced series additions are not hidden by retry cooldown before their first successful check', () => {
+  const now = new Date('2026-07-09T00:00:00.000Z').getTime();
+  const book = {
+    importMode: 'kindle_series',
+    seriesName: 'オーイ！ とんぼ',
+    seriesKey: 'series:asin:B075V8SJTW',
+    volume: 63,
+    currentPrice: null,
+    effectivePrice: null,
+    lastCheckedAt: null,
+    updatedAt: '2026-07-08T23:55:00.000Z',
+    lastError: 'シリーズ価格補完: HTTP取得がタイムアウトしました'
+  };
+
+  assert.equal(isCheckRetryCoolingDown(book, now), false);
+});
+
+test('recent failed checks with a checked timestamp still respect retry cooldown', () => {
+  const now = new Date('2026-07-09T00:00:00.000Z').getTime();
+  const book = {
+    importMode: 'kindle_series',
+    seriesName: '望郷太郎',
+    seriesKey: 'series:asin:B08C6K8QCC',
+    volume: 15,
+    currentPrice: null,
+    effectivePrice: null,
+    lastCheckedAt: '2026-07-08T23:55:00.000Z',
+    updatedAt: '2026-07-08T23:55:00.000Z',
+    lastError: '価格を取得できませんでした'
+  };
+
+  assert.equal(isCheckRetryCoolingDown(book, now), true);
 });
 
 test('validated future release series volumes are kept as preorder books', () => {
