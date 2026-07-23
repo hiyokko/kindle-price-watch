@@ -3,10 +3,13 @@ import path from 'node:path';
 
 export function loadEnv() {
   const envPath = path.join(process.cwd(), '.env');
-  if (!existsSync(envPath)) {
-    normalizeRuntimeEnv();
-    return;
-  }
+  loadEnvFile(envPath);
+  normalizeRuntimeEnv();
+}
+
+export function loadEnvFile(filePath, options = {}) {
+  const envPath = path.resolve(process.cwd(), filePath);
+  if (!existsSync(envPath)) return false;
 
   const content = readFileSync(envPath, 'utf8');
   for (const rawLine of content.split(/\r?\n/)) {
@@ -25,12 +28,13 @@ export function loadEnv() {
       value = value.slice(1, -1);
     }
 
-    if (!process.env[key]) {
+    if (options.override || !process.env[key]) {
       process.env[key] = normalizeEnvValue(value, key);
     }
   }
 
   normalizeRuntimeEnv();
+  return true;
 }
 
 function normalizeRuntimeEnv() {

@@ -18,7 +18,7 @@ import {
   saveSettingsPayload,
   saveImportQueuePayload,
   saveWebhooksPayload,
-  settingsPayload,
+  settingsPayloadResponse,
   testNotificationPayload,
   webhooksPayload
 } from './src/app-api.mjs';
@@ -114,7 +114,7 @@ async function handleApi(req, res, url) {
   }
 
   if (method === 'GET' && url.pathname === '/api/settings') {
-    sendJson(res, 200, await settingsPayload());
+    sendResponse(res, await settingsPayloadResponse(req));
     return;
   }
 

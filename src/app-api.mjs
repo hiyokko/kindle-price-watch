@@ -24,8 +24,10 @@ import { buildBodyResponse, buildPrecompressedGzipResponse, requestAcceptsEncodi
 import {
   hasBlobConfig,
   readBlobBookListPayload,
+  readBlobControlPayload,
   readStoreHeadMetadata,
-  writeBlobBookListPayload
+  writeBlobBookListPayload,
+  writeBlobControlPayload
 } from './store.mjs';
 
 export async function listBooksPayload() {
@@ -37,7 +39,7 @@ export async function listBooksPayloadResponse(req) {
   const acceptsGzip = requestAcceptsEncoding(req, 'gzip');
 
   if (acceptsGzip && hasBlobConfig()) {
-    const cached = await readCurrentBookListPayloadBlob(req);
+    const cached = await readCurrentPayloadBlob(req, readBlobBookListPayload, 'book list');
     if (cached) {
       return buildPrecompressedGzipResponse(cached.statusCode, cached.body || Buffer.alloc(0), {
         etag: cached.etag,
@@ -71,17 +73,57 @@ export async function listBooksPayloadResponse(req) {
   });
 }
 
-async function readCurrentBookListPayloadBlob(req) {
+export async function settingsPayloadResponse(req) {
+  const cacheControl = 'private, no-cache, max-age=0';
+  const acceptsGzip = requestAcceptsEncoding(req, 'gzip');
+
+  if (acceptsGzip && hasBlobConfig()) {
+    const cached = await readCurrentPayloadBlob(req, readBlobControlPayload, 'control');
+    if (cached) {
+      return buildPrecompressedGzipResponse(cached.statusCode, cached.body || Buffer.alloc(0), {
+        etag: cached.etag,
+        cacheControl
+      });
+    }
+  }
+
+  const payload = await settingsPayload();
+  const body = Buffer.from(JSON.stringify(payload));
+  const storeHead = await readStoreHeadMetadata();
+
+  if (acceptsGzip && storeHead.etag && hasBlobConfig()) {
+    const gzipBody = gzipSync(body);
+    const saved = await writeBlobControlPayload(storeHead.etag, gzipBody).catch((error) => {
+      console.error('Failed to refresh control payload blob', error);
+      return null;
+    });
+    if (saved?.etag) {
+      return buildPrecompressedGzipResponse(200, gzipBody, {
+        etag: saved.etag,
+        cacheControl
+      });
+    }
+  }
+
+  return buildBodyResponse(200, body, {
+    req,
+    etag: true,
+    gzip: true,
+    cacheControl
+  });
+}
+
+async function readCurrentPayloadBlob(req, reader, label) {
   const storeHead = await readStoreHeadMetadata({ force: true }).catch((error) => {
-    console.error('Failed to read store metadata for book list payload', error);
+    console.error(`Failed to read store metadata for ${label} payload`, error);
     return null;
   });
   if (!storeHead?.etag) return null;
 
-  return readBlobBookListPayload(storeHead.etag, {
+  return reader(storeHead.etag, {
     ifNoneMatch: req?.headers?.['if-none-match'] || ''
   }).catch((error) => {
-    console.error('Failed to read book list payload blob', error);
+    console.error(`Failed to read ${label} payload blob`, error);
     return null;
   });
 }
@@ -140,10 +182,7 @@ export async function runChecksPayload(options = {}) {
 }
 
 export async function settingsPayload() {
-  return {
-    ...(await getSettingsSummary()),
-    ...diagnosticsPayload()
-  };
+  return getSettingsSummary();
 }
 
 export async function importQueuePayload() {

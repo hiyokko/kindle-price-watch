@@ -1,5 +1,6 @@
 import { loadEnv } from '../src/env.mjs';
 import { recordCronRun, resolveCronScheduleIntent, runDueChecks } from '../src/checker.mjs';
+import { compactCronRunResult } from '../src/cron-run-log.mjs';
 
 loadEnv();
 validateActionEnvironment();
@@ -26,7 +27,7 @@ try {
     backup: isBackupRun,
     scheduleCron
   });
-  console.log(JSON.stringify(result, null, 2));
+  console.log(JSON.stringify(compactCronRunResult(result), null, 2));
 } finally {
   if (watchdog) clearTimeout(watchdog);
 }

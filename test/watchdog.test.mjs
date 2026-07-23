@@ -1,6 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { classifyPriceCheckRuns, selectWatchdogTarget, workflowDispatchInputs } from '../scripts/check-watchdog.mjs';
+import { gzipSync } from 'node:zlib';
+import {
+  classifyPriceCheckRuns,
+  parseControlPayload,
+  selectWatchdogTarget,
+  workflowDispatchInputs
+} from '../scripts/check-watchdog.mjs';
 
 test('watchdog targets the 15:54 JST window after the minimum lag', () => {
   const target = selectWatchdogTarget(new Date('2026-05-18T07:20:00.000Z').getTime(), {
@@ -73,4 +79,16 @@ test('watchdog classifies active old price-check runs as stale cancellation targ
 
   assert.deepEqual(result.staleRuns.map((run) => run.id), [1, 2]);
   assert.deepEqual(result.activeCurrentRuns.map((run) => run.id), [3]);
+});
+
+test('watchdog reads automation state from the small gzip control payload', () => {
+  const payload = {
+    settings: { batchSize: 50 },
+    automation: {
+      lastCronExecutionBoundaryAt: '2026-05-18T06:54:00.000Z',
+      lastCronError: ''
+    }
+  };
+
+  assert.deepEqual(parseControlPayload(gzipSync(JSON.stringify(payload))), payload);
 });

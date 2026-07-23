@@ -1,8 +1,14 @@
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { gunzipSync } from 'node:zlib';
 import { loadEnv } from '../src/env.mjs';
 import { cronWindowCompletionState, resolveCronScheduleIntent } from '../src/checker.mjs';
-import { readStore } from '../src/store.mjs';
+import {
+  hasBlobConfig,
+  readBlobControlPayload,
+  readStore,
+  readStoreHeadMetadata
+} from '../src/store.mjs';
 
 const PRICE_CHECK_WORKFLOW = 'kindle-price-check.yml';
 const ACTIVE_RUN_STATUSES = new Set(['queued', 'in_progress', 'waiting', 'pending', 'requested']);
@@ -58,23 +64,22 @@ async function main() {
     return;
   }
 
-  const store = await readStore();
-  const completion = cronWindowCompletionState(store.automation, scheduleIntent.executionBoundaryMs);
-  if (completion.shouldSkip) {
+  if (runReconciliation.activeCurrentRuns.length > 0) {
     console.log(JSON.stringify({
       skipped: true,
-      reason: 'target_window_completed',
+      reason: 'price_check_in_progress',
       target,
-      completion,
       runReconciliation
     }, null, 2));
     return;
   }
 
-  if (runReconciliation.activeCurrentRuns.length > 0) {
+  const automation = await readWatchdogAutomationStatus();
+  const completion = cronWindowCompletionState(automation, scheduleIntent.executionBoundaryMs);
+  if (completion.shouldSkip) {
     console.log(JSON.stringify({
       skipped: true,
-      reason: 'price_check_in_progress',
+      reason: 'target_window_completed',
       target,
       completion,
       runReconciliation
@@ -90,6 +95,27 @@ async function main() {
     runReconciliation,
     dispatch
   }, null, 2));
+}
+
+export async function readWatchdogAutomationStatus() {
+  if (hasBlobConfig()) {
+    try {
+      const storeHead = await readStoreHeadMetadata({ force: true });
+      const payload = await readBlobControlPayload(storeHead.etag);
+      if (payload?.statusCode === 200 && payload.body?.length) {
+        return parseControlPayload(payload.body).automation || {};
+      }
+    } catch (error) {
+      console.error(`Failed to read watchdog control payload: ${error.message || error}`);
+    }
+  }
+
+  const store = await readStore();
+  return store.automation || {};
+}
+
+export function parseControlPayload(body) {
+  return JSON.parse(gunzipSync(Buffer.from(body)).toString('utf8'));
 }
 
 export function workflowDispatchInputs(target) {

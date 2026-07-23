@@ -20,11 +20,13 @@ import {
 import {
   hasBlobConfig,
   publicBook,
+  pruneBlobDerivedPayloads,
   readStore,
   readStoreWithMetadata,
   registerStoreWriteListener,
   updateStore,
-  writeBlobBookListPayload
+  writeBlobBookListPayload,
+  writeBlobControlPayload
 } from './store.mjs';
 import { bookListPayload } from './book-list-payload.mjs';
 import { readWebhookStore, writeWebhookStore } from './webhook-store.mjs';
@@ -106,9 +108,20 @@ export function publicBooksFromStore(store) {
 
 registerStoreWriteListener(async (store, metadata = {}) => {
   if (!hasBlobConfig() || !metadata.etag) return;
-  const body = Buffer.from(JSON.stringify(bookListPayload(publicBooksFromStore(store))));
-  await writeBlobBookListPayload(metadata.etag, gzipSync(body));
+  const webhooks = await getDiscordWebhooks();
+  const booksBody = gzipJson(bookListPayload(publicBooksFromStore(store)));
+  const controlBody = gzipJson(settingsSummaryFromStore(store, webhooks));
+
+  await Promise.all([
+    writeBlobBookListPayload(metadata.etag, booksBody),
+    writeBlobControlPayload(metadata.etag, controlBody)
+  ]);
+  await pruneBlobDerivedPayloads();
 });
+
+function gzipJson(value) {
+  return gzipSync(Buffer.from(JSON.stringify(value)));
+}
 
 async function readStoreWithPriceRepairs(options = {}) {
   const { store } = await readStoreWithPriceRepairsWithMetadata(options);
@@ -5851,14 +5864,18 @@ export async function getAutomationStatus() {
 
 export async function getSettingsSummary() {
   const [store, webhooks] = await Promise.all([readStore(), getDiscordWebhooks()]);
+  return settingsSummaryFromStore(store, webhooks);
+}
+
+export function settingsSummaryFromStore(store = {}, webhooks = {}) {
   return {
-    settings: mergedRuntimeSettings(store.settings),
+    settings: mergedRuntimeSettings(store.settings || {}),
     automation: store.automation || {},
     importQueue: publicBookImportQueue(store.importQueue),
-    discordConfigured: webhooks.count > 0,
-    discordWebhookCount: webhooks.count,
-    discordWebhookTotalCount: webhooks.totalCount,
-    discordWebhookPausedCount: webhooks.pausedCount
+    discordConfigured: Number(webhooks.count || 0) > 0,
+    discordWebhookCount: Number(webhooks.count || 0),
+    discordWebhookTotalCount: Number(webhooks.totalCount || 0),
+    discordWebhookPausedCount: Number(webhooks.pausedCount || 0)
   };
 }
 
