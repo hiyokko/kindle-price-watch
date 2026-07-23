@@ -2,7 +2,8 @@ import { promises as fs } from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { gunzipSync, gzipSync } from 'node:zlib';
-import { amazonUrlForAsin } from './price-provider.mjs';
+import { amazonUrlForAsin } from './amazon-url.mjs';
+import { getBlobSdk, hasBlobConfig } from './blob-client.mjs';
 import {
   pruneBlobPayloads,
   readBlobPayload,
@@ -11,8 +12,6 @@ import {
 
 const dataDir = path.join(process.cwd(), 'data');
 const storePath = path.join(dataDir, 'store.json');
-const blobStorePath = process.env.BLOB_STORE_PATH || 'kindle-price-watch/store.json';
-const compressedBlobStorePath = `${blobStorePath}.gz`;
 const amazonImagePrefix = 'https://m.media-amazon.com/images/I/';
 
 const defaultStore = {
@@ -86,7 +85,6 @@ const defaultStore = {
 };
 
 let writeQueue = Promise.resolve();
-let blobSdkPromise;
 let blobStoreCache = {
   expiresAt: 0,
   metadata: null,
@@ -355,9 +353,7 @@ function normalizeSeriesDiscoveryAdditions(additions) {
     }));
 }
 
-export function hasBlobConfig() {
-  return Boolean(process.env.BLOB_READ_WRITE_TOKEN);
-}
+export { hasBlobConfig };
 
 async function updateBlobStore(mutator) {
   writeQueue = writeQueue.then(async () => {
@@ -494,7 +490,7 @@ async function writeBlobStore(store) {
   const raw = JSON.stringify(compactStoreForWrite(store));
   const compressed = gzipSync(raw);
   await mirrorLegacyBlobStore(put, raw);
-  const result = await put(compressedBlobStorePath, compressed, {
+  const result = await put(compressedBlobStorePath(), compressed, {
     access: 'private',
     allowOverwrite: true,
     contentType: 'application/gzip',
@@ -508,7 +504,7 @@ async function writeBlobStore(store) {
 
 async function mirrorLegacyBlobStore(put, raw) {
   try {
-    await put(blobStorePath, raw, {
+    await put(blobStorePath(), raw, {
       access: 'private',
       allowOverwrite: true,
       contentType: 'application/json',
@@ -526,14 +522,14 @@ async function headBlobStore() {
 async function resolveBlobStoreTarget() {
   const { head } = await getBlobSdk();
   const [compressed, legacy] = await Promise.all([
-    head(compressedBlobStorePath).catch(() => null),
-    head(blobStorePath).catch(() => null)
+    head(compressedBlobStorePath()).catch(() => null),
+    head(blobStorePath()).catch(() => null)
   ]);
   const candidate = selectNewestBlobStore(compressed, legacy);
   if (!candidate) return null;
   return candidate === compressed
-    ? { pathname: compressedBlobStorePath, compressed: true, metadata: compressed }
-    : { pathname: blobStorePath, compressed: false, metadata: legacy };
+    ? { pathname: compressedBlobStorePath(), compressed: true, metadata: compressed }
+    : { pathname: blobStorePath(), compressed: false, metadata: legacy };
 }
 
 export function selectNewestBlobStore(compressed, legacy) {
@@ -709,9 +705,12 @@ function isPlainObject(value) {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
 
-async function getBlobSdk() {
-  blobSdkPromise ||= import('@vercel/blob');
-  return blobSdkPromise;
+function blobStorePath() {
+  return process.env.BLOB_STORE_PATH || 'kindle-price-watch/store.json';
+}
+
+function compressedBlobStorePath() {
+  return `${blobStorePath()}.gz`;
 }
 
 function setBlobStoreCache(metadata) {

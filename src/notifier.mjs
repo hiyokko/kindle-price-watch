@@ -1,3 +1,5 @@
+import { parseWebhookUrls } from './webhook-config.mjs';
+
 const DEFAULT_DISCORD_WEBHOOK_SPACING_MS = 350;
 const DEFAULT_DISCORD_RETRY_ATTEMPTS = 3;
 const DEFAULT_DISCORD_RETRY_BASE_DELAY_MS = 750;
@@ -166,15 +168,7 @@ function sleep(ms) {
 }
 
 export function parseDiscordWebhookUrls(value) {
-  const seen = new Set();
-  const urls = [];
-  for (const item of String(value || '').split(/[\s,]+/)) {
-    const url = item.trim();
-    if (!url || seen.has(url)) continue;
-    seen.add(url);
-    urls.push(url);
-  }
-  return urls;
+  return parseWebhookUrls(value);
 }
 
 export function buildPriceNotification(book, event) {

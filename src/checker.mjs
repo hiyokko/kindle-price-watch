@@ -1,10 +1,8 @@
 import crypto from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { gzipSync } from 'node:zlib';
+import { amazonUrlForAsin, extractAsin, isKindleSeriesUrl } from './amazon-url.mjs';
 import {
-  amazonUrlForAsin,
-  extractAsin,
   fetchAmazonHtmlSnapshot,
   fetchBookSnapshot,
   fetchEfoxKindleSeriesItems,
@@ -14,29 +12,55 @@ import {
   fetchKindleSeriesItems,
   fetchSaleBonKindleSeriesItems,
   cleanAmazonSeriesName,
-  isProbablyBookAsin,
-  isKindleSeriesUrl
+  isProbablyBookAsin
 } from './price-provider.mjs';
 import {
-  hasBlobConfig,
   publicBook,
-  pruneBlobDerivedPayloads,
   readStore,
   readStoreWithMetadata,
-  registerStoreWriteListener,
-  updateStore,
-  writeBlobBookListPayload,
-  writeBlobControlPayload
+  updateStore
 } from './store.mjs';
-import { bookListPayload } from './book-list-payload.mjs';
-import { readWebhookStore, writeWebhookStore } from './webhook-store.mjs';
+import {
+  bookImportQueueKey,
+  getRuntimeDiscordWebhookUrls,
+  mergedRuntimeSettings,
+  normalizeBookImportInput,
+  parseBookImportInputs
+} from './control-service.mjs';
 import {
   buildCronSummaryNotification,
   buildPriceNotification,
-  getDiscordWebhookUrls,
-  parseDiscordWebhookUrls,
   sendDiscordNotification
 } from './notifier.mjs';
+import {
+  backupCronSkipState,
+  cronWindowCompletionState,
+  latestJstExecutionBoundaryMs,
+  nextJstExecutionBoundaryMs,
+  resolveCronScheduleIntent,
+  scheduledExecutionGraceMs,
+  scheduledExecutionTimes,
+  todayJstExecutionBoundaryMs
+} from './scheduler.mjs';
+
+export {
+  enqueueBookImportQueue,
+  getAutomationStatus,
+  getBookImportQueue,
+  getDiscordWebhookCount,
+  getDiscordWebhooks,
+  getSettings,
+  getSettingsSummary,
+  saveBookImportQueue,
+  saveDiscordWebhooks,
+  saveSettings,
+  sendTestNotification,
+  settingsSummaryFromStore
+} from './control-service.mjs';
+export {
+  cronWindowCompletionState,
+  resolveCronScheduleIntent
+} from './scheduler.mjs';
 
 const UNVALIDATED_SERIES_PRICE_PROVIDERS = new Set([
   'amazon_series_source_price',
@@ -104,23 +128,6 @@ export function publicBooksFromStore(store) {
   return store.books
     .map((book) => publicBookWithSeriesHistory(book, seriesHistory, discountReferences))
     .sort(sortBooks);
-}
-
-registerStoreWriteListener(async (store, metadata = {}) => {
-  if (!hasBlobConfig() || !metadata.etag) return;
-  const webhooks = await getDiscordWebhooks();
-  const booksBody = gzipJson(bookListPayload(publicBooksFromStore(store)));
-  const controlBody = gzipJson(settingsSummaryFromStore(store, webhooks));
-
-  await Promise.all([
-    writeBlobBookListPayload(metadata.etag, booksBody),
-    writeBlobControlPayload(metadata.etag, controlBody)
-  ]);
-  await pruneBlobDerivedPayloads();
-});
-
-function gzipJson(value) {
-  return gzipSync(Buffer.from(JSON.stringify(value)));
 }
 
 async function readStoreWithPriceRepairs(options = {}) {
@@ -5533,37 +5540,6 @@ async function loadBookImportQueueInputs(store = null) {
   return [...inputs.values()];
 }
 
-function parseBookImportInputs(raw) {
-  const text = String(raw || '').trim();
-  if (!text) return [];
-
-  if (text.startsWith('[')) {
-    try {
-      const parsed = JSON.parse(text);
-      if (Array.isArray(parsed)) return parsed.map(normalizeBookImportInput).filter(Boolean);
-    } catch {
-      // Fall through to line-based parsing.
-    }
-  }
-
-  return text
-    .split(/\r?\n/)
-    .map(normalizeBookImportInput)
-    .filter((line) => line && !line.startsWith('#'));
-}
-
-function normalizeBookImportInput(value) {
-  return String(value || '')
-    .trim()
-    .replace(/^["']|["']$/g, '');
-}
-
-function bookImportQueueKey(input) {
-  const asin = extractAsin(input);
-  if (asin) return `asin:${asin.toUpperCase()}`;
-  return `input:${String(input || '').trim()}`;
-}
-
 function planSeriesDiscovery(store, options = {}) {
   const allGroups = seriesDiscoveryGroups(store.books);
   const blockedGroups = allGroups.filter(isBlockedSeriesDiscoveryGroup);
@@ -5850,303 +5826,6 @@ function recordSeriesDiscoveryCursorInStore(store, group, now) {
     lastSeriesKey: group.seriesKey,
     checkedAt: now
   };
-}
-
-export async function getSettings() {
-  const store = await readStore();
-  return mergedRuntimeSettings(store.settings);
-}
-
-export async function getAutomationStatus() {
-  const store = await readStore();
-  return store.automation || {};
-}
-
-export async function getSettingsSummary() {
-  const [store, webhooks] = await Promise.all([readStore(), getDiscordWebhooks()]);
-  return settingsSummaryFromStore(store, webhooks);
-}
-
-export function settingsSummaryFromStore(store = {}, webhooks = {}) {
-  return {
-    settings: mergedRuntimeSettings(store.settings || {}),
-    automation: store.automation || {},
-    importQueue: publicBookImportQueue(store.importQueue),
-    discordConfigured: Number(webhooks.count || 0) > 0,
-    discordWebhookCount: Number(webhooks.count || 0),
-    discordWebhookTotalCount: Number(webhooks.totalCount || 0),
-    discordWebhookPausedCount: Number(webhooks.pausedCount || 0)
-  };
-}
-
-export async function getBookImportQueue() {
-  const store = await readStore();
-  return publicBookImportQueue(store.importQueue);
-}
-
-export async function saveBookImportQueue(inputs) {
-  const parsedInputs = Array.isArray(inputs)
-    ? inputs.map(normalizeBookImportInput).filter(Boolean)
-    : parseBookImportInputs(inputs);
-  const deduped = [...new Map(parsedInputs.map((input) => [bookImportQueueKey(input), input])).values()];
-  const now = new Date().toISOString();
-  let result;
-
-  await updateStore((store) => {
-    store.importQueue = store.importQueue || { pending: [], completed: [], errors: [] };
-    const previousPending = new Map((store.importQueue.pending || []).map((entry) => [entry.key, entry]));
-    store.importQueue.pending = deduped.map((input) => {
-      const key = bookImportQueueKey(input);
-      const previous = previousPending.get(key);
-      return {
-        key,
-        input,
-        addedAt: previous?.addedAt || now
-      };
-    });
-    result = publicBookImportQueue(store.importQueue);
-    return store;
-  });
-
-  return result;
-}
-
-export async function enqueueBookImportQueue(inputs) {
-  const parsedInputs = Array.isArray(inputs)
-    ? inputs.map(normalizeBookImportInput).filter(Boolean)
-    : parseBookImportInputs(inputs);
-  const deduped = [...new Map(parsedInputs.map((input) => [bookImportQueueKey(input), input])).values()];
-  if (deduped.length === 0) {
-    const error = new Error('Amazon Kindle URL または ASIN を入力してください');
-    error.status = 400;
-    throw error;
-  }
-
-  const now = new Date().toISOString();
-  let result;
-  let added = 0;
-
-  await updateStore((store) => {
-    store.importQueue = store.importQueue || { pending: [], completed: [], errors: [] };
-    const pending = new Map((store.importQueue.pending || []).map((entry) => [entry.key, entry]));
-    const completed = new Map((store.importQueue.completed || []).map((entry) => [entry.key, entry]));
-    const errors = new Map((store.importQueue.errors || []).map((entry) => [entry.key, entry]));
-
-    for (const input of deduped) {
-      const key = bookImportQueueKey(input);
-      const previous = pending.get(key);
-      if (!previous) added += 1;
-      pending.set(key, {
-        key,
-        input,
-        addedAt: previous?.addedAt || now
-      });
-      completed.delete(key);
-      errors.delete(key);
-    }
-
-    store.importQueue.pending = [...pending.values()];
-    store.importQueue.completed = [...completed.values()].slice(-200);
-    store.importQueue.errors = [...errors.values()].slice(-100);
-    result = {
-      ...publicBookImportQueue(store.importQueue),
-      queued: deduped.length,
-      added,
-      alreadyPending: Math.max(0, deduped.length - added)
-    };
-    return store;
-  });
-
-  return result;
-}
-
-function publicBookImportQueue(queue = {}) {
-  const pending = (queue.pending || []).map((entry) => ({
-    key: entry.key,
-    input: entry.input,
-    addedAt: entry.addedAt || ''
-  }));
-  const completed = (queue.completed || []).map((entry) => ({
-    key: entry.key,
-    input: entry.input,
-    importedAt: entry.importedAt || '',
-    mode: entry.mode || '',
-    imported: Number(entry.imported || 0),
-    skippedDuplicates: Number(entry.skippedDuplicates || 0),
-    updatedDuplicates: Number(entry.updatedDuplicates || 0)
-  }));
-  const errors = (queue.errors || []).map((entry) => ({
-    key: entry.key,
-    input: entry.input,
-    checkedAt: entry.checkedAt || '',
-    error: entry.error || ''
-  }));
-
-  return {
-    pending,
-    completed,
-    errors,
-    summary: importQueueSummary({ pending, completed, errors })
-  };
-}
-
-function importQueueSummary(queue = {}) {
-  return {
-    pendingCount: Array.isArray(queue.pending) ? queue.pending.length : 0,
-    completedCount: Array.isArray(queue.completed) ? queue.completed.length : 0,
-    errorCount: Array.isArray(queue.errors) ? queue.errors.length : 0
-  };
-}
-
-export async function saveSettings(settings) {
-  const cleaned = {
-    notificationThreshold: clampNumber(settings.notificationThreshold, 0, 95, 10),
-    batchSize: floorNumber(settings.batchSize, 1, 50),
-    listPriceChallengeBatchSize: clampNumber(settings.listPriceChallengeBatchSize, 0, 50, 50),
-    notifyOnPriceDrop: Boolean(settings.notifyOnPriceDrop),
-    notifyOnBestEver: Boolean(settings.notifyOnBestEver)
-  };
-
-  await updateStore((store) => {
-    store.settings = { ...store.settings, ...cleaned };
-    return store;
-  });
-
-  return cleaned;
-}
-
-export async function sendTestNotification() {
-  const webhookUrls = await getRuntimeDiscordWebhookUrls();
-  const result = await sendDiscordNotification({
-    username: 'Kindle Price Watch',
-    content: 'Kindle Price Watch のテスト通知です。'
-  }, { webhookUrls });
-  return result;
-}
-
-export async function getDiscordWebhooks() {
-  const webhookStore = await readWebhookStore();
-  const dedicated = storedDiscordWebhooks(webhookStore);
-  if (dedicated != null) {
-    return discordWebhooksPayload(dedicated, {
-      usingEnvFallback: false,
-      source: 'webhook_store'
-    });
-  }
-
-  const store = await readStore();
-  const stored = storedDiscordWebhooks(store.settings);
-  const entries = stored ?? getDiscordWebhookUrls().map((url) => ({ name: '', url, enabled: true }));
-  return discordWebhooksPayload(entries, {
-    usingEnvFallback: stored == null,
-    source: stored == null ? 'env' : 'legacy_settings'
-  });
-}
-
-export async function saveDiscordWebhooks(entries) {
-  const cleaned = normalizeDiscordWebhookEntries(entries);
-  const activeUrls = activeDiscordWebhookUrls(cleaned);
-  await writeWebhookStore(cleaned);
-  await updateStore((store) => {
-    store.settings = {
-      ...store.settings,
-      discordWebhooks: cleaned,
-      discordWebhookUrls: activeUrls
-    };
-    return store;
-  });
-  return discordWebhooksPayload(cleaned, {
-    usingEnvFallback: false,
-    source: 'webhook_store'
-  });
-}
-
-export async function getDiscordWebhookCount() {
-  const webhooks = await getDiscordWebhooks();
-  return webhooks.count;
-}
-
-async function getRuntimeDiscordWebhookUrls() {
-  const webhooks = await getDiscordWebhooks();
-  return webhooks.urls;
-}
-
-function storedDiscordWebhookUrls(settings = {}) {
-  if (Array.isArray(settings.discordWebhookUrls)) return parseDiscordWebhookUrls(settings.discordWebhookUrls.join('\n'));
-  if (typeof settings.discordWebhookUrls === 'string') return parseDiscordWebhookUrls(settings.discordWebhookUrls);
-  return null;
-}
-
-function storedDiscordWebhooks(settings = {}) {
-  if (Array.isArray(settings.discordWebhooks)) return normalizeDiscordWebhookEntries(settings.discordWebhooks);
-  const urls = storedDiscordWebhookUrls(settings);
-  return urls == null ? null : normalizeDiscordWebhookEntries(urls);
-}
-
-function normalizeDiscordWebhookEntries(value) {
-  const source = Array.isArray(value) ? value : parseDiscordWebhookUrls(String(value || ''));
-  const seen = new Set();
-  const entries = [];
-
-  for (const item of source) {
-    const entry = normalizeDiscordWebhookEntry(item);
-    if (!entry || seen.has(entry.url)) continue;
-    if (!isValidDiscordWebhookUrl(entry.url)) {
-      const error = new Error('Discord Webhook URL の形式が正しくありません');
-      error.status = 400;
-      throw error;
-    }
-    seen.add(entry.url);
-    entries.push(entry);
-  }
-
-  return entries;
-}
-
-function normalizeDiscordWebhookEntry(item) {
-  if (typeof item === 'string') {
-    const url = item.trim();
-    return url ? { name: '', url, enabled: true } : null;
-  }
-
-  if (!item || typeof item !== 'object') return null;
-  const url = String(item.url || '').trim();
-  if (!url) return null;
-  return {
-    name: String(item.name || '').trim(),
-    url,
-    enabled: item.enabled !== false
-  };
-}
-
-function activeDiscordWebhookUrls(entries = []) {
-  return entries.filter((entry) => entry.enabled !== false).map((entry) => entry.url);
-}
-
-function discordWebhooksPayload(entries, extra = {}) {
-  const normalized = normalizeDiscordWebhookEntries(entries);
-  const urls = activeDiscordWebhookUrls(normalized);
-  return {
-    entries: normalized,
-    urls,
-    count: urls.length,
-    totalCount: normalized.length,
-    pausedCount: normalized.length - urls.length,
-    ...extra
-  };
-}
-
-function isValidDiscordWebhookUrl(value) {
-  try {
-    const url = new URL(value);
-    return (
-      url.protocol === 'https:' &&
-      /(^|\.)discord(?:app)?\.com$/i.test(url.hostname) &&
-      /^\/api\/webhooks\/\d+\/[^/]+$/i.test(url.pathname)
-    );
-  } catch {
-    return false;
-  }
 }
 
 async function checkOneBook(bookRef, options = {}) {
@@ -8411,159 +8090,6 @@ function shouldWaitForScheduledExecutionWindow(source, options = {}, now = Date.
   return now - latestBoundary > scheduledExecutionGraceMs();
 }
 
-const DAILY_CRON_EXECUTION_WINDOWS = new Map([
-  ['54 18 * * *', { targetIndex: 0, backup: false }],
-  ['54 6 * * *', { targetIndex: 1, backup: false }]
-]);
-
-export function resolveCronScheduleIntent(scheduleCron, now = Date.now()) {
-  const normalized = normalizeScheduleCron(scheduleCron);
-  if (!normalized) return null;
-
-  const definition = DAILY_CRON_EXECUTION_WINDOWS.get(normalized);
-  if (!definition) return null;
-
-  const parsed = parseDailyUtcCron(normalized);
-  if (!parsed) return null;
-
-  const nowMs = Number(now);
-  if (!Number.isFinite(nowMs)) return null;
-
-  const times = scheduledExecutionTimes();
-  const target = times[definition.targetIndex];
-  if (!target) return null;
-
-  const nominalMs = latestDailyUtcCronOccurrenceMs(nowMs, parsed.hour, parsed.minute);
-  const nominalJstDayStartMs = jstDayStartUtcMs(nominalMs);
-  const executionBoundaryMs = nominalJstDayStartMs + target.hour * 60 * 60 * 1000 + target.minute * 60 * 1000;
-  const nextExecutionBoundaryMs = nextJstExecutionBoundaryAfterMs(executionBoundaryMs);
-
-  return {
-    scheduleCron: normalized,
-    backup: definition.backup,
-    nominalAt: new Date(nominalMs).toISOString(),
-    executionBoundaryMs,
-    executionBoundaryAt: new Date(executionBoundaryMs).toISOString(),
-    nextExecutionBoundaryMs,
-    nextExecutionBoundaryAt: new Date(nextExecutionBoundaryMs).toISOString(),
-    stale: nowMs >= nextExecutionBoundaryMs
-  };
-}
-
-function latestJstExecutionBoundaryMs(now) {
-  const todayBoundaries = scheduledExecutionTimes().map((time) => todayJstExecutionBoundaryMs(now, time));
-  const latestToday = [...todayBoundaries].reverse().find((boundary) => now >= boundary);
-  if (latestToday != null) return latestToday;
-  return todayBoundaries[todayBoundaries.length - 1] - 24 * 60 * 60 * 1000;
-}
-
-function nextJstExecutionBoundaryMs(now) {
-  const todayBoundaries = scheduledExecutionTimes().map((time) => todayJstExecutionBoundaryMs(now, time));
-  return todayBoundaries.find((boundary) => now < boundary) || todayBoundaries[0] + 24 * 60 * 60 * 1000;
-}
-
-function todayJstExecutionBoundaryMs(now, time) {
-  const jstDayStartUtc = jstDayStartUtcMs(Number(now));
-  return jstDayStartUtc + time.hour * 60 * 60 * 1000 + time.minute * 60 * 1000;
-}
-
-function scheduledExecutionTimes() {
-  return [
-    { hour: 3, minute: 54 },
-    { hour: 15, minute: 54 }
-  ];
-}
-
-function scheduledExecutionGraceMs() {
-  return floorNumber(process.env.CHECK_EXECUTION_GRACE_MINUTES, 1, 180) * 60 * 1000;
-}
-
-function backupCronSkipState(automation = {}, now = Date.now(), executionBoundaryMs = null) {
-  const boundaryMs = Number.isFinite(executionBoundaryMs)
-    ? executionBoundaryMs
-    : latestJstExecutionBoundaryMs(now);
-  return cronWindowCompletionState(automation, boundaryMs);
-}
-
-export function cronWindowCompletionState(automation = {}, executionBoundaryMs) {
-  const boundaryMs = Number(executionBoundaryMs);
-  if (!Number.isFinite(boundaryMs)) {
-    return {
-      shouldSkip: false,
-      skipDetail: '',
-      executionBoundaryAt: '',
-      lastCronExecutionBoundaryAt: automation?.lastCronExecutionBoundaryAt || '',
-      lastCronStartedAt: automation?.lastCronStartedAt || '',
-      lastCronFinishedAt: automation?.lastCronFinishedAt || '',
-      lastCronStoppedByRuntimeLimit: Boolean(automation?.lastCronStoppedByRuntimeLimit),
-      lastCronError: String(automation?.lastCronError || '').trim()
-    };
-  }
-
-  const lastFinishedMs = timestampMs(automation?.lastCronFinishedAt);
-  const lastBoundaryMs = timestampMs(automation?.lastCronExecutionBoundaryAt);
-  const lastCronError = String(automation?.lastCronError || '').trim();
-  const lastCronStoppedByRuntimeLimit = Boolean(automation?.lastCronStoppedByRuntimeLimit);
-  const nextBoundaryMs = nextJstExecutionBoundaryAfterMs(boundaryMs);
-  const hasExplicitSameWindow = lastBoundaryMs === boundaryMs;
-  const hasLegacySameWindow =
-    !lastBoundaryMs && lastFinishedMs >= boundaryMs && lastFinishedMs < nextBoundaryMs;
-  const hasSameWindowCompletion = (hasExplicitSameWindow || hasLegacySameWindow) && lastFinishedMs >= boundaryMs;
-  const hasSuccessfulCompletion = hasSameWindowCompletion && !lastCronError;
-  const hasSavedRuntimeLimitCompletion =
-    hasSameWindowCompletion && lastCronStoppedByRuntimeLimit && !lastCronError;
-  const shouldSkip = hasSuccessfulCompletion || hasSavedRuntimeLimitCompletion;
-
-  return {
-    shouldSkip,
-    skipDetail: hasSavedRuntimeLimitCompletion ? 'saved_runtime_limit' : hasSuccessfulCompletion ? 'successful_completion' : '',
-    executionBoundaryAt: new Date(boundaryMs).toISOString(),
-    lastCronExecutionBoundaryAt: automation?.lastCronExecutionBoundaryAt || '',
-    lastCronStartedAt: automation?.lastCronStartedAt || '',
-    lastCronFinishedAt: automation?.lastCronFinishedAt || '',
-    lastCronStoppedByRuntimeLimit,
-    lastCronError
-  };
-}
-
-function normalizeScheduleCron(value) {
-  return String(value || '').trim().replace(/\s+/g, ' ');
-}
-
-function parseDailyUtcCron(scheduleCron) {
-  const parts = normalizeScheduleCron(scheduleCron).split(' ');
-  if (parts.length !== 5 || parts[2] !== '*' || parts[3] !== '*' || parts[4] !== '*') return null;
-
-  const minute = Number(parts[0]);
-  const hour = Number(parts[1]);
-  if (!Number.isInteger(minute) || minute < 0 || minute > 59) return null;
-  if (!Number.isInteger(hour) || hour < 0 || hour > 23) return null;
-
-  return { hour, minute };
-}
-
-function latestDailyUtcCronOccurrenceMs(now, hour, minute) {
-  const dayMs = 24 * 60 * 60 * 1000;
-  const nowMs = Number(now);
-  const utcDayStartMs = Math.floor(nowMs / dayMs) * dayMs;
-  const todayMs = utcDayStartMs + hour * 60 * 60 * 1000 + minute * 60 * 1000;
-  return todayMs <= nowMs ? todayMs : todayMs - dayMs;
-}
-
-function nextJstExecutionBoundaryAfterMs(boundaryMs) {
-  const dayMs = 24 * 60 * 60 * 1000;
-  const sameDayBoundaries = scheduledExecutionTimes()
-    .map((time) => todayJstExecutionBoundaryMs(boundaryMs, time))
-    .sort((left, right) => left - right);
-  return sameDayBoundaries.find((candidate) => candidate > boundaryMs) || sameDayBoundaries[0] + dayMs;
-}
-
-function jstDayStartUtcMs(timestamp) {
-  const dayMs = 24 * 60 * 60 * 1000;
-  const jstOffsetMs = 9 * 60 * 60 * 1000;
-  return Math.floor((Number(timestamp) + jstOffsetMs) / dayMs) * dayMs - jstOffsetMs;
-}
-
 function timestampMs(value) {
   const time = new Date(value || 0).getTime();
   return Number.isFinite(time) ? time : 0;
@@ -8985,16 +8511,6 @@ function hasSeriesDiscoveryWork(seriesDiscovery = null) {
     seriesDiscovery.stoppedByRuntimeLimit ||
     (Array.isArray(seriesDiscovery.errors) && seriesDiscovery.errors.length > 0)
   );
-}
-
-function mergedRuntimeSettings(settings = {}) {
-  return {
-    notificationThreshold: clampNumber(settings.notificationThreshold, 0, 95, 10),
-    batchSize: floorNumber(settings.batchSize, 1, 50),
-    listPriceChallengeBatchSize: clampNumber(settings.listPriceChallengeBatchSize, 0, 50, 50),
-    notifyOnPriceDrop: settings.notifyOnPriceDrop !== false,
-    notifyOnBestEver: settings.notifyOnBestEver !== false
-  };
 }
 
 function minNullable(a, b) {

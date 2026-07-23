@@ -1,24 +1,14 @@
 import { gzipSync } from 'node:zlib';
 import {
-  addSeriesImports,
-  checkBookById,
-  deleteAllBooks,
-  deleteBook,
-  deleteBooks,
-  deleteSeries,
   enqueueBookImportQueue,
   getDiscordWebhooks,
   getBookImportQueue,
-  getHistory,
   getSettingsSummary,
-  listBooks,
-  listBooksWithStoreMetadata,
-  runDueChecks,
   saveDiscordWebhooks,
   saveBookImportQueue,
   saveSettings,
   sendTestNotification
-} from './checker.mjs';
+} from './control-service.mjs';
 import { bookListPayload, compactBooksPayload } from './book-list-payload.mjs';
 import { buildBodyResponse, buildPrecompressedGzipResponse, requestAcceptsEncoding } from './http-response.mjs';
 import {
@@ -30,55 +20,40 @@ import {
   writeBlobControlPayload
 } from './store.mjs';
 
+let checkerModulePromise;
+
 export async function listBooksPayload() {
+  const { listBooks } = await checkerModule();
   return bookListPayload(await listBooks());
 }
 
 export async function listBooksPayloadResponse(req) {
-  const cacheControl = 'private, no-cache, max-age=0';
-  const acceptsGzip = requestAcceptsEncoding(req, 'gzip');
-
-  if (acceptsGzip && hasBlobConfig()) {
-    const cached = await readCurrentPayloadBlob(req, readBlobBookListPayload, 'book list');
-    if (cached) {
-      return buildPrecompressedGzipResponse(cached.statusCode, cached.body || Buffer.alloc(0), {
-        etag: cached.etag,
-        cacheControl
-      });
-    }
-  }
-
-  const { payload, storeEtag } = await listBooksPayloadWithMetadata();
-  const body = Buffer.from(JSON.stringify(payload));
-
-  if (acceptsGzip && storeEtag && hasBlobConfig()) {
-    const gzipBody = gzipSync(body);
-    const saved = await writeBlobBookListPayload(storeEtag, gzipBody).catch((error) => {
-      console.error('Failed to refresh book list payload blob', error);
-      return null;
-    });
-    if (saved?.etag) {
-      return buildPrecompressedGzipResponse(200, gzipBody, {
-        etag: saved.etag,
-        cacheControl
-      });
-    }
-  }
-
-  return buildBodyResponse(200, body, {
-    req,
-    etag: true,
-    gzip: true,
-    cacheControl
+  return derivedJsonPayloadResponse(req, {
+    label: 'book list',
+    readBlob: readBlobBookListPayload,
+    writeBlob: writeBlobBookListPayload,
+    load: listBooksPayloadWithMetadata
   });
 }
 
 export async function settingsPayloadResponse(req) {
+  return derivedJsonPayloadResponse(req, {
+    label: 'control',
+    readBlob: readBlobControlPayload,
+    writeBlob: writeBlobControlPayload,
+    load: async () => ({
+      payload: await settingsPayload(),
+      storeEtag: (await readStoreHeadMetadata()).etag
+    })
+  });
+}
+
+async function derivedJsonPayloadResponse(req, options) {
   const cacheControl = 'private, no-cache, max-age=0';
   const acceptsGzip = requestAcceptsEncoding(req, 'gzip');
 
   if (acceptsGzip && hasBlobConfig()) {
-    const cached = await readCurrentPayloadBlob(req, readBlobControlPayload, 'control');
+    const cached = await readCurrentPayloadBlob(req, options.readBlob, options.label);
     if (cached) {
       return buildPrecompressedGzipResponse(cached.statusCode, cached.body || Buffer.alloc(0), {
         etag: cached.etag,
@@ -87,14 +62,12 @@ export async function settingsPayloadResponse(req) {
     }
   }
 
-  const payload = await settingsPayload();
+  const { payload, storeEtag } = await options.load();
   const body = Buffer.from(JSON.stringify(payload));
-  const storeHead = await readStoreHeadMetadata();
-
-  if (acceptsGzip && storeHead.etag && hasBlobConfig()) {
+  if (acceptsGzip && storeEtag && hasBlobConfig()) {
     const gzipBody = gzipSync(body);
-    const saved = await writeBlobControlPayload(storeHead.etag, gzipBody).catch((error) => {
-      console.error('Failed to refresh control payload blob', error);
+    const saved = await options.writeBlob(storeEtag, gzipBody).catch((error) => {
+      console.error(`Failed to refresh ${options.label} payload blob`, error);
       return null;
     });
     if (saved?.etag) {
@@ -129,6 +102,7 @@ async function readCurrentPayloadBlob(req, reader, label) {
 }
 
 async function listBooksPayloadWithMetadata() {
+  const { listBooksWithStoreMetadata } = await checkerModule();
   const { books, storeEtag } = await listBooksWithStoreMetadata();
   return {
     payload: bookListPayload(books),
@@ -138,6 +112,7 @@ async function listBooksPayloadWithMetadata() {
 
 export async function addBooksPayload(body = {}) {
   if (Array.isArray(body.seriesImports)) {
+    const { addSeriesImports } = await checkerModule();
     return addSeriesImports(body.seriesImports, {
       fetchDetails: body.fetchDetails === true,
       recordInitialHistory: body.recordInitialHistory !== false
@@ -153,24 +128,29 @@ export async function addBooksPayload(body = {}) {
 }
 
 export async function deleteBooksPayload(body = {}) {
+  const { deleteAllBooks, deleteBooks } = await checkerModule();
   return body.all ? deleteAllBooks() : deleteBooks(body.ids || []);
 }
 
 export async function deleteBookPayload(id) {
+  const { deleteBook } = await checkerModule();
   await deleteBook(id);
   return { ok: true };
 }
 
 export async function deleteSeriesPayload(body = {}) {
+  const { deleteSeries } = await checkerModule();
   await deleteSeries(body.seriesKey || '', body.sourceUrl || '');
   return { ok: true };
 }
 
 export async function historyPayload(bookId) {
+  const { getHistory } = await checkerModule();
   return { history: await getHistory(bookId) };
 }
 
 export async function checkBookPayload(bookId) {
+  const { checkBookById } = await checkerModule();
   return {
     ...(await checkBookById(bookId, { notify: true })),
     diagnostics: diagnosticsPayload()
@@ -178,6 +158,7 @@ export async function checkBookPayload(bookId) {
 }
 
 export async function runChecksPayload(options = {}) {
+  const { runDueChecks } = await checkerModule();
   return runDueChecks({ notify: true, ...options });
 }
 
@@ -218,6 +199,11 @@ function diagnosticsPayload() {
     priceProvider: process.env.PRICE_PROVIDER || 'amazon_html',
     keepaConfigured: Boolean(process.env.KEEPA_API_KEY)
   };
+}
+
+function checkerModule() {
+  checkerModulePromise ||= import('./checker.mjs');
+  return checkerModulePromise;
 }
 
 export { compactBooksPayload };

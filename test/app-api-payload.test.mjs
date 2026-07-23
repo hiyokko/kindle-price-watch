@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { compactBooksPayload } from '../src/app-api.mjs';
+import { compactBooksPayload } from '../src/book-list-payload.mjs';
 
 test('book list payload omits redundant defaults and canonical URLs', () => {
   const [book] = compactBooksPayload([

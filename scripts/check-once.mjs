@@ -1,8 +1,11 @@
 import { loadEnv } from '../src/env.mjs';
-import { recordCronRun, resolveCronScheduleIntent, runDueChecks } from '../src/checker.mjs';
+import { recordCronRun, runDueChecks } from '../src/checker.mjs';
 import { compactCronRunResult } from '../src/cron-run-log.mjs';
+import { resolveCronScheduleIntent } from '../src/scheduler.mjs';
+import { registerStorePayloadSync } from '../src/store-payload-sync.mjs';
 
 loadEnv();
+registerStorePayloadSync();
 validateActionEnvironment();
 
 const scriptStartedAt = new Date().toISOString();

@@ -15,6 +15,20 @@ npm start
 
 ブラウザで `http://localhost:4173` を開きます。
 
+## 構成
+
+- `server.mjs`: 認証、静的ファイル配信、HTTPルーティング
+- `src/app-api.mjs`: HTTP payload変換。価格取得エンジンは必要な操作でだけ遅延読込
+- `src/control-service.mjs`: 設定、追加キュー、Discord Webhook
+- `src/checker.mjs`: 価格チェック、価格監査、シリーズ探索、永続化マージ
+- `src/price-provider.mjs`: Amazonと補助サイトの取得・HTML解析
+- `src/scheduler.mjs`: JST実行枠と完了判定
+- `src/store.mjs`: ローカルJSONと本番Blobの主ストア
+- `src/store-payload-sync.mjs`: 主ストア書込後のbooks/control payload同期
+- `src/blob-client.mjs`: Vercel Blob SDKの共有遅延初期化
+
+通常の書籍一覧・設定表示・watchdogでは `checker.mjs` と `price-provider.mjs` を読み込みません。価格取得、シリーズ探索、データ修復などが必要な操作だけが価格処理系を読み込みます。ストア書込後の派生payload更新は各機能に埋め込まず、エントリーポイントで `registerStorePayloadSync()` を明示的に登録します。
+
 ## Vercel無料枠で使う
 
 Vercelのファイルシステムは永続保存に向かないため、GUIとAPIはVercel、データ保存はVercel Blobを使います。ローカル開発では `data/store.json` を使います。
@@ -133,6 +147,7 @@ GitHub connectorが使えない環境では、GitHub fine-grained PATをmacOS Ke
 ```bash
 node scripts/github-actions.mjs doctor
 node scripts/github-actions.mjs runs --limit 10
+node scripts/github-actions.mjs runs --workflow kindle-price-watchdog.yml --limit 10
 node scripts/github-actions.mjs jobs <run-id>
 node scripts/github-actions.mjs logs <run-id> --grep 'timeout|SIGTERM|CHECK_HARD_TIMEOUT|error'
 ```

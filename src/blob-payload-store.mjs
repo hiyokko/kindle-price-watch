@@ -1,5 +1,6 @@
+import { getBlobSdk, hasBlobConfig } from './blob-client.mjs';
+
 const payloadCaches = new Map();
-let blobSdkPromise;
 
 export async function readBlobPayload(kind, storeEtag, options = {}) {
   if (!hasBlobConfig() || !storeEtag) return null;
@@ -129,10 +130,6 @@ function setPayloadCache(kind, metadata, body) {
   });
 }
 
-function hasBlobConfig() {
-  return Boolean(process.env.BLOB_READ_WRITE_TOKEN);
-}
-
 function blobStoreDirectory() {
   const storePath = process.env.BLOB_STORE_PATH || 'kindle-price-watch/store.json';
   const index = storePath.lastIndexOf('/');
@@ -168,9 +165,4 @@ function payloadMemoryCacheMs() {
       process.env.BLOB_BOOK_LIST_PAYLOAD_MEMORY_CACHE_MS
   );
   return Number.isFinite(configured) && configured >= 0 ? Math.round(configured) : 15000;
-}
-
-async function getBlobSdk() {
-  blobSdkPromise ||= import('@vercel/blob');
-  return blobSdkPromise;
 }

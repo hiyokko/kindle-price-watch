@@ -1,9 +1,11 @@
 import { loadEnv, loadEnvFile } from '../src/env.mjs';
 import { repairBookPricesByAsins } from '../src/checker.mjs';
 import { readStore } from '../src/store.mjs';
+import { registerStorePayloadSync } from '../src/store-payload-sync.mjs';
 
 loadEnvFile('.env.production.local');
 loadEnv();
+registerStorePayloadSync();
 
 const options = parseArgs(process.argv.slice(2));
 const store = await readStore();

@@ -1,9 +1,10 @@
 import { loadEnv, loadEnvFile } from '../src/env.mjs';
-import '../src/checker.mjs';
 import { hasBlobConfig, readStoreWithMetadata, updateStore } from '../src/store.mjs';
+import { registerStorePayloadSync } from '../src/store-payload-sync.mjs';
 
 loadEnvFile('.env.production.local');
 loadEnv();
+registerStorePayloadSync();
 
 if (!hasBlobConfig()) {
   throw new Error('BLOB_READ_WRITE_TOKEN is required to optimize production Blob storage.');

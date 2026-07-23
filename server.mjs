@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadEnv, readNumberEnv } from './src/env.mjs';
 import { buildBodyResponse } from './src/http-response.mjs';
+import { registerStorePayloadSync } from './src/store-payload-sync.mjs';
 import {
   addBooksPayload,
   checkBookPayload,
@@ -24,6 +25,7 @@ import {
 } from './src/app-api.mjs';
 
 loadEnv();
+registerStorePayloadSync();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { cronWindowCompletionState, resolveCronScheduleIntent } from '../src/checker.mjs';
+import { cronWindowCompletionState, resolveCronScheduleIntent } from '../src/scheduler.mjs';
 
 test('primary evening schedule targets the 15:54 JST execution window', () => {
   const now = Date.UTC(2026, 4, 10, 7, 0); // 2026-05-10 16:00 JST

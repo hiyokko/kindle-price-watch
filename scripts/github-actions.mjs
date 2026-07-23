@@ -5,7 +5,7 @@ import path from 'node:path';
 
 const OWNER = 'hiyokko';
 const REPO = 'kindle-price-watch';
-const WORKFLOW = 'kindle-price-check.yml';
+const DEFAULT_WORKFLOW = 'kindle-price-check.yml';
 const KEYCHAIN_SERVICE = 'kindle-price-watch-github-actions';
 const KEYCHAIN_ACCOUNT = 'hiyokko';
 const API_ROOT = `https://api.github.com/repos/${OWNER}/${REPO}`;
@@ -32,7 +32,8 @@ try {
 
 async function listRuns() {
   const limit = numberOption('--limit', 10);
-  const data = await githubJson(`/actions/workflows/${encodeURIComponent(WORKFLOW)}/runs?per_page=${limit}`);
+  const workflow = stringOption('--workflow') || DEFAULT_WORKFLOW;
+  const data = await githubJson(`/actions/workflows/${encodeURIComponent(workflow)}/runs?per_page=${limit}`);
   const runs = data.workflow_runs || [];
 
   if (hasFlag('--json')) {
@@ -272,7 +273,7 @@ function duration(startedAt, completedAt) {
 function usage(exitCode = 0) {
   console.log(`Usage:
   node scripts/github-actions.mjs doctor
-  node scripts/github-actions.mjs runs [--limit 10] [--json]
+  node scripts/github-actions.mjs runs [--workflow kindle-price-check.yml] [--limit 10] [--json]
   node scripts/github-actions.mjs jobs <run-id> [--json]
   node scripts/github-actions.mjs logs <run-id> [--grep PATTERN] [--tail N]`);
   process.exit(exitCode);

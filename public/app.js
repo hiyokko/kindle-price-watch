@@ -223,10 +223,14 @@ els.deleteSelectedButton.addEventListener('click', async () => {
 });
 
 async function load() {
-  await Promise.all([loadSettings(), loadBooks()]);
+  await Promise.all([
+    loadSettings({ render: false }),
+    loadBooks({ render: false })
+  ]);
+  renderDashboard();
 }
 
-async function loadSettings() {
+async function loadSettings(options = {}) {
   const data = await api('/api/settings');
   state.settings = data.settings;
   state.automation = data.automation || null;
@@ -239,21 +243,23 @@ async function loadSettings() {
   els.scheduleDisplay.textContent = fixedScheduleLabel();
   els.batchInput.value = String(data.settings.batchSize);
   els.listPriceChallengeInput.value = String(data.settings.listPriceChallengeBatchSize ?? 50);
-  renderSummary();
-  renderBooks();
-  renderBulkControls();
+  if (options.render !== false) renderDashboard();
 }
 
 function fixedScheduleLabel() {
   return '03:54 / 15:54';
 }
 
-async function loadBooks() {
+async function loadBooks(options = {}) {
   const data = await api('/api/books');
   state.books = data.books;
   state.groups = groupBooks(state.books);
   const bookIds = new Set(state.books.map((book) => book.id));
   state.selectedBookIds = new Set([...state.selectedBookIds].filter((id) => bookIds.has(id)));
+  if (options.render !== false) renderDashboard();
+}
+
+function renderDashboard() {
   renderBooks();
   renderBulkControls();
   renderSummary();

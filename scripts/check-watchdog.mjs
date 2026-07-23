@@ -2,7 +2,11 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { gunzipSync } from 'node:zlib';
 import { loadEnv } from '../src/env.mjs';
-import { cronWindowCompletionState, resolveCronScheduleIntent } from '../src/checker.mjs';
+import {
+  cronWindowCompletionState,
+  jstDayStartUtcMs,
+  resolveCronScheduleIntent
+} from '../src/scheduler.mjs';
 import {
   hasBlobConfig,
   readBlobControlPayload,
@@ -321,12 +325,6 @@ function latestExecutionBoundary(nowMs) {
   }
 
   return candidates.sort((left, right) => right.boundaryMs - left.boundaryMs)[0] || null;
-}
-
-function jstDayStartUtcMs(timestamp) {
-  const dayMs = 24 * 60 * 60 * 1000;
-  const jstOffsetMs = 9 * 60 * 60 * 1000;
-  return Math.floor((Number(timestamp) + jstOffsetMs) / dayMs) * dayMs - jstOffsetMs;
 }
 
 function validateActionEnvironment() {
