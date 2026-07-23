@@ -130,6 +130,11 @@ async function vercelDeployCommands() {
 
   commands.push(
     {
+      label: 'pnpm dlx vercel@latest',
+      command: 'pnpm',
+      args: ['dlx', 'vercel@latest', 'deploy', '--prod']
+    },
+    {
       label: 'npm exec vercel@latest',
       command: 'npm',
       args: ['exec', '--yes', 'vercel@latest', '--', 'deploy', '--prod']
