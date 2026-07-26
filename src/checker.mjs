@@ -6763,7 +6763,9 @@ async function fetchSeriesPriceSnapshotForBook(asin, book = {}, options = {}) {
       ...options,
       allowIncomplete: true,
       skipBackfill: true,
-      skipExternalFallback: options.skipExternalFallback ?? true
+      skipExternalFallback: options.skipExternalFallback ?? true,
+      readerSeriesSeedUrls:
+        options.readerSeriesSeedUrls || readerSeriesSeedUrlsForBook(book, options.store)
     });
     return seriesSnapshotFromKindleSeriesForBook(series, asin, book, {
       store: options.store
@@ -6771,6 +6773,29 @@ async function fetchSeriesPriceSnapshotForBook(asin, book = {}, options = {}) {
   } catch {
     return null;
   }
+}
+
+function readerSeriesSeedUrlsForBook(book = {}, store = {}) {
+  if (!Array.isArray(store?.books)) return [];
+
+  return store.books
+    .filter((candidate) => isProbablyBookAsin(String(candidate.asin || '').toUpperCase()))
+    .filter((candidate) => String(candidate.asin || '').toUpperCase() !== String(book.asin || '').toUpperCase())
+    .filter((candidate) => isSameSeriesBookForPriceValidation(candidate, book))
+    .filter((candidate) => nullableNumber(candidate.currentPrice) != null)
+    .sort((left, right) => {
+      const leftHealthy = String(left.lastError || '').trim() ? 0 : 1;
+      const rightHealthy = String(right.lastError || '').trim() ? 0 : 1;
+      if (leftHealthy !== rightHealthy) return rightHealthy - leftHealthy;
+
+      const leftFirstVolume = Number(left.volume) === 1 ? 1 : 0;
+      const rightFirstVolume = Number(right.volume) === 1 ? 1 : 0;
+      if (leftFirstVolume !== rightFirstVolume) return rightFirstVolume - leftFirstVolume;
+
+      return timestampMs(right.lastCheckedAt) - timestampMs(left.lastCheckedAt);
+    })
+    .slice(0, 3)
+    .map((candidate) => amazonUrlForAsin(candidate.asin));
 }
 
 export function canUseCachedSeriesPriceSnapshotForBook(book = {}, options = {}) {

@@ -1502,6 +1502,7 @@ async function fetchFromAmazonHtml(asin, inputUrl = '', options = {}) {
   const errors = [];
   let amazonBlocked = false;
   let listasinTried = false;
+  let nonKindleProductDetected = false;
   const allowExternalPriceFallback = options.allowExternalPriceFallback !== false;
 
   for (const url of amazonProductCandidateUrls(asin, inputUrl, options)) {
@@ -1513,7 +1514,11 @@ async function fetchFromAmazonHtml(asin, inputUrl = '', options = {}) {
       if (snapshot.currentPrice != null) return snapshot;
       lastSnapshot = snapshot;
     } catch (error) {
-      if (isPermanentKindleProductError(error)) throw error;
+      if (isPermanentKindleProductError(error)) {
+        nonKindleProductDetected = true;
+        errors.push(`${amazonFetchUrlLabel(url)}: ${error.message}`);
+        continue;
+      }
       errors.push(`${amazonFetchUrlLabel(url)}: ${error.message}`);
       if (isAmazonBlockingFetchError(error)) {
         if (shouldContinueAfterBlockedKindleDbsUrl(url)) continue;
@@ -1542,7 +1547,7 @@ async function fetchFromAmazonHtml(asin, inputUrl = '', options = {}) {
       const metadataSnapshot = shouldDeferAmazonReaderPrice(snapshot, options) ? snapshotWithoutPrice(snapshot) : snapshot;
       lastSnapshot = lastSnapshot ? mergeSnapshotLike(lastSnapshot, metadataSnapshot) : metadataSnapshot;
     } catch (error) {
-      if (isPermanentKindleProductError(error)) throw error;
+      if (isPermanentKindleProductError(error)) nonKindleProductDetected = true;
       errors.push(`reader: ${error.message}`);
     }
   }
@@ -1566,7 +1571,9 @@ async function fetchFromAmazonHtml(asin, inputUrl = '', options = {}) {
     }
   }
 
-  if (!lastSnapshot && isLegacyPhysicalProductAsin(asin)) throw nonKindleProductError();
+  if (!lastSnapshot && (nonKindleProductDetected || isLegacyPhysicalProductAsin(asin))) {
+    throw nonKindleProductError();
+  }
 
   if (lastSnapshot) return lastSnapshot;
   throw new Error(compactFetchErrors(errors) || 'Amazon HTMLで商品情報を取得できませんでした');
@@ -1755,7 +1762,10 @@ async function fetchFromAmazonReader(asin, inputUrl = '', options = {}) {
 }
 
 async function fetchKindleSeriesItemsFromAmazonReader(input, options = {}) {
-  const urls = kindleSeriesCandidateUrls(input);
+  const urls = [
+    ...amazonReaderSeriesSeedUrls(options.readerSeriesSeedUrls),
+    ...kindleSeriesCandidateUrls(input)
+  ].filter((url, index, candidates) => candidates.indexOf(url) === index);
   let lastError;
   const attemptedCollections = new Set();
 
@@ -1779,6 +1789,19 @@ async function fetchKindleSeriesItemsFromAmazonReader(input, options = {}) {
   }
 
   throw lastError || new Error('readerでシリーズページを取得できませんでした');
+}
+
+function amazonReaderSeriesSeedUrls(values = []) {
+  if (!Array.isArray(values)) return [];
+
+  const urls = [];
+  for (const value of values) {
+    const asin = extractAsin(value);
+    if (!asin || !isProbablyBookAsin(asin)) continue;
+    const url = amazonUrlForAsin(asin);
+    if (!urls.includes(url)) urls.push(url);
+  }
+  return urls.slice(0, 3);
 }
 
 async function fetchResolvedCollectionFromAmazonReaderResult(result, sourceUrl, input, options, attemptedCollections) {
@@ -1850,7 +1873,7 @@ function hasPhysicalBookEvidence(text) {
   );
 }
 
-function extractKindleSeriesItemsFromAmazonReaderText(text, input, sourceUrl, options = {}) {
+export function extractKindleSeriesItemsFromAmazonReaderText(text, input, sourceUrl, options = {}) {
   const value = String(text || '');
   const seriesName = extractAmazonReaderSeriesName(value);
   const expectedVolumeCount = extractAmazonReaderSeriesExpectedCount(value);
@@ -1858,7 +1881,8 @@ function extractKindleSeriesItemsFromAmazonReaderText(text, input, sourceUrl, op
   const sourceAsin = extractAmazonReaderCollectionAsin(value, inputAsin, expectedVolumeCount) || inputAsin;
   let items = extractAmazonReaderSeriesItems(value, {
     seriesName,
-    expectedVolumeCount
+    expectedVolumeCount,
+    sourceAsin
   });
 
   if (options.requireCollectionPage && !isAmazonReaderSeriesPage(value, expectedVolumeCount, items)) {
@@ -1913,9 +1937,9 @@ function isAmazonReaderCollectionNavigationLabel(label, expectedVolumeCount = 0)
 
 function extractAmazonReaderSeriesName(text) {
   const heading =
-    String(text || '').match(/^#\s+(.+?\([0-9０-９]+\s+book\s+series\).*?)$/im)?.[1] ||
-    String(text || '').match(/^Title:\s*(.+?\([0-9０-９]+\s+book\s+series\).*?)$/im)?.[1] ||
-    String(text || '').match(/^#\s+(.+)$/m)?.[1] ||
+    String(text || '').match(/^\s*#\s+(.+?\([0-9０-９]+\s+book\s+series\).*?)$/im)?.[1] ||
+    String(text || '').match(/^\s*Title:\s*(.+?\([0-9０-９]+\s+book\s+series\).*?)$/im)?.[1] ||
+    String(text || '').match(/^\s*#\s+(.+)$/m)?.[1] ||
     '';
 
   return cleanAmazonSeriesName(
@@ -1952,11 +1976,13 @@ function extractAmazonReaderSeriesExpectedCount(text) {
 function extractAmazonReaderSeriesItems(text, options = {}) {
   const expectedVolumeCount = Number(options.expectedVolumeCount) || 0;
   const seriesName = options.seriesName || '';
+  const sourceAsin = String(options.sourceAsin || '').toUpperCase();
   const block = extractAmazonReaderSeriesBlock(text);
   const candidates = preferredAmazonReaderSeriesLinkCandidates(
     extractAmazonReaderSeriesLinkCandidates(block),
     expectedVolumeCount
   )
+    .filter((candidate) => candidate.asin !== sourceAsin)
     .filter((candidate) => isAmazonReaderSeriesLinkCandidate(candidate, seriesName, expectedVolumeCount))
     .sort((left, right) => left.index - right.index);
   const items = [];
@@ -1969,6 +1995,11 @@ function extractAmazonReaderSeriesItems(text, options = {}) {
       if (!existing.imageUrl && candidate.imageUrl) {
         existing.imageUrl = candidate.imageUrl;
         existing.imageSource = 'amazon_series_reader';
+      }
+      if (existing.currentPrice == null && candidate.currentPrice != null) {
+        existing.currentPrice = candidate.currentPrice;
+        existing.currentPoints = candidate.currentPoints;
+        existing.effectivePrice = candidate.effectivePrice;
       }
       continue;
     }
@@ -1983,9 +2014,9 @@ function extractAmazonReaderSeriesItems(text, options = {}) {
       imageSource: candidate.imageUrl ? 'amazon_series_reader' : '',
       amazonUrl: amazonUrlForAsin(candidate.asin),
       volume,
-      currentPrice: null,
-      currentPoints: 0,
-      effectivePrice: null,
+      currentPrice: candidate.currentPrice,
+      currentPoints: candidate.currentPoints,
+      effectivePrice: candidate.effectivePrice,
       listPrice: null,
       provider: 'amazon_series_reader'
     };
@@ -1999,7 +2030,7 @@ function extractAmazonReaderSeriesItems(text, options = {}) {
 function extractAmazonReaderSeriesBlock(text) {
   const value = String(text || '');
   const startPatterns = [
-    /^#\s+.+?\([0-9０-９]+\s+book\s+series\).*$/im,
+    /^\s*#\s+.+?\([0-9０-９]+\s+book\s+series\).*$/im,
     /There are\s+[0-9０-９]{1,3}\s+volumes?\s+in\s+this\s+series/i,
     /This option includes\s+[0-9０-９]{1,3}\s+volumes/i
   ];
@@ -2033,19 +2064,21 @@ function extractAmazonReaderSeriesLinkCandidates(text) {
   const value = String(text || '');
   const candidates = [];
 
-  for (const match of value.matchAll(/\[!\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)\]\(([^)\s]+)(?:\s+"([^"]*)")?\)/g)) {
-    const href = cleanMarkdownUrl(match[3]);
+  for (const match of value.matchAll(/\[(?:[0-9]{1,4}\s*)?!\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)\s*([^\]\n]{0,300})\]\(([^)\s]+)(?:\s+"([^"]*)")?\)/g)) {
+    const href = cleanMarkdownUrl(match[4]);
     const asin = extractAsin(href) || extractAsin(decodeURIComponentSafe(href));
     const imageUrl = decodeHtml(match[2]);
     if (!asin || !isProbablyBookAsin(asin)) continue;
+    const pricing = extractAmazonReaderSeriesCandidatePricing(value, match.index ?? 0, match[0].length);
     candidates.push({
       asin,
       href,
-      title: cleanMarkdownText(match[4] || match[1] || ''),
+      title: cleanMarkdownText(match[5] || match[3] || match[1] || ''),
       alt: cleanMarkdownText(match[1] || ''),
       imageUrl: isAmazonImage(imageUrl) ? imageUrl : '',
       index: match.index ?? 0,
-      kind: 'image'
+      kind: 'image',
+      ...pricing
     });
   }
 
@@ -2055,6 +2088,7 @@ function extractAmazonReaderSeriesLinkCandidates(text) {
     const href = cleanMarkdownUrl(match[2]);
     const asin = extractAsin(href) || extractAsin(decodeURIComponentSafe(href));
     if (!asin || !isProbablyBookAsin(asin)) continue;
+    const pricing = extractAmazonReaderSeriesCandidatePricing(value, match.index ?? 0, match[0].length);
     candidates.push({
       asin,
       href,
@@ -2062,11 +2096,49 @@ function extractAmazonReaderSeriesLinkCandidates(text) {
       alt: '',
       imageUrl: '',
       index: match.index ?? 0,
-      kind: 'link'
+      kind: 'link',
+      ...pricing
     });
   }
 
   return candidates;
+}
+
+function extractAmazonReaderSeriesCandidatePricing(text, index, matchLength) {
+  const context = amazonReaderSeriesCandidateContext(text, index, matchLength);
+  if (!/\bKindle(?:版| Edition)?\b/i.test(context)) {
+    return { currentPrice: null, currentPoints: 0, effectivePrice: null };
+  }
+
+  const price =
+    parsePrice(context.match(/\bKindle(?:版| Edition)?\b[\s\S]{0,500}?(?:￥|¥)\s*([0-9][0-9,]*)/i)?.[1]) ??
+    parsePrice(context.match(/\bKindle(?:版| Edition)?\b[\s\S]{0,500}?\bJPY\s*([0-9][0-9,]*)/i)?.[1]);
+  if (price == null) {
+    return { currentPrice: null, currentPoints: 0, effectivePrice: null };
+  }
+
+  const points =
+    parseOptionalPoints(
+      context.match(/([0-9][0-9,]*)\s*(?:ポイント|pt)\s*(?:\([0-9]{1,3}%\))?/i)?.[1]
+    ) ?? 0;
+  return {
+    currentPrice: price,
+    currentPoints: points,
+    effectivePrice: Math.max(0, price - points)
+  };
+}
+
+function amazonReaderSeriesCandidateContext(text, index, matchLength) {
+  const value = String(text || '');
+  const start = Math.max(0, value.lastIndexOf('\n', Math.max(0, index - 1)) + 1);
+  const afterMatch = Math.max(start, index + matchLength);
+  const boundedEnd = Math.min(value.length, afterMatch + 1600);
+  const suffix = value.slice(afterMatch, boundedEnd);
+  const nextItemOffset = suffix.search(/\n\s*[0-9]{1,4}\.\s+/);
+  const nextSectionOffset = suffix.search(/\n\s*#{1,3}\s+/);
+  const offsets = [nextItemOffset, nextSectionOffset].filter((offset) => offset >= 0);
+  const end = offsets.length ? afterMatch + Math.min(...offsets) : boundedEnd;
+  return cleanText(value.slice(start, end));
 }
 
 function preferredAmazonReaderSeriesLinkCandidates(candidates, expectedVolumeCount) {
@@ -2095,7 +2167,7 @@ function isAmazonReaderSeriesLinkCandidate(candidate, seriesName, expectedVolume
   if (isAmazonReaderNoiseLinkCandidate(candidate)) return false;
 
   const href = decodeURIComponentSafe(candidate.href || '');
-  if (/saga_sdp|hulkbuy|dbs_|dbs-|series|binding=kindle_edition|kindle_edition/i.test(href)) {
+  if (/saga_(?:sdp|dp)|hulkbuy|dbs_|dbs-|series|binding=kindle_edition|kindle_edition/i.test(href)) {
     return true;
   }
 

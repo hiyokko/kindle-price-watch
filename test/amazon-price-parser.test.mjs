@@ -247,6 +247,72 @@ test('Amazon reader fallback follows real collection link and ignores recommenda
   }
 });
 
+test('Amazon reader series fallback uses a sibling page and keeps item prices', async () => {
+  const originalFetch = globalThis.fetch;
+  const seen = [];
+  globalThis.fetch = async (url) => {
+    const href = String(url);
+    seen.push(href);
+    const parsed = new URL(href);
+
+    if (parsed.hostname === 'r.jina.ai' && href.includes('B011111111')) {
+      return new Response(`
+        # 兄弟巻フォールバック 1 Kindle版
+
+        [全3巻中第1巻: 兄弟巻フォールバック](https://www.amazon.co.jp/dp/B099999999?binding=kindle_edition&ref=dbs_dp_rwt_sb_pc_tkin)
+
+        ## 本シリーズ (全3巻)
+        [![Image 1: 兄弟巻フォールバック](https://m.media-amazon.com/images/I/51series.jpg) 兄弟巻フォールバック](https://www.amazon.co.jp/dp/B099999999?binding=kindle_edition&ref_=saga_dp_ss_dsk_sdp)Kindle版
+        1. [1![Image 2: 兄弟巻フォールバック 1](https://m.media-amazon.com/images/I/51one.jpg) 兄弟巻フォールバック 1](https://www.amazon.co.jp/dp/B011111111?ref_=saga_dp_ss_dsk_dp)Kindle版 ￥614 6ポイント(1%)
+        2. [2![Image 3: 兄弟巻フォールバック 2](https://m.media-amazon.com/images/I/51two.jpg) 兄弟巻フォールバック 2](https://www.amazon.co.jp/dp/B022222222?ref_=saga_dp_ss_dsk_dp)Kindle版 ￥668 7ポイント(1%)
+        3. [3![Image 4: 兄弟巻フォールバック 3](https://m.media-amazon.com/images/I/51three.jpg) 兄弟巻フォールバック 3](https://www.amazon.co.jp/dp/B033333333?ref_=saga_dp_ss_dsk_dp)Kindle版 ￥759 8ポイント(1%)
+      `, { status: 200, headers: { 'content-type': 'text/plain' } });
+    }
+
+    if (parsed.hostname === 'r.jina.ai') {
+      return new Response('Title: Amazon.co.jp', {
+        status: 200,
+        headers: { 'content-type': 'text/plain' }
+      });
+    }
+
+    return new Response('blocked', { status: 503 });
+  };
+
+  try {
+    const series = await fetchKindleSeriesItems(
+      'https://www.amazon.co.jp/kindle-dbs/product/B099999999',
+      {
+        retries: 0,
+        timeoutMs: 1000,
+        skipThrottle: true,
+        probeSeriesCompletion: false,
+        readerSeriesSeedUrls: ['https://www.amazon.co.jp/dp/B011111111']
+      }
+    );
+
+    assert.equal(series.sourceAsin, 'B099999999');
+    assert.equal(series.items.length, 3);
+    assert.deepEqual(series.items.map((item) => item.asin), [
+      'B011111111',
+      'B022222222',
+      'B033333333'
+    ]);
+    assert.deepEqual(
+      series.items.map((item) => [item.currentPrice, item.currentPoints, item.effectivePrice]),
+      [
+        [614, 6, 608],
+        [668, 7, 661],
+        [759, 8, 751]
+      ]
+    );
+    assert.equal(series.items.every((item) => item.provider === 'amazon_series_reader'), true);
+    assert.ok(seen.some((url) => url.includes('r.jina.ai') && url.includes('B011111111')));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('Amazon series fetch probes reader fallback for small completed DBS subsets', async () => {
   const originalFetch = globalThis.fetch;
   const seen = [];
@@ -318,6 +384,66 @@ test('Amazon series fetch probes reader fallback for small completed DBS subsets
     assert.equal(series.items.length, 11);
     assert.equal(series.expectedVolumeCount, 11);
     assert.ok(seen.some((url) => new URL(url).hostname === 'r.jina.ai'));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('Amazon product fetch continues after a misleading physical-format response', async () => {
+  const originalFetch = globalThis.fetch;
+  const seen = [];
+  globalThis.fetch = async (url) => {
+    const href = String(url);
+    seen.push(href);
+    const parsed = new URL(href);
+
+    if (parsed.pathname === '/dp/B044444444' && !parsed.search) {
+      return new Response(`
+        <html>
+          <head><meta property="og:title" content="紙版へ誘導された応答"></head>
+          <body>
+            <span id="productTitle">紙版へ誘導された応答</span>
+            <div>コミック ￥1 より</div>
+            <div>ISBN-10: 1234567890</div>
+          </body>
+        </html>
+      `, { status: 200, headers: { 'content-type': 'text/html' } });
+    }
+
+    if (parsed.pathname === '/dp/B044444444' && parsed.searchParams.get('binding') === 'kindle_edition') {
+      return new Response(`
+        <html>
+          <head><meta property="og:title" content="Kindle版の正しい応答"></head>
+          <body>
+            <span id="productTitle">Kindle版の正しい応答</span>
+            <div id="tmm-grid-swatch-KINDLE">Kindle版 (電子書籍)</div>
+            <div id="corePriceDisplay_desktop_feature_div">
+              <span class="a-price" data-a-color="price">
+                <span class="a-offscreen">￥759</span>
+                <span class="a-price-whole">759</span>
+              </span>
+              <span>8ポイント(1%)</span>
+            </div>
+          </body>
+        </html>
+      `, { status: 200, headers: { 'content-type': 'text/html' } });
+    }
+
+    return new Response('not found', { status: 404 });
+  };
+
+  try {
+    const snapshot = await fetchAmazonHtmlSnapshot('B044444444', '', {
+      retries: 0,
+      timeoutMs: 1000,
+      skipThrottle: true,
+      allowExternalPriceFallback: false,
+      allowAmazonReaderFallback: false
+    });
+
+    assert.equal(snapshot.currentPrice, 759);
+    assert.equal(snapshot.currentPoints, 8);
+    assert.ok(seen.some((url) => new URL(url).searchParams.get('binding') === 'kindle_edition'));
   } finally {
     globalThis.fetch = originalFetch;
   }
