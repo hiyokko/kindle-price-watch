@@ -75,6 +75,9 @@ const SINGLE_EPISODE_SERIES_PRICE_MAX = 250;
 const SUSPICIOUS_BULK_SERIES_COUNT_MIN = 20;
 const AMAZON_HTML_TINY_PRICE_MAX = 10;
 const DISCOUNT_RECHECK_DEFAULT_HOURS = 24;
+const SINGLE_SERIES_AUDIT_DEFAULT_BATCH_SIZE = 2;
+const SINGLE_SERIES_AUDIT_DEFAULT_INTERVAL_DAYS = 30;
+const SINGLE_SERIES_AUDIT_DEFAULT_ERROR_RETRY_HOURS = 24;
 const DISCOUNT_RECHECK_RATIO = 0.7;
 const PRICE_INTEGRITY_SERIES_OUTLIER_RATIO = 0.55;
 const PRICE_INTEGRITY_SERIES_PEER_DISCOUNT_RATIO = 0.35;
@@ -366,6 +369,14 @@ async function importSeriesIntoStore(store, input, series, options = {}) {
     seriesName
   };
 
+  if (isUnsafeSingleBookSeriesCandidate(input, series, series.items)) {
+    const error = new Error(
+      'シリーズ情報が親ASINまたは1件だけの不完全な一覧です。単巻として保存せず、次回の再取得を待ちます'
+    );
+    error.status = 422;
+    throw error;
+  }
+
   const sourceIsSeriesItem = Boolean(sourceAsin && series.items.some((item) => item.asin === sourceAsin));
   const obsoleteIds = new Set(
     store.books
@@ -401,6 +412,15 @@ async function importSeriesIntoStore(store, input, series, options = {}) {
       seriesErrors.push(`${item.asin}: skipped supplemental series book (${item.title})`);
       continue;
     }
+    const existingItemBook = store.books.find((book) => book.asin === item.asin);
+    if (
+      existingItemBook &&
+      isUnresolvedAsinPlaceholderTitle(item.title, item.asin) &&
+      isClearlyDifferentSeriesTitle(existingItemBook.title, seriesName)
+    ) {
+      seriesErrors.push(`${item.asin}: skipped unresolved ASIN already registered to another series (${existingItemBook.title})`);
+      continue;
+    }
     if (isLikelySeriesContainerCandidateItem(item, seriesIdentity, mergedSeriesItems, seriesName)) {
       seriesErrors.push(`${item.asin}: skipped source container series book (${item.title})`);
       continue;
@@ -409,12 +429,14 @@ async function importSeriesIntoStore(store, input, series, options = {}) {
   }
   let regularSeriesItems = dropDuplicateAlternativeEditionItems(seriesItems, seriesErrors);
   regularSeriesItems = dropDuplicateAmbiguousSeriesItems(regularSeriesItems, seriesName, seriesErrors);
-  regularSeriesItems = await dropFutureReleaseNewSeriesItems(regularSeriesItems, store, seriesErrors, {
-    now,
-    signal: options.signal,
-    timeoutMs: options.timeoutMs,
-    ...seriesIdentity
-  });
+  if (options.skipNewItemValidation !== true) {
+    regularSeriesItems = await dropFutureReleaseNewSeriesItems(regularSeriesItems, store, seriesErrors, {
+      now,
+      signal: options.signal,
+      timeoutMs: options.timeoutMs,
+      ...seriesIdentity
+    });
+  }
 
   if (isSingleBookSeriesCandidate(series, regularSeriesItems)) {
     return importSingleBookSeriesCandidateIntoStore(store, input, regularSeriesItems[0], {
@@ -453,11 +475,13 @@ async function importSeriesIntoStore(store, input, series, options = {}) {
       : { ...series, expectedVolumeCount: currentExpectedVolumeCount(regularSeriesItems) };
   const seriesExpectedCount = normalizeSeriesExpectedCount(expectedSeries, regularSeriesItems);
   const existingSeriesBooks = store.books.filter((book) => isKnownBookForSeries(book, seriesIdentity));
-  await backfillKnownWeakSeriesImages(regularSeriesItems, existingSeriesBooks, seriesErrors, {
-    now,
-    signal: options.signal,
-    timeoutMs: options.timeoutMs
-  });
+  if (options.skipKnownImageBackfill !== true) {
+    await backfillKnownWeakSeriesImages(regularSeriesItems, existingSeriesBooks, seriesErrors, {
+      now,
+      signal: options.signal,
+      timeoutMs: options.timeoutMs
+    });
+  }
   const weakImageUrls = weakSeriesImageUrls([...regularSeriesItems, ...existingSeriesBooks]);
   const additions = [];
 
@@ -898,6 +922,33 @@ async function importSingleBookSeriesCandidateIntoStore(store, input, item, opti
 function isSingleBookSeriesCandidate(series, items = []) {
   if (!Array.isArray(items) || items.length !== 1) return false;
   return normalizeSeriesExpectedCount(series, items) <= 1;
+}
+
+export function isUnsafeSingleBookSeriesCandidate(input, series = {}, items = series?.items || []) {
+  if (!Array.isArray(items) || items.length !== 1) return false;
+
+  const item = items[0] || {};
+  const itemAsin = String(item.asin || '').trim().toUpperCase();
+  const sourceAsin = canonicalSeriesSourceAsin(input, series);
+  const inputAsin = extractAsin(input);
+  const expectedCount = normalizeSeriesExpectedCount(series, items);
+  const itemVolume = seriesItemVolume(item);
+  const itemTitle = cleanStoredSeriesName(item.title || '');
+  const seriesName = cleanStoredSeriesName(series.seriesName || '');
+  const titleMatchesSeries = Boolean(
+    itemTitle &&
+      seriesName &&
+      seriesTitleComparisonStem(itemTitle) === seriesTitleComparisonStem(seriesName)
+  );
+  const sourceSeedProvider = /amazon_series_(?:source|unit)_price/i.test(String(item.provider || ''));
+
+  if (expectedCount > 1) return true;
+  if (sourceAsin && itemAsin && sourceAsin !== itemAsin) return true;
+  if (inputAsin && sourceAsin && inputAsin !== sourceAsin) return true;
+  if (isKindleSeriesUrl(input)) return true;
+  if (!sourceAsin || itemAsin !== sourceAsin || itemVolume > 0 || !titleMatchesSeries) return false;
+
+  return sourceSeedProvider || item.explicitPriceDisplay !== true;
 }
 
 function applySingleSeriesCandidateSeed(book, item, now) {
@@ -1911,6 +1962,13 @@ function isExternalSeriesPriceProvider(provider) {
 
 function updateExistingSeriesBook(book, item, options) {
   let changed = false;
+
+  if (book.singleSeriesAuditStatus || book.singleSeriesAuditedAt || book.singleSeriesAuditError) {
+    book.singleSeriesAuditStatus = '';
+    book.singleSeriesAuditedAt = '';
+    book.singleSeriesAuditError = '';
+    changed = true;
+  }
 
   if (options.seriesKey && book.seriesKey !== options.seriesKey) {
     book.seriesKey = options.seriesKey;
@@ -3261,6 +3319,366 @@ function toFullWidthNumber(value) {
   return String(value).replace(/[0-9]/g, (number) => String.fromCharCode(number.charCodeAt(0) + 0xfee0));
 }
 
+export async function auditSingleBookSeriesClassifications(options = {}) {
+  const store = await readStore();
+  const audit = await collectSingleBookSeriesAudit(store, options);
+  if (options.apply !== true) return singleBookSeriesAuditPreview(audit);
+
+  let applied;
+  await updateStore(async (currentStore) => {
+    applied = await applySingleBookSeriesAuditResults(currentStore, audit, options);
+    return currentStore;
+  });
+  return applied;
+}
+
+export async function auditSingleBookSeriesClassificationsInStore(store, options = {}) {
+  const audit = await collectSingleBookSeriesAudit(store, options);
+  return applySingleBookSeriesAuditResults(store, audit, options);
+}
+
+async function collectSingleBookSeriesAudit(store, options = {}) {
+  const now = options.now || new Date().toISOString();
+  const limit = clampNumber(
+    options.limit ?? process.env.SINGLE_BOOK_SERIES_AUDIT_BATCH_SIZE,
+    0,
+    1000,
+    SINGLE_SERIES_AUDIT_DEFAULT_BATCH_SIZE
+  );
+  const eligibleBooks = singleBookSeriesAuditCandidates(store.books || [], { ...options, now });
+  const selectedBooks = eligibleBooks.slice(0, limit);
+  const localGroups = localSingleBookSeriesAuditGroups(store.books || []);
+  const localGroupByAsin = new Map(
+    localGroups.flatMap((group) => group.books.map((book) => [String(book.asin || '').toUpperCase(), group]))
+  );
+  const results = [];
+  const processedAsins = new Set();
+  const fetchSeries = options.fetchSeriesCandidate || fetchKindleSeriesItems;
+  const pacing = seriesDiscoveryPacing();
+  let networkChecks = 0;
+  let stoppedByRuntimeLimit = false;
+
+  for (const book of selectedBooks) {
+    const asin = String(book.asin || '').toUpperCase();
+    if (!asin || processedAsins.has(asin)) continue;
+
+    const localGroup = localGroupByAsin.get(asin);
+    if (localGroup) {
+      const targetAsins = localGroup.books.map((entry) => String(entry.asin || '').toUpperCase()).filter(Boolean);
+      for (const targetAsin of targetAsins) processedAsins.add(targetAsin);
+      results.push({
+        kind: 'series',
+        source: 'local_siblings',
+        input: localGroup.input,
+        targetAsins,
+        series: localGroup.series
+      });
+      continue;
+    }
+
+    if (shouldStopBeforeSeriesDiscovery(options.startedAt || Date.now(), options.maxRuntimeMs || 0, options.saveReserveMs || 0)) {
+      stoppedByRuntimeLimit = true;
+      break;
+    }
+    if (
+      networkChecks > 0 &&
+      !(await waitBeforeSeriesDiscovery(
+        pacing,
+        networkChecks,
+        options.startedAt || Date.now(),
+        options.maxRuntimeMs || 0,
+        options.saveReserveMs || 0
+      ))
+    ) {
+      stoppedByRuntimeLimit = true;
+      break;
+    }
+
+    processedAsins.add(asin);
+    networkChecks += 1;
+    const input = String(book.sourceUrl || book.amazonUrl || amazonUrlForAsin(asin)).trim();
+    const runtime = runtimeAbortOptions(options.startedAt || Date.now(), options.maxRuntimeMs || 0, {
+      reserveMs: options.saveReserveMs || 0,
+      capMs: singleSeriesAuditItemMaxRuntimeMs(options)
+    });
+    try {
+      const series = await fetchSeries(input, {
+        signal: runtime.signal,
+        timeoutMs: options.timeoutMs,
+        allowReaderFallback: options.allowReaderFallback !== false
+      });
+      const mismatch = singleBookSeriesAuditMismatchReason(book, series, store);
+      if (!mismatch) {
+        results.push({ kind: 'series', source: 'amazon', input, targetAsins: [asin], series });
+      } else if ((series?.items?.length || 0) > 1 || isIncompleteSingleBookSeriesAuditResult(input, series)) {
+        results.push({ kind: 'error', input, targetAsins: [asin], error: mismatch });
+      } else {
+        results.push({ kind: 'no_series', input, targetAsins: [asin] });
+      }
+    } catch (error) {
+      results.push({
+        kind: 'error',
+        input,
+        targetAsins: [asin],
+        error: error.message || String(error)
+      });
+    } finally {
+      runtime.cleanup();
+    }
+  }
+
+  return {
+    now,
+    eligible: eligibleBooks.length,
+    limit,
+    stoppedByRuntimeLimit,
+    results
+  };
+}
+
+async function applySingleBookSeriesAuditResults(store, audit, options = {}) {
+  const summary = {
+    eligible: Number(audit.eligible || 0),
+    limit: Number(audit.limit || 0),
+    checked: 0,
+    converted: 0,
+    convertedSeries: 0,
+    added: 0,
+    noSeries: 0,
+    stoppedByRuntimeLimit: Boolean(audit.stoppedByRuntimeLimit),
+    results: [],
+    errors: []
+  };
+
+  for (const entry of audit.results || []) {
+    const targetAsins = [...new Set((entry.targetAsins || []).map((asin) => String(asin || '').toUpperCase()))];
+    const currentTargets = (store.books || []).filter(
+      (book) => targetAsins.includes(String(book.asin || '').toUpperCase()) && isSingleBookRecord(book)
+    );
+    if (currentTargets.length === 0) continue;
+    summary.checked += currentTargets.length;
+
+    if (entry.kind === 'no_series') {
+      for (const book of currentTargets) markSingleBookSeriesAudit(book, audit.now, 'no_series');
+      summary.noSeries += currentTargets.length;
+      summary.results.push(singleBookSeriesAuditResultEntry(entry, currentTargets, { status: 'no_series' }));
+      continue;
+    }
+
+    if (entry.kind === 'error') {
+      for (const book of currentTargets) markSingleBookSeriesAudit(book, audit.now, 'error', entry.error);
+      const errorEntry = singleBookSeriesAuditResultEntry(entry, currentTargets, {
+        status: 'error',
+        error: entry.error
+      });
+      summary.errors.push(errorEntry);
+      summary.results.push(errorEntry);
+      continue;
+    }
+
+    try {
+      const result = await importSeriesIntoStore(store, entry.input, entry.series, {
+        fetchDetails: false,
+        now: audit.now,
+        recordInitialHistory: options.recordInitialHistory !== false,
+        skipNewItemValidation: options.skipNewItemValidation === true,
+        skipKnownImageBackfill: entry.source === 'local_siblings' || options.skipKnownImageBackfill === true
+      });
+      const converted = currentTargets.filter((target) => {
+        const current = (store.books || []).find((book) => book.asin === target.asin);
+        return !current || !isSingleBookRecord(current);
+      }).length;
+      summary.converted += converted;
+      summary.convertedSeries += converted > 0 ? 1 : 0;
+      summary.added += Number(result.imported || 0);
+      summary.results.push(
+        singleBookSeriesAuditResultEntry(entry, currentTargets, {
+          status: 'converted',
+          seriesName: entry.series?.seriesName || '',
+          imported: Number(result.imported || 0)
+        })
+      );
+    } catch (error) {
+      const message = error.message || String(error);
+      for (const book of currentTargets) markSingleBookSeriesAudit(book, audit.now, 'error', message);
+      const errorEntry = singleBookSeriesAuditResultEntry(entry, currentTargets, {
+        status: 'error',
+        error: message
+      });
+      summary.errors.push(errorEntry);
+      summary.results.push(errorEntry);
+    }
+  }
+
+  return summary;
+}
+
+function singleBookSeriesAuditPreview(audit = {}) {
+  const results = (audit.results || []).map((entry) => ({
+    source: entry.source || 'amazon',
+    status: entry.kind === 'series' ? 'would_convert' : entry.kind,
+    asins: entry.targetAsins || [],
+    seriesName: entry.series?.seriesName || '',
+    itemCount: entry.series?.items?.length || 0,
+    error: entry.error || ''
+  }));
+  return {
+    applied: false,
+    eligible: Number(audit.eligible || 0),
+    limit: Number(audit.limit || 0),
+    checked: results.reduce((total, entry) => total + entry.asins.length, 0),
+    stoppedByRuntimeLimit: Boolean(audit.stoppedByRuntimeLimit),
+    results
+  };
+}
+
+function singleBookSeriesAuditCandidates(books = [], options = {}) {
+  const nowMs = Date.parse(options.now || '') || Date.now();
+  return books
+    .filter(isSingleBookRecord)
+    .filter((book) => options.force === true || isSingleBookSeriesAuditDue(book, nowMs, options))
+    .sort((left, right) => {
+      const suspicion = singleBookSeriesSuspicionScore(right) - singleBookSeriesSuspicionScore(left);
+      if (suspicion !== 0) return suspicion;
+      const audited = timestampMs(left.singleSeriesAuditedAt) - timestampMs(right.singleSeriesAuditedAt);
+      if (audited !== 0) return audited;
+      return String(left.createdAt || '').localeCompare(String(right.createdAt || ''));
+    });
+}
+
+function isSingleBookRecord(book = {}) {
+  return (book.importMode || 'single') === 'single' && !book.seriesKey;
+}
+
+function isSingleBookSeriesAuditDue(book, nowMs, options = {}) {
+  const auditedAt = timestampMs(book.singleSeriesAuditedAt);
+  if (auditedAt <= 0) return true;
+  const status = String(book.singleSeriesAuditStatus || '');
+  const intervalMs =
+    status === 'error'
+      ? floorNumber(
+          options.errorRetryHours ?? process.env.SINGLE_BOOK_SERIES_AUDIT_ERROR_RETRY_HOURS,
+          1,
+          SINGLE_SERIES_AUDIT_DEFAULT_ERROR_RETRY_HOURS
+        ) * 60 * 60 * 1000
+      : floorNumber(
+          options.intervalDays ?? process.env.SINGLE_BOOK_SERIES_AUDIT_INTERVAL_DAYS,
+          1,
+          SINGLE_SERIES_AUDIT_DEFAULT_INTERVAL_DAYS
+        ) * DAY_MS;
+  return nowMs - auditedAt >= intervalMs;
+}
+
+function singleBookSeriesSuspicionScore(book = {}) {
+  let score = 0;
+  const sourceAsin = extractAsin(book.sourceUrl);
+  if (sourceAsin && sourceAsin === String(book.asin || '').toUpperCase()) score += 1;
+  if (book.explicitPriceDisplay === false && seriesItemVolume(book) === 0) score += 3;
+  if (/amazon_series_(?:source|unit)_price/i.test(String(book.provider || ''))) score += 4;
+  return score;
+}
+
+function localSingleBookSeriesAuditGroups(books = []) {
+  const groups = new Map();
+  for (const book of books.filter(isSingleBookRecord)) {
+    const title = stripTrailingImprint(book.title || '');
+    const volume =
+      volumeFromTerminalPartMarker(title) ||
+      volumeFromSeriesTitle(title) ||
+      Number(book.volume || 0);
+    const seriesName = stripVolumeSuffix(title).replace(/\s*(?:上|中|下|前編|後編)\s*$/u, '').trim();
+    const stem = seriesTitleComparisonStem(seriesName);
+    if (!stem || stem.length < 3 || volume <= 0) continue;
+    if (!groups.has(stem)) groups.set(stem, { seriesName, entries: [] });
+    groups.get(stem).entries.push({ book, volume });
+  }
+
+  const result = [];
+  for (const group of groups.values()) {
+    if (group.entries.length < 2) continue;
+    const ordered = [...group.entries].sort((left, right) => left.volume - right.volume);
+    const volumes = ordered.map((entry) => entry.volume);
+    if (new Set(volumes).size !== volumes.length) continue;
+    if (!volumes.every((volume, index) => volume === index + 1)) continue;
+
+    const booksInGroup = ordered.map((entry) => entry.book);
+    const first = booksInGroup[0];
+    const completed = booksInGroup.some((book) => /(?:下|後編)s*(?:[（(]|$)/u.test(stripTrailingImprint(book.title || '')));
+    result.push({
+      books: booksInGroup,
+      input: first.sourceUrl || first.amazonUrl || amazonUrlForAsin(first.asin),
+      series: {
+        seriesName: group.seriesName,
+        sourceAsin: first.asin,
+        expectedVolumeCount: volumes.length,
+        completed,
+        provider: 'local_single_series_audit',
+        items: ordered.map(({ book, volume }) => ({ ...book, volume }))
+      }
+    });
+  }
+  return result;
+}
+
+function singleBookSeriesAuditMismatchReason(book, series = {}, store = {}) {
+  const items = Array.isArray(series.items) ? series.items : [];
+  if (items.length <= 1) return 'シリーズ一覧が2冊未満のため、単巻判定を維持して再監査します';
+  const existingConflict = items.find((item) => {
+    const existing = (store.books || []).find((entry) => entry.asin === item.asin);
+    return existing && isClearlyDifferentSeriesTitle(existing.title, series.seriesName);
+  });
+  if (existingConflict) {
+    const existing = (store.books || []).find((entry) => entry.asin === existingConflict.asin);
+    return `別作品として登録済みのASINが含まれます: ${existingConflict.asin} ${existing?.title || ''}`.trim();
+  }
+  if (items.some((item) => isUnresolvedAsinPlaceholderTitle(item.title, item.asin))) {
+    return 'シリーズ内の書名を確認できないASINが含まれるため、単巻判定を維持して再監査します';
+  }
+  if (isIncompleteSeriesCandidate(series)) {
+    const expected = Math.max(Number(series.expectedVolumeCount || 0), maxSeriesItemVolume(items), items.length);
+    return seriesCompletenessErrors(items, expected)[0] || 'シリーズ一覧が不完全なため、単巻判定を維持します';
+  }
+  const asin = String(book.asin || '').toUpperCase();
+  const sourceAsin = String(series.sourceAsin || '').toUpperCase();
+  if (sourceAsin !== asin && !items.some((item) => String(item.asin || '').toUpperCase() === asin)) {
+    return '取得したシリーズ一覧に対象ASINとの対応がありません';
+  }
+  if (isClearlyDifferentSeriesTitle(book.title, series.seriesName)) {
+    return `取得したシリーズ名が対象書籍と一致しません: ${series.seriesName || '不明'}`;
+  }
+  return '';
+}
+
+function isIncompleteSingleBookSeriesAuditResult(input, series = {}) {
+  const items = Array.isArray(series.items) ? series.items : [];
+  if (Number(series.expectedVolumeCount || 0) > items.length) return true;
+  return items.length === 1 && isUnsafeSingleBookSeriesCandidate(input, series, items);
+}
+
+function markSingleBookSeriesAudit(book, now, status, error = '') {
+  book.singleSeriesAuditStatus = status;
+  book.singleSeriesAuditedAt = now;
+  book.singleSeriesAuditError = error || '';
+  book.updatedAt = now;
+}
+
+function singleBookSeriesAuditResultEntry(entry, books, details = {}) {
+  return {
+    source: entry.source || 'amazon',
+    asins: books.map((book) => book.asin),
+    titles: books.map((book) => book.title),
+    ...details
+  };
+}
+
+function singleSeriesAuditItemMaxRuntimeMs(options = {}) {
+  return floorNumber(
+    options.itemMaxRuntimeMs ?? process.env.SINGLE_BOOK_SERIES_AUDIT_ITEM_MAX_RUNTIME_MS,
+    1000,
+    importItemMaxRuntimeMs()
+  );
+}
+
 function repairSingleBookSeriesClassifications(store, options = {}) {
   const now = options.now || new Date().toISOString();
   const groups = singleBookSeriesRepairGroups(store.books || []);
@@ -3315,7 +3733,19 @@ function shouldDemoteSingleBookSeriesGroup(group) {
   const book = group.books[0];
   if (!book?.asin) return false;
   if (book.seriesCompleted && expected > 1) return false;
+  if (looksLikeUnresolvedSeriesContainerBook(book)) return false;
   return expected === 1 || looksLikeStandaloneSeriesBook(book);
+}
+
+function looksLikeUnresolvedSeriesContainerBook(book = {}) {
+  const sourceAsin = extractAsin(book.sourceUrl);
+  if (!sourceAsin || sourceAsin !== String(book.asin || '').toUpperCase()) return false;
+  if (!isKindleSeriesUrl(book.sourceUrl)) return false;
+  if (seriesItemVolume(book) > 0 || book.explicitPriceDisplay === true) return false;
+  return (
+    seriesTitleComparisonStem(book.title) === seriesTitleComparisonStem(book.seriesName) ||
+    /amazon_series_(?:source|unit)_price/i.test(String(book.provider || ''))
+  );
 }
 
 function looksLikeStandaloneSeriesBook(book) {
@@ -3365,6 +3795,9 @@ function demoteBookToSingle(book, options = {}) {
   book.seriesDiscoverySkipReason = '';
   book.seriesDiscoverySkippedAt = '';
   book.seriesDiscoveryError = '';
+  book.singleSeriesAuditStatus = '';
+  book.singleSeriesAuditedAt = '';
+  book.singleSeriesAuditError = '';
   book.sourceUrl = sourceUrl;
   book.updatedAt = now;
 }
@@ -4591,6 +5024,15 @@ export async function runDueChecks(options = {}) {
     const importQueue = shouldRunBookImportQueue(source, options)
       ? await processBookImportQueueInStore(store, { startedAt, maxRuntimeMs, saveReserveMs, now: cronStartedAt, seriesCandidateCache })
       : null;
+    const singleSeriesAudit = shouldRunSingleBookSeriesAudit(source, options)
+      ? await auditSingleBookSeriesClassificationsInStore(store, {
+          startedAt,
+          maxRuntimeMs,
+          saveReserveMs,
+          now: cronStartedAt,
+          seriesCandidateCache
+        })
+      : null;
     let seriesDiscovery = shouldRunSeriesDiscovery(source, options, store, settings, startedAt)
       ? await discoverSeriesUpdates(store, { startedAt, maxRuntimeMs, saveReserveMs, seriesCandidateCache })
       : null;
@@ -4771,6 +5213,7 @@ export async function runDueChecks(options = {}) {
       scheduledNominalAt: scheduleIntent?.nominalAt || '',
       executionBoundaryAt: scheduleIntent?.executionBoundaryAt || '',
       importQueue,
+      singleSeriesAudit,
       seriesDiscovery: persistedSeriesDiscovery,
       listPriceChallenge,
       priceIntegrityAudit,
@@ -4799,6 +5242,12 @@ export async function runDueChecks(options = {}) {
           lastImportQueueProcessed: importQueue?.processed || 0,
           lastImportQueueImported: importQueue?.imported || 0,
           lastImportQueueErrors: importQueue?.errors?.length || 0,
+          lastSingleSeriesAuditEligible: singleSeriesAudit?.eligible || 0,
+          lastSingleSeriesAuditChecked: singleSeriesAudit?.checked || 0,
+          lastSingleSeriesAuditConverted: singleSeriesAudit?.converted || 0,
+          lastSingleSeriesAuditAdded: singleSeriesAudit?.added || 0,
+          lastSingleSeriesAuditNoSeries: singleSeriesAudit?.noSeries || 0,
+          lastSingleSeriesAuditErrors: singleSeriesAudit?.errors?.length || 0,
           lastSeriesDiscoveryChecked: persistedSeriesDiscovery?.checked || 0,
           lastSeriesDiscoveryAdded: persistedSeriesDiscovery?.added || 0,
           lastSeriesDiscoveryAdditions: persistedSeriesDiscovery?.additions || [],
@@ -4831,6 +5280,7 @@ export async function runDueChecks(options = {}) {
       processedBookIds.size > 0 ||
       cronFields ||
       hasSeriesDiscoveryWork(persistedSeriesDiscovery) ||
+      hasSingleSeriesAuditWork(singleSeriesAudit) ||
       hasImportQueueWork(importQueue) ||
       hasListPriceChallengeWork(listPriceChallenge)
     ) {
@@ -5417,6 +5867,13 @@ function shouldRunCheckedBookSeriesDiscovery(source, options = {}) {
 function shouldRunBookImportQueue(source, options = {}) {
   if (options.importQueue === true) return true;
   if (options.importQueue === false) return false;
+  return source === 'cron';
+}
+
+function shouldRunSingleBookSeriesAudit(source, options = {}) {
+  if (options.singleSeriesAudit === true) return true;
+  if (options.singleSeriesAudit === false) return false;
+  if (readEnvBoolean('SINGLE_BOOK_SERIES_AUDIT_ENABLED', true) === false) return false;
   return source === 'cron';
 }
 
@@ -6648,6 +7105,17 @@ function cronSummaryPayload(result, context = {}) {
           processed: result.importQueue.processed || 0,
           imported: result.importQueue.imported || 0,
           errors: result.importQueue.errors?.length || 0
+        }
+      : null,
+    singleSeriesAudit: result.singleSeriesAudit
+      ? {
+          eligible: result.singleSeriesAudit.eligible || 0,
+          checked: result.singleSeriesAudit.checked || 0,
+          converted: result.singleSeriesAudit.converted || 0,
+          added: result.singleSeriesAudit.added || 0,
+          noSeries: result.singleSeriesAudit.noSeries || 0,
+          stoppedByRuntimeLimit: Boolean(result.singleSeriesAudit.stoppedByRuntimeLimit),
+          errors: result.singleSeriesAudit.errors?.length || 0
         }
       : null,
     seriesDiscovery: result.seriesDiscovery
@@ -8361,6 +8829,13 @@ function mergeBulkBooks(currentBooks, runBooks, baseBooks) {
   const currentKeys = new Set(currentBooks.map(bookIdentityKey).filter(Boolean));
   const runByKey = mapByIdentity(runBooks, bookIdentityKey);
   const baseByKey = mapByIdentity(baseBooks, bookIdentityKey);
+  const runSeriesSourceAsins = new Set(
+    runBooks
+      .filter((book) => !isSingleBookRecord(book))
+      .map((book) => extractAsin(book.sourceUrl) || String(book.seriesKey || '').match(/^series:asin:([A-Z0-9]{10})$/i)?.[1])
+      .filter(Boolean)
+      .map((asin) => String(asin).toUpperCase())
+  );
   const merged = [];
 
   for (const currentBook of currentBooks) {
@@ -8390,6 +8865,7 @@ function mergeBulkBooks(currentBooks, runBooks, baseBooks) {
       continue;
     }
 
+    if (baseBook && shouldKeepSeriesContainerRemoval(currentBook, baseBook, runSeriesSourceAsins)) continue;
     if (baseBook && sameStoreValue(currentBook, baseBook)) continue;
     merged.push(currentBook);
   }
@@ -8402,6 +8878,12 @@ function mergeBulkBooks(currentBooks, runBooks, baseBooks) {
   }
 
   return merged;
+}
+
+function shouldKeepSeriesContainerRemoval(currentBook, baseBook, runSeriesSourceAsins) {
+  const asin = String(baseBook?.asin || '').toUpperCase();
+  if (!asin || !runSeriesSourceAsins.has(asin)) return false;
+  return isSingleBookRecord(baseBook) && isSingleBookRecord(currentBook);
 }
 
 function mergeStoreObjectChanges(baseObject = {}, runObject = {}, currentObject = {}) {
@@ -8497,6 +8979,7 @@ function shouldPersistCronRun(result = {}) {
       result.remainingDue > 0 ||
       result.stoppedByRuntimeLimit ||
       hasImportQueueWork(result.importQueue) ||
+      hasSingleSeriesAuditWork(result.singleSeriesAudit) ||
       hasSeriesDiscoveryWork(result.seriesDiscovery)
   );
 }
@@ -8535,6 +9018,18 @@ function hasSeriesDiscoveryWork(seriesDiscovery = null) {
     seriesDiscovery.deferred > 0 ||
     seriesDiscovery.stoppedByRuntimeLimit ||
     (Array.isArray(seriesDiscovery.errors) && seriesDiscovery.errors.length > 0)
+  );
+}
+
+function hasSingleSeriesAuditWork(audit = null) {
+  if (!audit) return false;
+  return Boolean(
+    audit.checked > 0 ||
+      audit.converted > 0 ||
+      audit.added > 0 ||
+      audit.noSeries > 0 ||
+      audit.stoppedByRuntimeLimit ||
+      (Array.isArray(audit.errors) && audit.errors.length > 0)
   );
 }
 

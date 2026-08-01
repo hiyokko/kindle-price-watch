@@ -154,6 +154,8 @@ node scripts/github-actions.mjs logs <run-id> --grep 'timeout|SIGTERM|CHECK_HARD
 
 定期実行時は、登録済みシリーズのAmazonシリーズページも巡回し、新しい巻が見つかった場合は自動で追加します。明示的に完結が確認できたシリーズには完結フラグと新刊探索の「実行なし」状態を保存し、次回以降の新刊探索から除外します。未探索のシリーズは「未実行」、完結などで今後探索しないシリーズは「実行なし」、Amazon側の一時的なシリーズ一覧取得失敗は「保留」として画面上でも区別します。`SERIES_DISCOVERY_BATCH_SIZE` を設定すると、1回の実行で探索するシリーズ数を調整できます。`SERIES_DISCOVERY_INTERVAL_HOURS` の既定値は24時間です。
 
+単巻として登録された本も定期実行ごとに既定2冊ずつ再監査します。Amazonで複数巻のシリーズが確認できた場合や、登録済み単巻同士の巻数表記から同一シリーズと安全に判定できた場合は、一括保存の中でシリーズへ変換します。確認済みの単巻は30日後、取得エラーは24時間後に再監査します。件数は `SINGLE_BOOK_SERIES_AUDIT_BATCH_SIZE`、再監査間隔は `SINGLE_BOOK_SERIES_AUDIT_INTERVAL_DAYS`、エラー再試行間隔は `SINGLE_BOOK_SERIES_AUDIT_ERROR_RETRY_HOURS` で調整できます。全単巻の手動棚卸しは `npm run audit:single-series -- --all`、確認後の一括反映は末尾に `--apply` を付けて実行します。
+
 定期実行では、現在価格の取得に成功した本のうち `listPrice` が未保存の本だけを対象に、単巻ページから `listPrice` 補完を追加で試行します。既定値は1回50件で、GUIの「listPrice補完」から0〜50件に調整できます。補完では現在価格を上書きせず、候補の `listPrice` が既存の価格履歴から大きく乖離する場合は保存しません。
 
 GitHub Actionsの手動実行では、`force_all` を有効にすると24時間以内に確認済みの本も保存した件数まで再確認します。

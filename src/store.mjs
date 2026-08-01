@@ -51,6 +51,12 @@ const defaultStore = {
     lastSeriesDiscoverySkipped: 0,
     lastSeriesDiscoveryDeferred: 0,
     lastSeriesDiscoveryErrors: 0,
+    lastSingleSeriesAuditEligible: 0,
+    lastSingleSeriesAuditChecked: 0,
+    lastSingleSeriesAuditConverted: 0,
+    lastSingleSeriesAuditAdded: 0,
+    lastSingleSeriesAuditNoSeries: 0,
+    lastSingleSeriesAuditErrors: 0,
     lastPriceIntegrityAuditChecked: 0,
     lastPriceIntegrityAuditSuspicious: 0,
     lastPriceIntegrityAuditWarnings: 0,
@@ -593,6 +599,9 @@ function compactBookForWrite(book) {
     seriesDiscoverySkipReason: emptyToUndefined(book.seriesDiscoverySkipReason),
     seriesDiscoverySkippedAt: emptyToUndefined(book.seriesDiscoverySkippedAt),
     seriesDiscoveryError: emptyToUndefined(book.seriesDiscoveryError),
+    singleSeriesAuditStatus: emptyToUndefined(book.singleSeriesAuditStatus),
+    singleSeriesAuditedAt: emptyToUndefined(book.singleSeriesAuditedAt),
+    singleSeriesAuditError: emptyToUndefined(book.singleSeriesAuditError),
     lastError: emptyToUndefined(book.lastError)
   });
 }

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  auditSingleBookSeriesClassificationsInStore,
   canUseCachedSeriesPriceSnapshotForBook,
   canonicalSeriesSourceAsin,
   needsDiscountExpiryRecheck,
@@ -12,6 +13,7 @@ import {
   isSupplementalSeriesBookTitle,
   isValidatedFutureReleaseSeriesItem,
   isUsableIncompleteSeriesCandidate,
+  isUnsafeSingleBookSeriesCandidate,
   isWeakSeriesImageUrl,
   mergeBulkCheckStoreForPersist,
   mergedSnapshotListPrice,
@@ -33,6 +35,224 @@ import {
   suspiciousPriceReason,
   validateListPriceChallengeCandidate
 } from '../src/checker.mjs';
+
+function singleSeriesAuditStore(books) {
+  return {
+    books,
+    priceHistory: [],
+    seriesPriceHistory: [],
+    notifications: [],
+    importQueue: { pending: [], completed: [], errors: [] },
+    checkCursor: { lastBookId: '', checkedAt: '' },
+    seriesDiscoveryCursor: { lastSeriesKey: '', checkedAt: '' }
+  };
+}
+
+test('single-series import guard rejects a parent-only candidate but accepts an explicit standalone offer', () => {
+  const parentOnly = {
+    seriesName: 'Example Series',
+    sourceAsin: 'B000000001',
+    expectedVolumeCount: 1,
+    items: [
+      {
+        asin: 'B000000001',
+        title: 'Example Series',
+        provider: 'amazon_series_source_price',
+        explicitPriceDisplay: false
+      }
+    ]
+  };
+  const standalone = {
+    seriesName: 'Standalone',
+    sourceAsin: 'B000000002',
+    expectedVolumeCount: 1,
+    items: [
+      {
+        asin: 'B000000002',
+        title: 'Standalone',
+        provider: 'amazon_html',
+        explicitPriceDisplay: true
+      }
+    ]
+  };
+
+  assert.equal(isUnsafeSingleBookSeriesCandidate('https://www.amazon.co.jp/dp/B000000001', parentOnly), true);
+  assert.equal(isUnsafeSingleBookSeriesCandidate('https://www.amazon.co.jp/dp/B000000002', standalone), false);
+});
+
+test('single-series audit replaces a stored parent ASIN with the discovered child books', async () => {
+  const store = singleSeriesAuditStore([
+    {
+      id: 'parent',
+      asin: 'B000000001',
+      title: 'Example Series',
+      sourceUrl: 'https://www.amazon.co.jp/dp/B000000001',
+      importMode: 'single',
+      explicitPriceDisplay: false,
+      createdAt: '2026-07-25T00:00:00.000Z',
+      updatedAt: '2026-07-25T00:00:00.000Z'
+    }
+  ]);
+
+  const summary = await auditSingleBookSeriesClassificationsInStore(store, {
+    force: true,
+    limit: 1,
+    skipNewItemValidation: true,
+    now: '2026-08-01T00:00:00.000Z',
+    fetchSeriesCandidate: async () => ({
+      seriesName: 'Example Series',
+      sourceAsin: 'B000000001',
+      expectedVolumeCount: 2,
+      completed: true,
+      items: [
+        {
+          asin: 'B000000011',
+          title: 'Example Series 1',
+          volume: 1,
+          currentPrice: 500,
+          effectivePrice: 500,
+          provider: 'amazon_series_child',
+          explicitPriceDisplay: true
+        },
+        {
+          asin: 'B000000012',
+          title: 'Example Series 2',
+          volume: 2,
+          currentPrice: 600,
+          effectivePrice: 600,
+          provider: 'amazon_series_child',
+          explicitPriceDisplay: true
+        }
+      ]
+    })
+  });
+
+  assert.equal(summary.converted, 1);
+  assert.equal(summary.added, 2);
+  assert.equal(store.books.some((book) => book.asin === 'B000000001'), false);
+  assert.deepEqual(
+    store.books.map((book) => book.asin).sort(),
+    ['B000000011', 'B000000012']
+  );
+  assert.equal(store.books.every((book) => book.importMode === 'kindle_series'), true);
+});
+
+test('single-series audit records a legitimate standalone result for later periodic recheck', async () => {
+  const store = singleSeriesAuditStore([
+    {
+      id: 'standalone',
+      asin: 'B000000002',
+      title: 'Standalone',
+      sourceUrl: 'https://www.amazon.co.jp/dp/B000000002',
+      importMode: 'single',
+      explicitPriceDisplay: true,
+      createdAt: '2026-07-25T00:00:00.000Z',
+      updatedAt: '2026-07-25T00:00:00.000Z'
+    }
+  ]);
+
+  const summary = await auditSingleBookSeriesClassificationsInStore(store, {
+    force: true,
+    limit: 1,
+    skipNewItemValidation: true,
+    now: '2026-08-01T00:00:00.000Z',
+    fetchSeriesCandidate: async () => ({
+      seriesName: 'Standalone',
+      sourceAsin: 'B000000002',
+      expectedVolumeCount: 0,
+      items: []
+    })
+  });
+
+  assert.equal(summary.noSeries, 1);
+  assert.equal(store.books[0].importMode, 'single');
+  assert.equal(store.books[0].singleSeriesAuditStatus, 'no_series');
+  assert.equal(store.books[0].singleSeriesAuditedAt, '2026-08-01T00:00:00.000Z');
+});
+
+test('single-series audit rejects candidates containing an ASIN already registered to another series', async () => {
+  const target = {
+    id: 'target-parent',
+    asin: 'B000000041',
+    title: 'Target Series',
+    sourceUrl: 'https://www.amazon.co.jp/dp/B000000041',
+    importMode: 'single',
+    explicitPriceDisplay: false,
+    createdAt: '2026-07-25T00:00:00.000Z',
+    updatedAt: '2026-07-25T00:00:00.000Z'
+  };
+  const existingOtherSeriesBook = {
+    id: 'other-series-book',
+    asin: 'B000000042',
+    title: 'Different Series 1',
+    importMode: 'kindle_series',
+    seriesKey: 'series:asin:B000000099',
+    seriesName: 'Different Series',
+    volume: 1,
+    sourceUrl: 'https://www.amazon.co.jp/kindle-dbs/product/B000000099'
+  };
+  const store = singleSeriesAuditStore([target, existingOtherSeriesBook]);
+
+  const summary = await auditSingleBookSeriesClassificationsInStore(store, {
+    force: true,
+    limit: 1,
+    skipNewItemValidation: true,
+    now: '2026-08-01T00:00:00.000Z',
+    fetchSeriesCandidate: async () => ({
+      seriesName: 'Target Series',
+      sourceAsin: 'B000000041',
+      expectedVolumeCount: 2,
+      items: [
+        { asin: 'B000000042', title: 'ASIN B000000042', volume: 1 },
+        { asin: 'B000000043', title: 'Target Series 2', volume: 2 }
+      ]
+    })
+  });
+
+  assert.equal(summary.converted, 0);
+  assert.equal(summary.errors.length, 1);
+  assert.match(summary.errors[0].error, /別作品として登録済み/);
+  assert.equal(store.books.find((book) => book.asin === 'B000000042').seriesName, 'Different Series');
+  assert.equal(store.books.find((book) => book.asin === 'B000000041').importMode, 'single');
+});
+
+test('single-series audit groups locally registered upper and lower volumes without Amazon metadata', async () => {
+  const books = [
+    ['upper', 'B000000021', 'Levius 新装版 上 (ヤングジャンプコミックスDIGITAL)'],
+    ['lower', 'B000000022', 'Levius 新装版 下 (ヤングジャンプコミックスDIGITAL)']
+  ].map(([id, asin, title]) => ({
+    id,
+    asin,
+    title,
+    sourceUrl: `https://www.amazon.co.jp/dp/${asin}`,
+    importMode: 'single',
+    currentPrice: 700,
+    effectivePrice: 700,
+    provider: 'amazon_html',
+    explicitPriceDisplay: true,
+    createdAt: '2026-07-25T00:00:00.000Z',
+    updatedAt: '2026-07-25T00:00:00.000Z'
+  }));
+  const store = singleSeriesAuditStore(books);
+  let fetched = 0;
+
+  const summary = await auditSingleBookSeriesClassificationsInStore(store, {
+    force: true,
+    limit: 1,
+    skipNewItemValidation: true,
+    now: '2026-08-01T00:00:00.000Z',
+    fetchSeriesCandidate: async () => {
+      fetched += 1;
+      throw new Error('should not fetch');
+    }
+  });
+
+  assert.equal(fetched, 0);
+  assert.equal(summary.converted, 2);
+  assert.equal(store.books.every((book) => book.importMode === 'kindle_series'), true);
+  assert.equal(new Set(store.books.map((book) => book.seriesKey)).size, 1);
+  assert.deepEqual(store.books.map((book) => Number(book.volume)).sort(), [1, 2]);
+});
 
 test('bulk check persistence preserves books added after the run started', () => {
   const baseStore = {
@@ -119,6 +339,52 @@ test('bulk check persistence preserves books added after the run started', () =>
     ['history-base', 'history-current', 'history-run'].sort()
   );
   assert.equal(merged.checkCursor.checkedAt, '2026-06-03T01:00:00.000Z');
+});
+
+test('bulk persistence does not restore a parent singleton changed concurrently after series conversion', () => {
+  const parent = {
+    id: 'parent',
+    asin: 'B000000031',
+    title: 'Converted Series',
+    importMode: 'single',
+    currentPrice: 2000,
+    sourceUrl: 'https://www.amazon.co.jp/dp/B000000031',
+    updatedAt: '2026-08-01T00:00:00.000Z'
+  };
+  const baseStore = singleSeriesAuditStore([parent]);
+  const currentStore = singleSeriesAuditStore([
+    { ...parent, currentPrice: 1900, updatedAt: '2026-08-01T00:05:00.000Z' }
+  ]);
+  const runStore = singleSeriesAuditStore([
+    {
+      id: 'child-1',
+      asin: 'B000000032',
+      title: 'Converted Series 1',
+      importMode: 'kindle_series',
+      seriesKey: 'series:asin:B000000031',
+      seriesName: 'Converted Series',
+      sourceUrl: 'https://www.amazon.co.jp/kindle-dbs/product/B000000031',
+      volume: 1
+    },
+    {
+      id: 'child-2',
+      asin: 'B000000033',
+      title: 'Converted Series 2',
+      importMode: 'kindle_series',
+      seriesKey: 'series:asin:B000000031',
+      seriesName: 'Converted Series',
+      sourceUrl: 'https://www.amazon.co.jp/kindle-dbs/product/B000000031',
+      volume: 2
+    }
+  ]);
+
+  const merged = mergeBulkCheckStoreForPersist(currentStore, runStore, baseStore);
+
+  assert.equal(merged.books.some((book) => book.asin === 'B000000031'), false);
+  assert.deepEqual(
+    merged.books.map((book) => book.asin).sort(),
+    ['B000000032', 'B000000033']
+  );
 });
 
 test('price repair keeps real unresolved series tail books with specific titles', () => {

@@ -253,6 +253,13 @@ export function buildCronSummaryNotification(summary = {}) {
           inline: false
         }
       : null,
+    summary.singleSeriesAudit
+      ? {
+          name: '単巻分類監査',
+          value: `対象 ${Number(summary.singleSeriesAudit.eligible || 0).toLocaleString('ja-JP')} / 確認 ${Number(summary.singleSeriesAudit.checked || 0).toLocaleString('ja-JP')} / シリーズ化 ${Number(summary.singleSeriesAudit.converted || 0).toLocaleString('ja-JP')} / 追加 ${Number(summary.singleSeriesAudit.added || 0).toLocaleString('ja-JP')} / 単巻維持 ${Number(summary.singleSeriesAudit.noSeries || 0).toLocaleString('ja-JP')} / エラー ${Number(summary.singleSeriesAudit.errors || 0).toLocaleString('ja-JP')}`,
+          inline: false
+        }
+      : null,
     summary.seriesDiscovery
       ? {
           name: 'シリーズ探索',
