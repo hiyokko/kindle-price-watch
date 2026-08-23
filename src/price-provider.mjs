@@ -1503,29 +1503,48 @@ async function fetchFromAmazonHtml(asin, inputUrl = '', options = {}) {
   let amazonBlocked = false;
   let listasinTried = false;
   let nonKindleProductDetected = false;
+  let consecutiveAmazonTimeouts = 0;
   const allowExternalPriceFallback = options.allowExternalPriceFallback !== false;
+  const hasFallback = allowExternalPriceFallback || options.allowAmazonReaderFallback !== false;
+  const amazonPhase = requestSignal(
+    options.signal,
+    hasFallback ? amazonDirectPhaseTimeoutMs(options) : 0
+  );
 
-  for (const url of amazonProductCandidateUrls(asin, inputUrl, options)) {
-    try {
-      const html = await fetchAmazonHtml(url, options);
-      const snapshot = isAmazonSearchUrl(url)
-        ? extractAmazonSearchSnapshotFromHtml(html, asin, url, 'amazon_html', options)
-        : extractAmazonHtmlSnapshotFromHtml(html, asin, url, 'amazon_html', options);
-      if (snapshot.currentPrice != null) return snapshot;
-      lastSnapshot = snapshot;
-    } catch (error) {
-      if (isPermanentKindleProductError(error)) {
-        nonKindleProductDetected = true;
+  try {
+    for (const url of amazonProductCandidateUrls(asin, inputUrl, options)) {
+      try {
+        const html = await fetchAmazonHtml(url, { ...options, signal: amazonPhase.signal });
+        consecutiveAmazonTimeouts = 0;
+        const snapshot = isAmazonSearchUrl(url)
+          ? extractAmazonSearchSnapshotFromHtml(html, asin, url, 'amazon_html', options)
+          : extractAmazonHtmlSnapshotFromHtml(html, asin, url, 'amazon_html', options);
+        if (snapshot.currentPrice != null) return snapshot;
+        lastSnapshot = snapshot;
+      } catch (error) {
         errors.push(`${amazonFetchUrlLabel(url)}: ${error.message}`);
-        continue;
-      }
-      errors.push(`${amazonFetchUrlLabel(url)}: ${error.message}`);
-      if (isAmazonBlockingFetchError(error)) {
-        if (shouldContinueAfterBlockedKindleDbsUrl(url)) continue;
-        amazonBlocked = true;
-        break;
+        if (isPermanentKindleProductError(error)) {
+          nonKindleProductDetected = true;
+          consecutiveAmazonTimeouts = 0;
+          continue;
+        }
+        if (isFetchTimeoutError(error)) consecutiveAmazonTimeouts += 1;
+        else consecutiveAmazonTimeouts = 0;
+        if (isAmazonBlockingFetchError(error)) {
+          if (shouldContinueAfterBlockedKindleDbsUrl(url)) continue;
+          amazonBlocked = true;
+          break;
+        }
+        if (
+          hasFallback &&
+          (amazonPhase.signal?.aborted || consecutiveAmazonTimeouts >= amazonTimeoutFallbackThreshold(options))
+        ) {
+          break;
+        }
       }
     }
+  } finally {
+    amazonPhase.cleanup();
   }
 
   if (allowExternalPriceFallback && shouldUseEarlyListasinFallback(options)) {
@@ -1752,6 +1771,20 @@ function shouldUseAmazonReaderFallback() {
 function shouldUseEarlyListasinFallback(options = {}) {
   if (options.preferListasinFallback === false) return false;
   return String(process.env.LISTASIN_EARLY_FALLBACK || 'true').toLowerCase() !== 'false';
+}
+
+function amazonDirectPhaseTimeoutMs(options = {}) {
+  return readNonNegativeInteger(
+    options.amazonDirectPhaseTimeoutMs ?? process.env.AMAZON_DIRECT_PHASE_TIMEOUT_MS,
+    20000
+  );
+}
+
+function amazonTimeoutFallbackThreshold(options = {}) {
+  return readPositiveInteger(
+    options.amazonTimeoutFallbackThreshold ?? process.env.AMAZON_TIMEOUT_FALLBACK_THRESHOLD,
+    2
+  );
 }
 
 async function fetchFromAmazonReader(asin, inputUrl = '', options = {}) {
@@ -2843,6 +2876,10 @@ function isAmazonBlockingFetchError(error) {
   return /(?:Amazonにブロックされました|HTTP\s*(?:403|429|503)|captcha|robot check|自動化されたアクセス|ショッピングを続けてください)/i.test(
     String(error?.message || error || '')
   );
+}
+
+function isFetchTimeoutError(error) {
+  return /(?:HTTP取得がタイムアウトしました|\bAborted\b)/i.test(String(error?.message || error || ''));
 }
 
 function retryAfterHeaderMs(value) {

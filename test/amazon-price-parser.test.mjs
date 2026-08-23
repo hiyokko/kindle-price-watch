@@ -521,6 +521,100 @@ test('Amazon product fetch tries canonical product URL before stale search-resul
   }
 });
 
+test('Amazon product fetch switches to listasIn after consecutive Amazon timeouts', async () => {
+  const originalFetch = globalThis.fetch;
+  const seenAmazonUrls = [];
+  globalThis.fetch = async (url) => {
+    const parsed = new URL(String(url));
+    if (/amazon\./i.test(parsed.hostname)) {
+      seenAmazonUrls.push(String(url));
+      throw new DOMException('Aborted', 'AbortError');
+    }
+    if (parsed.hostname === 'www.listasin.net') {
+      return new Response(JSON.stringify({
+        result: {
+          books: {
+            B055555555: {
+              latest_price: 550,
+              latest_point: 25,
+              max_price: 880
+            }
+          }
+        }
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response('not found', { status: 404 });
+  };
+
+  try {
+    const snapshot = await fetchAmazonHtmlSnapshot('B055555555', '', {
+      retries: 0,
+      timeoutMs: 1000,
+      skipThrottle: true,
+      amazonDirectPhaseTimeoutMs: 10000,
+      amazonTimeoutFallbackThreshold: 2,
+      allowAmazonReaderFallback: false
+    });
+
+    assert.equal(seenAmazonUrls.length, 2);
+    assert.equal(snapshot.currentPrice, 550);
+    assert.equal(snapshot.currentPoints, 25);
+    assert.equal(snapshot.provider, 'listasin');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('Amazon product fetch reserves time for fallback when the Amazon phase deadline expires', async () => {
+  const originalFetch = globalThis.fetch;
+  let amazonRequests = 0;
+  globalThis.fetch = async (url, options = {}) => {
+    const parsed = new URL(String(url));
+    if (/amazon\./i.test(parsed.hostname)) {
+      amazonRequests += 1;
+      return new Promise((resolve, reject) => {
+        options.signal?.addEventListener(
+          'abort',
+          () => reject(new DOMException('Aborted', 'AbortError')),
+          { once: true }
+        );
+      });
+    }
+    if (parsed.hostname === 'www.listasin.net') {
+      return new Response(JSON.stringify({
+        result: {
+          books: {
+            B066666666: {
+              latest_price: 660,
+              latest_point: 30,
+              max_price: 990
+            }
+          }
+        }
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response('not found', { status: 404 });
+  };
+
+  try {
+    const snapshot = await fetchAmazonHtmlSnapshot('B066666666', '', {
+      retries: 0,
+      timeoutMs: 1000,
+      skipThrottle: true,
+      amazonDirectPhaseTimeoutMs: 25,
+      amazonTimeoutFallbackThreshold: 10,
+      allowAmazonReaderFallback: false
+    });
+
+    assert.equal(amazonRequests, 1);
+    assert.equal(snapshot.currentPrice, 660);
+    assert.equal(snapshot.currentPoints, 30);
+    assert.equal(snapshot.provider, 'listasin');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('Amazon series parser does not keep shared placeholder images as covers', () => {
   const items = extractKindleSeriesItemsFromHtml(`
     <meta property="og:title" content="原作版 左ききのエレン (全2巻)" />

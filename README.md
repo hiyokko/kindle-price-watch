@@ -113,7 +113,7 @@ node scripts/deploy-production.mjs
 3. Kintyaku のASIN一致メタデータ補助
 4. listasIn(Kiseppe) の価格データ補助
 
-Amazon HTML取得はブロックされることがあるため、常用するならKeepa、またはAmazon公式Creators API相当の取得元に差し替えるのがおすすめです。HTML取得時はブラウザ系User-Agentのローテーションと通常ブラウザに近いヘッダーを使い、ブロック検知後は同一実行内でAmazon URLを深追いしないようにしています。必要に応じて `AMAZON_USER_AGENTS` でUser-Agent候補を上書きし、`AMAZON_HTML_PROXY_URL_TEMPLATE` でAmazon HTML取得だけをプロキシへ逃がせます。
+Amazon HTML取得はブロックされることがあるため、常用するならKeepa、またはAmazon公式Creators API相当の取得元に差し替えるのがおすすめです。HTML取得時はブラウザ系User-Agentのローテーションと通常ブラウザに近いヘッダーを使い、ブロック検知後は同一実行内でAmazon URLを深追いしないようにしています。さらに、`AMAZON_DIRECT_PHASE_TIMEOUT_MS` で1冊あたりのAmazon直取得時間を制限し、`AMAZON_TIMEOUT_FALLBACK_THRESHOLD` 回連続でタイムアウトしたら残りのAmazon URL候補を省略してlistasInなどの補助取得へ切り替えます。必要に応じて `AMAZON_USER_AGENTS` でUser-Agent候補を上書きし、`AMAZON_HTML_PROXY_URL_TEMPLATE` でAmazon HTML取得だけをプロキシへ逃がせます。
 紙本・中古本ページのASINやISBN-10はKindle価格として登録しません。Kindle商品ページのASINを登録してください。
 
 ## シリーズURL
