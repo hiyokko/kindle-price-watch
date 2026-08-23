@@ -1,5 +1,10 @@
 import { loadEnv, loadEnvFile } from '../src/env.mjs';
-import { hasBlobConfig, readStoreWithMetadata, updateStore } from '../src/store.mjs';
+import {
+  hasBlobConfig,
+  pruneBlobDerivedPayloads,
+  readStoreWithMetadata,
+  updateStore
+} from '../src/store.mjs';
 import { registerStorePayloadSync } from '../src/store-payload-sync.mjs';
 
 loadEnvFile('.env.production.local');
@@ -13,13 +18,15 @@ if (!hasBlobConfig()) {
 const before = await readStoreWithMetadata({ force: true });
 const next = await updateStore((store) => store);
 const after = await readStoreWithMetadata();
+const payloadCleanup = await pruneBlobDerivedPayloads({ includeLegacyBooks: true });
 
 console.log(JSON.stringify({
   optimized: true,
   bookCount: next.books.length,
   beforeBytes: before.size || 0,
   compressedBytes: after.size || 0,
-  reductionPercent: percentReduction(before.size, after.size)
+  reductionPercent: percentReduction(before.size, after.size),
+  payloadCleanup
 }, null, 2));
 
 function percentReduction(before, after) {

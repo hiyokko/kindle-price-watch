@@ -117,11 +117,12 @@ export async function listBooks() {
   return publicBooksFromStore(store);
 }
 
-export async function listBooksWithStoreMetadata() {
+export async function listBooksWithStoreMetadata(options = {}) {
   const { store, etag } = await readStoreWithPriceRepairsWithMetadata();
   return {
     books: publicBooksFromStore(store),
-    storeEtag: etag || ''
+    storeEtag: etag || '',
+    ...(options.includeStore ? { store } : {})
   };
 }
 

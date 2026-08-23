@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { compactBooksPayload } from '../src/book-list-payload.mjs';
+import { bootstrapPayload, compactBooksPayload } from '../src/book-list-payload.mjs';
 
 test('book list payload omits redundant defaults and canonical URLs', () => {
   const [book] = compactBooksPayload([
@@ -63,4 +63,17 @@ test('book list payload keeps one copy of repeated series fields while preservin
   assert.equal(books[1].seriesKey, 'B0SERIES001');
   assert.equal('sourceUrl' in books[1], false);
   assert.equal('seriesLowestEffectiveTotal' in books[1], false);
+});
+
+test('bootstrap payload combines the compact book list and control state', () => {
+  const payload = bootstrapPayload(
+    [{ id: 'book-1', asin: 'B000000001', title: 'Book', currentPoints: 0 }],
+    { settings: { batchSize: 50 }, automation: { lastCronChecked: 1000 } }
+  );
+
+  assert.equal(payload.books.length, 1);
+  assert.equal(payload.books[0].id, 'book-1');
+  assert.equal('currentPoints' in payload.books[0], false);
+  assert.equal(payload.settings.batchSize, 50);
+  assert.equal(payload.automation.lastCronChecked, 1000);
 });

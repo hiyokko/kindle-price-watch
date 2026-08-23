@@ -155,7 +155,7 @@ function normalizeEtag(value) {
 
 function payloadRetention(value) {
   const configured = Number(value ?? process.env.BLOB_DERIVED_PAYLOAD_RETENTION);
-  if (!Number.isFinite(configured)) return 16;
+  if (!Number.isFinite(configured)) return 8;
   return Math.min(200, Math.max(2, Math.round(configured)));
 }
 

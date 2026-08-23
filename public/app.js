@@ -223,15 +223,19 @@ els.deleteSelectedButton.addEventListener('click', async () => {
 });
 
 async function load() {
-  await Promise.all([
-    loadSettings({ render: false }),
-    loadBooks({ render: false })
-  ]);
+  const data = await api('/api/bootstrap');
+  applySettingsPayload(data);
+  applyBooksPayload(data);
   renderDashboard();
 }
 
 async function loadSettings(options = {}) {
   const data = await api('/api/settings');
+  applySettingsPayload(data);
+  if (options.render !== false) renderDashboard();
+}
+
+function applySettingsPayload(data) {
   state.settings = data.settings;
   state.automation = data.automation || null;
   applyImportQueueState(data.importQueue || state.importQueue);
@@ -243,7 +247,6 @@ async function loadSettings(options = {}) {
   els.scheduleDisplay.textContent = fixedScheduleLabel();
   els.batchInput.value = String(data.settings.batchSize);
   els.listPriceChallengeInput.value = String(data.settings.listPriceChallengeBatchSize ?? 50);
-  if (options.render !== false) renderDashboard();
 }
 
 function fixedScheduleLabel() {
@@ -252,11 +255,15 @@ function fixedScheduleLabel() {
 
 async function loadBooks(options = {}) {
   const data = await api('/api/books');
+  applyBooksPayload(data);
+  if (options.render !== false) renderDashboard();
+}
+
+function applyBooksPayload(data) {
   state.books = data.books;
   state.groups = groupBooks(state.books);
   const bookIds = new Set(state.books.map((book) => book.id));
   state.selectedBookIds = new Set([...state.selectedBookIds].filter((id) => bookIds.has(id)));
-  if (options.render !== false) renderDashboard();
 }
 
 function renderDashboard() {

@@ -2,6 +2,13 @@ export function bookListPayload(books = []) {
   return { books: compactBooksPayload(books) };
 }
 
+export function bootstrapPayload(books = [], control = {}) {
+  return {
+    ...bookListPayload(books),
+    ...control
+  };
+}
+
 export function compactBooksPayload(books = []) {
   const context = {
     emittedSeriesLowest: new Set(),

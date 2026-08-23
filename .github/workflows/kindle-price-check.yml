@@ -33,32 +33,7 @@ jobs:
     timeout-minutes: 330
     env:
       BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
-      BLOB_STORE_PATH: kindle-price-watch/store.json
-      PRICE_PROVIDER: amazon_html
-      AMAZON_DOMAIN: JP
-      AMAZON_HOST: www.amazon.co.jp
-      CHECK_REQUEST_DELAY_MS: "2200"
-      CHECK_REQUEST_JITTER_MS: "1800"
-      CHECK_BLOCK_COOLDOWN_MS: "90000"
-      CHECK_TRANSIENT_ERROR_COOLDOWN_MS: "30000"
-      CHECK_TRANSIENT_ERROR_COOLDOWN_THRESHOLD: "5"
-      CHECK_MAX_RUNTIME_MS: "18000000"
-      CHECK_SAVE_RESERVE_MS: "300000"
-      CHECK_BOOK_MAX_RUNTIME_MS: "60000"
-      CHECK_MIN_BOOK_RUNTIME_MS: "120000"
-      CHECK_IMPORT_ITEM_MAX_RUNTIME_MS: "90000"
-      SERIES_DISCOVERY_MIN_RUNTIME_MS: "120000"
-      CHECK_HARD_TIMEOUT_MS: "18600000"
-      HTTP_REQUEST_MIN_INTERVAL_MS: "900"
-      HTTP_REQUEST_JITTER_MS: "900"
-      HTTP_BLOCK_COOLDOWN_MS: "90000"
-      HTTP_FETCH_TIMEOUT_MS: "6500"
-      HTTP_AMAZON_FETCH_RETRIES: "1"
-      HTTP_FETCH_RETRY_DELAY_MS: "1200"
-      AMAZON_DIRECT_PHASE_TIMEOUT_MS: "20000"
-      AMAZON_TIMEOUT_FALLBACK_THRESHOLD: "2"
-      UNRESOLVED_SERIES_FETCH_TIMEOUT_MS: "15000"
-      LISTASIN_EARLY_FALLBACK: "true"
+      KPW_RUNTIME_ENV_FILE: config/github-actions.env
       FORCE_CHECK_ALL: ${{ github.event_name == 'workflow_dispatch' && (inputs.force_all == true || inputs.force_all == 'true') }}
       CHECK_SCHEDULE_CRON: ${{ github.event_name == 'schedule' && github.event.schedule || inputs.schedule_cron }}
       CHECK_BACKUP_RUN: ${{ github.event_name == 'workflow_dispatch' && (inputs.backup == true || inputs.backup == 'true') }}

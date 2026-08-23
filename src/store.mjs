@@ -4,6 +4,13 @@ import path from 'node:path';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { amazonUrlForAsin } from './amazon-url.mjs';
 import { getBlobSdk, hasBlobConfig } from './blob-client.mjs';
+import { createSerialTaskQueue } from './serial-task-queue.mjs';
+import {
+  blobWriteConflictAttempts,
+  isBlobWriteConflict,
+  isPromiseLike,
+  nextStoreRevision
+} from './store-update-policy.mjs';
 import {
   pruneBlobPayloads,
   readBlobPayload,
@@ -16,6 +23,7 @@ const amazonImagePrefix = 'https://m.media-amazon.com/images/I/';
 
 const defaultStore = {
   version: 1,
+  storeRevision: 0,
   settings: {
     notificationThreshold: 10,
     batchSize: 50,
@@ -90,7 +98,7 @@ const defaultStore = {
   }
 };
 
-let writeQueue = Promise.resolve();
+const enqueueStoreWrite = createSerialTaskQueue();
 let blobStoreCache = {
   expiresAt: 0,
   metadata: null,
@@ -111,6 +119,7 @@ function mergeStore(store) {
   return {
     ...defaultStore,
     ...store,
+    storeRevision: Math.max(0, Math.round(Number(store?.storeRevision) || 0)),
     settings: mergeSettings(store.settings),
     books: Array.isArray(store.books) ? store.books.map(normalizeBook) : [],
     priceHistory: Array.isArray(store.priceHistory) ? store.priceHistory : [],
@@ -164,17 +173,16 @@ export async function updateStore(mutator) {
     return updateBlobStore(mutator);
   }
 
-  writeQueue = writeQueue.then(async () => {
+  return enqueueStoreWrite(async () => {
     const store = await readStore();
-    const next = mergeStoreMutationResult(await mutator(store));
+    const previousRevision = store.storeRevision;
+    const next = nextStoreRevision(mergeStoreMutationResult(await mutator(store)), previousRevision);
     const tmpPath = `${storePath}.${Date.now()}.tmp`;
     await fs.writeFile(tmpPath, JSON.stringify(next, null, 2));
     await fs.rename(tmpPath, storePath);
     await notifyStoreWritten(next, { etag: '', size: 0 });
     return next;
   });
-
-  return writeQueue;
 }
 
 export function publicBook(book) {
@@ -362,15 +370,29 @@ function normalizeSeriesDiscoveryAdditions(additions) {
 export { hasBlobConfig };
 
 async function updateBlobStore(mutator) {
-  writeQueue = writeQueue.then(async () => {
-    const { store } = await readBlobStoreWithMetadata({ force: true });
-    const next = mergeStoreMutationResult(await mutator(store));
-    const metadata = await writeBlobStore(next);
-    await notifyStoreWritten(next, metadata);
-    return next;
-  });
+  return enqueueStoreWrite(async () => {
+    const maxAttempts = blobWriteConflictAttempts();
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const current = await readBlobStoreWithMetadata({ force: true });
+      const previousRevision = current.store.storeRevision;
+      const mutation = mutator(current.store);
+      const retryable = !isPromiseLike(mutation);
+      const next = nextStoreRevision(mergeStoreMutationResult(await mutation), previousRevision);
 
-  return writeQueue;
+      try {
+        const metadata = await writeBlobStore(next, current.blobEtags);
+        await notifyStoreWritten(next, metadata);
+        return next;
+      } catch (error) {
+        if (!isBlobWriteConflict(error) || !retryable || attempt >= maxAttempts) {
+          if (isBlobWriteConflict(error)) error.status = 409;
+          throw error;
+        }
+      }
+    }
+
+    throw new Error('Blob store update retry limit exceeded');
+  });
 }
 
 function mergeStoreMutationResult(result) {
@@ -431,12 +453,12 @@ export async function readStoreHeadMetadata(options = {}) {
   };
 }
 
-export async function readBlobBookListPayload(storeEtag, options = {}) {
-  return readBlobPayload('books', storeEtag, options);
+export async function readBlobBootstrapPayload(storeEtag, options = {}) {
+  return readBlobPayload('bootstrap', storeEtag, options);
 }
 
-export async function writeBlobBookListPayload(storeEtag, body) {
-  return writeBlobPayload('books', storeEtag, body);
+export async function writeBlobBootstrapPayload(storeEtag, body) {
+  return writeBlobPayload('bootstrap', storeEtag, body);
 }
 
 export async function readBlobControlPayload(storeEtag, options = {}) {
@@ -448,7 +470,10 @@ export async function writeBlobControlPayload(storeEtag, body) {
 }
 
 export async function pruneBlobDerivedPayloads(options = {}) {
-  return pruneBlobPayloads(['books', 'control'], options);
+  const kinds = options.includeLegacyBooks
+    ? ['bootstrap', 'control', 'books']
+    : ['bootstrap', 'control'];
+  return pruneBlobPayloads(kinds, options);
 }
 
 export function registerStoreWriteListener(listener) {
@@ -473,52 +498,60 @@ async function fetchBlobStoreWithMetadata() {
   const { get } = await getBlobSdk();
   const target = await resolveBlobStoreTarget();
   if (!target) {
-    return { store: mergeStore(defaultStore), etag: '', size: 0 };
+    return { store: mergeStore(defaultStore), etag: '', size: 0, blobEtags: {} };
   }
 
-  const result = await get(target.pathname, { access: 'private', useCache: false });
-  if (result?.statusCode !== 200 || !result.stream) {
-    return { store: mergeStore(defaultStore), etag: '', size: 0 };
+  const primary = await readBlobStoreCandidate(get, target, target.blobEtags);
+  if (!primary) {
+    return { store: mergeStore(defaultStore), etag: '', size: 0, blobEtags: target.blobEtags };
   }
 
-  if (target.compressed) {
-    const bytes = Buffer.from(await new Response(result.stream).arrayBuffer());
-    const raw = gunzipSync(bytes).toString('utf8');
-    return blobStoreMetadata(raw, result.blob, bytes.length);
-  }
+  const alternate = alternateBlobStoreTarget(target);
+  if (!alternate || compressedStoreMatchesLegacy(primary, target)) return primary;
 
-  const raw = await new Response(result.stream).text();
-  return blobStoreMetadata(raw, result.blob, Buffer.byteLength(raw));
+  const secondary = await readBlobStoreCandidate(get, alternate, target.blobEtags);
+  return secondary ? selectNewestBlobStoreState(primary, secondary) : primary;
 }
 
-async function writeBlobStore(store) {
+async function writeBlobStore(store, expectedEtags = {}) {
   const { put } = await getBlobSdk();
-  const raw = JSON.stringify(compactStoreForWrite(store));
-  const compressed = gzipSync(raw);
-  await mirrorLegacyBlobStore(put, raw);
+  const compacted = compactStoreForWrite(store);
+  const legacyRaw = JSON.stringify(compacted);
+  const legacyResult = await mirrorLegacyBlobStore(put, legacyRaw, expectedEtags.legacy);
+  const stored = mergeStore({ ...store, blobMirrorEtag: legacyResult?.etag || '' });
+  const compressed = gzipSync(JSON.stringify({
+    ...compacted,
+    blobMirrorEtag: legacyResult?.etag || ''
+  }));
   const result = await put(compressedBlobStorePath(), compressed, {
     access: 'private',
     allowOverwrite: true,
     contentType: 'application/gzip',
-    cacheControlMaxAge: 0
+    cacheControlMaxAge: 0,
+    ...(expectedEtags.compressed ? { ifMatch: expectedEtags.compressed } : {})
   });
 
-  const metadata = { store, etag: result?.etag || '', size: compressed.length };
+  const metadata = {
+    store: stored,
+    etag: result?.etag || '',
+    size: compressed.length,
+    blobEtags: {
+      legacy: legacyResult?.etag || '',
+      compressed: result?.etag || ''
+    }
+  };
   setBlobStoreCache(metadata);
   return metadata;
 }
 
-async function mirrorLegacyBlobStore(put, raw) {
-  try {
-    await put(blobStorePath(), raw, {
-      access: 'private',
-      allowOverwrite: true,
-      contentType: 'application/json',
-      cacheControlMaxAge: 0
-    });
-  } catch (error) {
-    console.error('Failed to update legacy uncompressed Blob store mirror', error);
-  }
+async function mirrorLegacyBlobStore(put, raw, expectedEtag = '') {
+  return put(blobStorePath(), raw, {
+    access: 'private',
+    allowOverwrite: true,
+    contentType: 'application/json',
+    cacheControlMaxAge: 0,
+    ...(expectedEtag ? { ifMatch: expectedEtag } : {})
+  });
 }
 
 async function headBlobStore() {
@@ -533,9 +566,66 @@ async function resolveBlobStoreTarget() {
   ]);
   const candidate = selectNewestBlobStore(compressed, legacy);
   if (!candidate) return null;
+  const blobEtags = {
+    compressed: compressed?.etag || '',
+    legacy: legacy?.etag || ''
+  };
   return candidate === compressed
-    ? { pathname: compressedBlobStorePath(), compressed: true, metadata: compressed }
-    : { pathname: blobStorePath(), compressed: false, metadata: legacy };
+    ? {
+        pathname: compressedBlobStorePath(),
+        compressed: true,
+        metadata: compressed,
+        alternateMetadata: legacy,
+        blobEtags
+      }
+    : {
+        pathname: blobStorePath(),
+        compressed: false,
+        metadata: legacy,
+        alternateMetadata: compressed,
+        blobEtags
+      };
+}
+
+async function readBlobStoreCandidate(get, target, blobEtags) {
+  const result = await get(target.pathname, { access: 'private', useCache: false });
+  if (result?.statusCode !== 200 || !result.stream) return null;
+
+  if (target.compressed) {
+    const bytes = Buffer.from(await new Response(result.stream).arrayBuffer());
+    const raw = gunzipSync(bytes).toString('utf8');
+    return blobStoreMetadata(raw, result.blob, bytes.length, blobEtags, target);
+  }
+
+  const raw = await new Response(result.stream).text();
+  return blobStoreMetadata(raw, result.blob, Buffer.byteLength(raw), blobEtags, target);
+}
+
+function alternateBlobStoreTarget(target) {
+  if (!target?.alternateMetadata) return null;
+  return target.compressed
+    ? { pathname: blobStorePath(), compressed: false, metadata: target.alternateMetadata }
+    : { pathname: compressedBlobStorePath(), compressed: true, metadata: target.alternateMetadata };
+}
+
+function compressedStoreMatchesLegacy(primary, target) {
+  if (!target.compressed) return false;
+  const expectedLegacyEtag = String(primary.store?.blobMirrorEtag || '');
+  const currentLegacyEtag = String(target.blobEtags?.legacy || '');
+  return Boolean(expectedLegacyEtag && expectedLegacyEtag === currentLegacyEtag);
+}
+
+export function selectNewestBlobStoreState(left, right) {
+  const leftRevision = Number(left?.store?.storeRevision || 0);
+  const rightRevision = Number(right?.store?.storeRevision || 0);
+  if (leftRevision !== rightRevision) return leftRevision > rightRevision ? left : right;
+
+  const compressed = left?.compressed ? left : right?.compressed ? right : null;
+  const legacy = left?.compressed === false ? left : right?.compressed === false ? right : null;
+  if (!compressed) return legacy || left;
+  if (!legacy) return compressed;
+  const selected = selectNewestBlobStore(compressed.sourceMetadata, legacy.sourceMetadata);
+  return selected === compressed.sourceMetadata ? compressed : legacy;
 }
 
 export function selectNewestBlobStore(compressed, legacy) {
@@ -550,17 +640,21 @@ export function selectNewestBlobStore(compressed, legacy) {
   return compressed;
 }
 
-function blobStoreMetadata(raw, blob = {}, fallbackSize = 0) {
+function blobStoreMetadata(raw, blob = {}, fallbackSize = 0, blobEtags = {}, source = {}) {
   return {
     store: mergeStore(JSON.parse(raw)),
     etag: blob?.etag || '',
-    size: blob?.size || fallbackSize
+    size: blob?.size || fallbackSize,
+    blobEtags,
+    compressed: Boolean(source.compressed),
+    sourceMetadata: source.metadata || blob || null
   };
 }
 
 function compactStoreForWrite(store) {
   return compactObject({
     ...store,
+    blobMirrorEtag: undefined,
     settings: compactAgainstDefaults(store.settings, defaultStore.settings),
     automation: compactAgainstDefaults(store.automation, defaultStore.automation),
     checkCursor: compactAgainstDefaults(store.checkCursor, defaultStore.checkCursor),
@@ -734,7 +828,8 @@ function cloneBlobMetadata(metadata) {
   return {
     store: cloneJson(metadata.store),
     etag: metadata.etag || '',
-    size: metadata.size || 0
+    size: metadata.size || 0,
+    blobEtags: { ...(metadata.blobEtags || {}) }
   };
 }
 

@@ -8,6 +8,7 @@ import { buildBodyResponse } from './src/http-response.mjs';
 import { registerStorePayloadSync } from './src/store-payload-sync.mjs';
 import {
   addBooksPayload,
+  bootstrapPayloadResponse,
   checkBookPayload,
   deleteBookPayload,
   deleteBooksPayload,
@@ -79,6 +80,11 @@ server.listen(port, () => {
 async function handleApi(req, res, url) {
   const method = req.method || 'GET';
   const pathParts = url.pathname.split('/').filter(Boolean);
+
+  if (method === 'GET' && url.pathname === '/api/bootstrap') {
+    sendResponse(res, await bootstrapPayloadResponse(req));
+    return;
+  }
 
   if (method === 'GET' && url.pathname === '/api/books') {
     sendResponse(res, await listBooksPayloadResponse(req));
@@ -193,7 +199,16 @@ async function handleLogin(req, res) {
 
 async function readBody(req) {
   const chunks = [];
-  for await (const chunk of req) chunks.push(chunk);
+  let bytes = 0;
+  for await (const chunk of req) {
+    bytes += chunk.length;
+    if (bytes > maxRequestBodyBytes()) {
+      const error = new Error('リクエストが大きすぎます');
+      error.status = 413;
+      throw error;
+    }
+    chunks.push(chunk);
+  }
   const raw = Buffer.concat(chunks).toString('utf8');
   if (!raw) return {};
 
@@ -209,6 +224,10 @@ async function readBody(req) {
     error.status = 400;
     throw error;
   }
+}
+
+function maxRequestBodyBytes() {
+  return readNumberEnv('MAX_REQUEST_BODY_BYTES', 1024 * 1024);
 }
 
 function isAuthEnabled() {
@@ -312,7 +331,10 @@ function redirect(res, location) {
 function sendLoginPage(res, error = '', status = 200) {
   res.writeHead(status, {
     'Content-Type': 'text/html; charset=utf-8',
-    'Cache-Control': 'no-store'
+    'Cache-Control': 'no-store',
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'Referrer-Policy': 'same-origin'
   });
   res.end(`<!doctype html>
 <html lang="ja">
@@ -476,7 +498,12 @@ function sendBody(res, status, body, options = {}) {
 }
 
 function sendResponse(res, response) {
-  res.writeHead(response.status, response.headers);
+  res.writeHead(response.status, {
+    ...response.headers,
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'Referrer-Policy': 'same-origin'
+  });
   res.end(response.body);
 }
 

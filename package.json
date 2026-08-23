@@ -16,7 +16,10 @@
     "deploy:production": "node scripts/deploy-production.mjs"
   },
   "dependencies": {
-    "@vercel/blob": "^2.0.0"
+    "@vercel/blob": "^2.8.0"
+  },
+  "overrides": {
+    "undici": "^6.28.0"
   },
   "engines": {
     "node": ">=20"

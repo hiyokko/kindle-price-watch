@@ -4,6 +4,10 @@ import path from 'node:path';
 export function loadEnv() {
   const envPath = path.join(process.cwd(), '.env');
   loadEnvFile(envPath);
+  const runtimeEnvPath = String(process.env.KPW_RUNTIME_ENV_FILE || '').trim();
+  if (runtimeEnvPath && !loadEnvFile(runtimeEnvPath)) {
+    throw new Error(`Runtime environment file was not found: ${runtimeEnvPath}`);
+  }
   normalizeRuntimeEnv();
 }
 

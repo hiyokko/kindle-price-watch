@@ -7,16 +7,17 @@ import {
   saveDiscordWebhooks,
   saveBookImportQueue,
   saveSettings,
-  sendTestNotification
+  sendTestNotification,
+  settingsSummaryFromStore
 } from './control-service.mjs';
-import { bookListPayload, compactBooksPayload } from './book-list-payload.mjs';
+import { bookListPayload, bootstrapPayload, compactBooksPayload } from './book-list-payload.mjs';
 import { buildBodyResponse, buildPrecompressedGzipResponse, requestAcceptsEncoding } from './http-response.mjs';
 import {
   hasBlobConfig,
-  readBlobBookListPayload,
+  readBlobBootstrapPayload,
   readBlobControlPayload,
   readStoreHeadMetadata,
-  writeBlobBookListPayload,
+  writeBlobBootstrapPayload,
   writeBlobControlPayload
 } from './store.mjs';
 
@@ -28,11 +29,15 @@ export async function listBooksPayload() {
 }
 
 export async function listBooksPayloadResponse(req) {
+  return bootstrapPayloadResponse(req);
+}
+
+export async function bootstrapPayloadResponse(req) {
   return derivedJsonPayloadResponse(req, {
-    label: 'book list',
-    readBlob: readBlobBookListPayload,
-    writeBlob: writeBlobBookListPayload,
-    load: listBooksPayloadWithMetadata
+    label: 'bootstrap',
+    readBlob: readBlobBootstrapPayload,
+    writeBlob: writeBlobBootstrapPayload,
+    load: bootstrapPayloadWithMetadata
   });
 }
 
@@ -87,7 +92,7 @@ async function derivedJsonPayloadResponse(req, options) {
 }
 
 async function readCurrentPayloadBlob(req, reader, label) {
-  const storeHead = await readStoreHeadMetadata({ force: true }).catch((error) => {
+  const storeHead = await readStoreHeadMetadata().catch((error) => {
     console.error(`Failed to read store metadata for ${label} payload`, error);
     return null;
   });
@@ -101,11 +106,12 @@ async function readCurrentPayloadBlob(req, reader, label) {
   });
 }
 
-async function listBooksPayloadWithMetadata() {
+async function bootstrapPayloadWithMetadata() {
   const { listBooksWithStoreMetadata } = await checkerModule();
-  const { books, storeEtag } = await listBooksWithStoreMetadata();
+  const { books, storeEtag, store } = await listBooksWithStoreMetadata({ includeStore: true });
+  const webhooks = await getDiscordWebhooks({ store });
   return {
-    payload: bookListPayload(books),
+    payload: bootstrapPayload(books, settingsSummaryFromStore(store, webhooks)),
     storeEtag
   };
 }
