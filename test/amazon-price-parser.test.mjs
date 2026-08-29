@@ -389,6 +389,63 @@ test('Amazon series fetch probes reader fallback for small completed DBS subsets
   }
 });
 
+test('Amazon series fetch does not replace a complete series with a larger unrelated reader result', async () => {
+  const originalFetch = globalThis.fetch;
+  let readerRequested = false;
+  globalThis.fetch = async (url) => {
+    const parsed = new URL(String(url));
+    if (parsed.hostname === 'r.jina.ai') {
+      readerRequested = true;
+      return new Response(`
+        # 転生したらスライムだった件～魔物の国の歩き方～ (8 book series) Kindle Edition
+
+        ## 本シリーズ (全8巻)
+        ${Array.from({ length: 8 }, (_, index) =>
+          `${index + 1}. [転生したらスライムだった件～魔物の国の歩き方～ ${index + 1}](https://www.amazon.co.jp/dp/B00SLIME0${index + 1}?ref_=saga_dp_ss_dsk_dp)Kindle版 ￥99`
+        ).join('\n')}
+      `, { status: 200, headers: { 'content-type': 'text/plain' } });
+    }
+
+    return new Response(`
+      <html>
+        <head><meta property="og:title" content="弟の夫 (全8巻) Kindle版"></head>
+        <body>
+          <h1>弟の夫 (全8巻) Kindle版</h1>
+          <div id="series-childAsin-list">
+            ${Array.from({ length: 4 }, (_, index) => `
+              <div id="series-childAsin-item_${index + 1}" class="series-childAsin-item">
+                <a class="itemImageLink" title="弟の夫 ${index + 1}" href="/gp/product/B00HUSBAN${index + 1}?storeType=ebooks">
+                  <img alt="弟の夫 ${index + 1}" src="https://m.media-amazon.com/images/I/51husband${index + 1}._SY300_.jpg">
+                </a>
+                <span class="a-size-large a-color-price">￥648</span>
+              </div>
+            `).join('')}
+          </div>
+        </body>
+      </html>
+    `, { status: 200, headers: { 'content-type': 'text/html' } });
+  };
+
+  try {
+    const series = await fetchKindleSeriesItems(
+      'https://www.amazon.co.jp/kindle-dbs/product/B074C7B1X1',
+      {
+        retries: 0,
+        timeoutMs: 1000,
+        skipThrottle: true,
+        probeSeriesCompletion: false
+      }
+    );
+
+    assert.equal(readerRequested, true);
+    assert.equal(series.seriesName, '弟の夫');
+    assert.equal(series.items.length, 4);
+    assert.equal(series.items.every((item) => item.title.includes('弟の夫')), true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('Amazon product fetch continues after a misleading physical-format response', async () => {
   const originalFetch = globalThis.fetch;
   const seen = [];

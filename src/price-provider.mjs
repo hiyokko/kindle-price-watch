@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { amazonUrlForAsin, extractAsin, isKindleSeriesUrl } from './amazon-url.mjs';
+import { seriesCandidatesAreCompatible } from './series-identity.mjs';
 
 const ASIN_GLOBAL_PATTERN = /[A-Z0-9]{10}/gi;
 const DEFAULT_FETCH_TIMEOUT_MS = 4000;
@@ -282,6 +283,13 @@ function isPotentiallyPartialCompletedKindleDbsSeries(series = {}, input = '') {
 function isBetterKindleSeriesResult(candidate, current) {
   if (!candidate?.items?.length) return false;
   if (!current?.items?.length) return true;
+  if (
+    candidate.items.length > 1 &&
+    current.items.length > 1 &&
+    !seriesCandidatesAreCompatible(candidate, current)
+  ) {
+    return false;
+  }
   if (candidate.items.length > current.items.length) return true;
 
   const candidateExpected = Number(candidate.expectedVolumeCount) || 0;

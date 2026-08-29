@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { amazonUrlForAsin, extractAsin, isKindleSeriesUrl } from './amazon-url.mjs';
+import { seriesCandidatesAreCompatible } from './series-identity.mjs';
 import {
   fetchAmazonHtmlSnapshot,
   fetchBookSnapshot,
@@ -369,6 +370,15 @@ async function importSeriesIntoStore(store, input, series, options = {}) {
     seriesKey,
     seriesName
   };
+
+  if (options.allowSeriesIdentityReplacement !== true) {
+    const mismatchReason = seriesImportIdentityMismatchReason(store, seriesIdentity, series, options);
+    if (mismatchReason) {
+      const error = new Error(mismatchReason);
+      error.status = 422;
+      throw error;
+    }
+  }
 
   if (isUnsafeSingleBookSeriesCandidate(input, series, series.items)) {
     const error = new Error(
@@ -1152,12 +1162,19 @@ async function fetchSeriesCandidates(input, options = {}) {
   if (candidates.length === 0) return null;
   const usableCandidates = filterSuspiciousSeriesCandidates(candidates);
   if (usableCandidates.length === 0) return null;
-  const merged = usableCandidates.reduce((result, series) => mergeSeriesCandidate(result, series));
+  const compatibleCandidates = compatibleSeriesCandidates(usableCandidates);
+  const merged = compatibleCandidates.reduce((result, series) => mergeSeriesCandidate(result, series));
   const resolved = options.skipBackfill
     ? withSeriesReconciliation(merged)
-    : await resolveSeriesCandidateDiffs(merged, usableCandidates, options);
+    : await resolveSeriesCandidateDiffs(merged, compatibleCandidates, options);
   if (!isIncompleteSeriesCandidate(resolved)) return resolved;
   return options.allowIncomplete && isUsableIncompleteSeriesCandidate(resolved) ? resolved : null;
+}
+
+function compatibleSeriesCandidates(candidates = []) {
+  if (candidates.length <= 1) return candidates;
+  const anchor = candidates[0];
+  return [anchor, ...candidates.slice(1).filter((candidate) => seriesCandidatesAreCompatible(anchor, candidate))];
 }
 
 async function fetchKindleSeriesCandidate(input, options = {}) {
@@ -1407,6 +1424,7 @@ function stripVolumeSuffix(title) {
 function mergeSeriesCandidate(primary, secondary) {
   if (!primary) return secondary;
   if (!secondary) return primary;
+  if (!seriesCandidatesAreCompatible(primary, secondary)) return primary;
 
   const base = primary.items.length >= secondary.items.length ? primary : secondary;
   const overlay = base === primary ? secondary : primary;
@@ -2685,15 +2703,30 @@ function canonicalSeriesNameByBookCount(books = []) {
   for (const book of books) {
     const name = cleanStoredSeriesName(book.seriesName || '');
     if (!name || isGenericSeriesName(name)) continue;
-    const current = counts.get(name) || { name, count: 0, firstVolume: Number.POSITIVE_INFINITY };
+    const current = counts.get(name) || {
+      name,
+      count: 0,
+      firstVolume: Number.POSITIVE_INFINITY,
+      earliestCreatedAt: Number.POSITIVE_INFINITY
+    };
     current.count += 1;
     const volume = storedBookVolume(book);
     if (volume > 0) current.firstVolume = Math.min(current.firstVolume, volume);
+    const createdAt = timestampMs(book.createdAt);
+    if (createdAt > 0) current.earliestCreatedAt = Math.min(current.earliestCreatedAt, createdAt);
     counts.set(name, current);
   }
   if (counts.size < 2) return '';
 
-  const ranked = [...counts.values()].sort((left, right) => {
+  const identities = [...counts.values()];
+  const dated = identities
+    .filter((entry) => Number.isFinite(entry.earliestCreatedAt) && entry.count >= 2)
+    .sort((left, right) => left.earliestCreatedAt - right.earliestCreatedAt);
+  if (dated.length >= 2 && dated[1].earliestCreatedAt - dated[0].earliestCreatedAt >= 60_000) {
+    return dated[0].name;
+  }
+
+  const ranked = identities.sort((left, right) => {
     if (right.count !== left.count) return right.count - left.count;
     return left.firstVolume - right.firstVolume;
   });
@@ -4521,6 +4554,29 @@ function isKnownBookForSeries(book, options) {
   );
 }
 
+function isStoredBookForSeriesSource(book = {}, options = {}) {
+  if (!book?.asin) return false;
+  if (book.seriesKey && options.seriesKey && book.seriesKey === options.seriesKey) return true;
+  return isSameSeriesSource(book.sourceUrl, options.sourceUrl, options.sourceAsin);
+}
+
+function storedSeriesIdentityName(books = []) {
+  const counts = new Map();
+  for (const book of books) {
+    const name = cleanStoredSeriesName(book.seriesName || '');
+    if (!name || isGenericSeriesName(name)) continue;
+    counts.set(name, (counts.get(name) || 0) + 1);
+  }
+  return [...counts.entries()].sort((left, right) => right[1] - left[1])[0]?.[0] || '';
+}
+
+export function seriesImportIdentityMismatchReason(store = {}, seriesIdentity = {}, series = {}, options = {}) {
+  const existingSeriesName = storedSeriesIdentityName(
+    (store.books || []).filter((book) => isStoredBookForSeriesSource(book, seriesIdentity))
+  );
+  return seriesDiscoveryResultMismatchReason(options.expectedSeriesName || existingSeriesName, series);
+}
+
 function seedFromExistingBook(book) {
   return {
     asin: book.asin,
@@ -6205,9 +6261,9 @@ export function seriesDiscoveryResultMismatchReason(expectedSeriesName = '', ser
   const matchingItems = comparableItems.filter((item) => !isClearlyDifferentSeriesTitle(item.title, expected));
   const actualDiffers = isClearlyDifferentSeriesTitle(actual, expected);
   const itemMajorityDiffers =
-    comparableItems.length >= 3 &&
-    differentItems.length >= Math.ceil(comparableItems.length * 0.8) &&
-    differentItems.length > matchingItems.length;
+    comparableItems.length >= 2 &&
+    differentItems.length >= Math.ceil(comparableItems.length * 0.5) &&
+    differentItems.length >= matchingItems.length;
   const allItemsDiffer = comparableItems.length >= 2 && differentItems.length === comparableItems.length;
   const itemEvidenceDiffers = itemMajorityDiffers || allItemsDiffer;
 

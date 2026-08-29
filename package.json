@@ -9,6 +9,7 @@
     "check": "node scripts/check-once.mjs",
     "check:watchdog": "node scripts/check-watchdog.mjs",
     "blob:optimize": "node scripts/optimize-blob-storage.mjs",
+    "audit:series-identity": "node scripts/audit-series-identity.mjs",
     "audit:single-series": "node scripts/audit-single-book-series.mjs",
     "test": "node --test",
     "github:actions": "node scripts/github-actions.mjs",

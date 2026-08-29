@@ -24,6 +24,7 @@ import {
   selectListPriceChallengeCandidates,
   seriesKeyForSeries,
   seriesDiscoveryResultMismatchReason,
+  seriesImportIdentityMismatchReason,
   seriesSourceUrlFor,
   seriesAggregateSnapshot,
   seriesSnapshotFromKindleSeriesForBook,
@@ -974,6 +975,56 @@ test('series discovery rejects stale source URLs that now resolve to a different
   assert.match(reason, /ハイパーインフレーション/);
 });
 
+test('series discovery rejects a mixed candidate when an unrelated majority changes the series name', () => {
+  const reason = seriesDiscoveryResultMismatchReason('弟の夫', {
+    seriesName: '転生したらスライムだった件～魔物の国の歩き方～',
+    items: [
+      ...Array.from({ length: 8 }, (_, index) => ({
+        asin: `B00SLIME0${index + 1}`,
+        title: `転生したらスライムだった件～魔物の国の歩き方～ ${index + 1}`
+      })),
+      ...Array.from({ length: 4 }, (_, index) => ({
+        asin: `B00HUSBAN${index + 1}`,
+        title: `弟の夫 ${index + 1}`
+      }))
+    ]
+  });
+
+  assert.match(reason, /別作品/);
+  assert.match(reason, /弟の夫/);
+});
+
+test('series import rechecks identity against the stored source even without a discovery hint', () => {
+  const seriesKey = 'series:asin:B074C7B1X1';
+  const sourceUrl = 'https://www.amazon.co.jp/kindle-dbs/product/B074C7B1X1';
+  const store = {
+    books: Array.from({ length: 4 }, (_, index) => ({
+      asin: `B00HUSBAN${index + 1}`,
+      title: `弟の夫 ${index + 1}`,
+      seriesKey,
+      seriesName: '弟の夫',
+      sourceUrl
+    }))
+  };
+  const incoming = {
+    seriesName: '転生したらスライムだった件～魔物の国の歩き方～',
+    items: Array.from({ length: 8 }, (_, index) => ({
+      asin: `B00SLIME0${index + 1}`,
+      title: `転生したらスライムだった件～魔物の国の歩き方～ ${index + 1}`
+    }))
+  };
+
+  assert.match(
+    seriesImportIdentityMismatchReason(store, {
+      seriesKey,
+      sourceUrl,
+      sourceAsin: 'B074C7B1X1',
+      seriesName: incoming.seriesName
+    }, incoming),
+    /別作品/
+  );
+});
+
 test('store repair removes mixed-in books from a different series identity', () => {
   const seriesKey = 'series:asin:B09BF1HSBY';
   const sourceUrl = 'https://www.amazon.co.jp/kindle-dbs/product/B09BF1HSBY';
@@ -1028,6 +1079,49 @@ test('store repair removes mixed-in books from a different series identity', () 
   assert.equal(store.books.every((book) => book.seriesName === 'ハイパーインフレーション'), true);
   assert.equal(store.priceHistory.some((entry) => entry.bookId === 'wrong-1'), false);
   assert.equal(store.notifications.some((entry) => entry.bookId === 'wrong-2'), false);
+});
+
+test('store repair preserves an older coherent identity even when a newer wrong identity has more books', () => {
+  const seriesKey = 'series:asin:B074C7B1X1';
+  const sourceUrl = 'https://www.amazon.co.jp/kindle-dbs/product/B074C7B1X1';
+  const store = {
+    books: [
+      ...[1, 2, 3, 4].map((volume) => ({
+        id: `husband-${volume}`,
+        asin: `B00HUSBAN${volume}`,
+        title: `弟の夫 ${volume}`,
+        seriesName: '弟の夫',
+        seriesKey,
+        sourceUrl,
+        importMode: 'kindle_series',
+        volume,
+        createdAt: '2026-05-07T10:07:17.759Z'
+      })),
+      ...[1, 2, 3, 4, 5, 6, 7, 8].map((volume) => ({
+        id: `slime-${volume}`,
+        asin: `B00SLIME0${volume}`,
+        title: `転生したらスライムだった件～魔物の国の歩き方～ ${volume}`,
+        seriesName: '転生したらスライムだった件～魔物の国の歩き方～',
+        seriesKey,
+        sourceUrl,
+        importMode: 'kindle_series',
+        volume,
+        createdAt: '2026-08-24T11:28:32.103Z'
+      }))
+    ],
+    priceHistory: [],
+    notifications: [],
+    seriesPriceHistory: []
+  };
+
+  const summary = repairStorePriceState(store, {
+    clearCurrent: false,
+    now: '2026-08-29T10:00:00.000Z'
+  });
+
+  assert.equal(summary.removedSeriesIdentityMismatchItems, 8);
+  assert.equal(store.books.length, 4);
+  assert.equal(store.books.every((book) => book.seriesName === '弟の夫'), true);
 });
 
 test('series discovery accepts matching source URLs even when item titles have imprints', () => {
