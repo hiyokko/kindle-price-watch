@@ -69,16 +69,42 @@ test('watchdog dispatches the price-check workflow as a backup without force-all
   });
 });
 
-test('watchdog classifies active old price-check runs as stale cancellation targets', () => {
+test('watchdog preserves healthy active runs across code revisions and expires only overlong runs', () => {
   const result = classifyPriceCheckRuns([
-    { id: 1, status: 'in_progress', head_sha: 'old-sha' },
-    { id: 2, status: 'pending', head_sha: 'old-sha' },
-    { id: 3, status: 'queued', head_sha: 'current-sha' },
-    { id: 4, status: 'completed', head_sha: 'old-sha' }
-  ], 'current-sha');
+    {
+      id: 1,
+      status: 'in_progress',
+      head_sha: 'old-sha',
+      run_started_at: '2026-09-02T04:43:48.000Z'
+    },
+    {
+      id: 2,
+      status: 'pending',
+      head_sha: 'old-sha',
+      created_at: '2026-09-02T06:29:05.000Z'
+    },
+    {
+      id: 3,
+      status: 'queued',
+      head_sha: 'current-sha',
+      created_at: '2026-09-02T06:30:00.000Z'
+    },
+    {
+      id: 4,
+      status: 'in_progress',
+      head_sha: 'old-sha',
+      run_started_at: '2026-09-01T23:00:00.000Z'
+    },
+    { id: 5, status: 'completed', head_sha: 'old-sha' }
+  ], 'current-sha', {
+    now: new Date('2026-09-02T07:00:00.000Z').getTime(),
+    staleAfterMinutes: 360
+  });
 
-  assert.deepEqual(result.staleRuns.map((run) => run.id), [1, 2]);
+  assert.deepEqual(result.activeRuns.map((run) => run.id), [1, 2, 3]);
   assert.deepEqual(result.activeCurrentRuns.map((run) => run.id), [3]);
+  assert.deepEqual(result.activeOtherRevisionRuns.map((run) => run.id), [1, 2]);
+  assert.deepEqual(result.staleRuns.map((run) => run.id), [4]);
 });
 
 test('watchdog reads automation state from the small gzip control payload', () => {

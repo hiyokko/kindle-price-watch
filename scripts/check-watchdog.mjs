@@ -68,7 +68,7 @@ async function main() {
     return;
   }
 
-  if (runReconciliation.activeCurrentRuns.length > 0) {
+  if (runReconciliation.activeRuns.length > 0) {
     console.log(JSON.stringify({
       skipped: true,
       reason: 'price_check_in_progress',
@@ -182,7 +182,9 @@ async function reconcilePriceCheckRuns() {
     return {
       skipped: true,
       reason: token ? 'missing_github_sha' : 'missing_github_token',
+      activeRuns: [],
       activeCurrentRuns: [],
+      activeOtherRevisionRuns: [],
       staleRuns: [],
       cancelledStaleRuns: [],
       cancelErrors: []
@@ -190,7 +192,10 @@ async function reconcilePriceCheckRuns() {
   }
 
   const runs = await fetchPriceCheckRuns(repository, token);
-  const classification = classifyPriceCheckRuns(runs, currentSha);
+  const classification = classifyPriceCheckRuns(runs, currentSha, {
+    now: Date.now(),
+    staleAfterMinutes: readNumberEnv('CHECK_WATCHDOG_ACTIVE_RUN_STALE_MINUTES', 360)
+  });
   const cancelledStaleRuns = [];
   const cancelErrors = [];
 
@@ -209,7 +214,9 @@ async function reconcilePriceCheckRuns() {
   return {
     skipped: false,
     currentSha,
+    activeRuns: classification.activeRuns.map(publicWorkflowRun),
     activeCurrentRuns: classification.activeCurrentRuns.map(publicWorkflowRun),
+    activeOtherRevisionRuns: classification.activeOtherRevisionRuns.map(publicWorkflowRun),
     staleRuns: classification.staleRuns.map(publicWorkflowRun),
     cancelledStaleRuns,
     cancelErrors
@@ -258,11 +265,22 @@ async function throwGitHubApiError(response, prefix) {
   throw new Error(`${prefix} (${response.status})${detail}`);
 }
 
-export function classifyPriceCheckRuns(runs = [], currentSha = '') {
+export function classifyPriceCheckRuns(runs = [], currentSha = '', options = {}) {
   const activeRuns = runs.filter((run) => ACTIVE_RUN_STATUSES.has(String(run.status || '')));
+  const now = Number(options.now ?? Date.now());
+  const staleAfterMinutes = Math.max(1, Number(options.staleAfterMinutes ?? 360) || 360);
+  const staleAfterMs = staleAfterMinutes * 60 * 1000;
+  const staleRuns = activeRuns.filter((run) => {
+    const startedAt = new Date(run.run_started_at || run.created_at || 0).getTime();
+    return Number.isFinite(startedAt) && startedAt > 0 && now - startedAt > staleAfterMs;
+  });
+  const staleRunIds = new Set(staleRuns.map((run) => run.id));
+  const healthyRuns = activeRuns.filter((run) => !staleRunIds.has(run.id));
   return {
-    activeCurrentRuns: activeRuns.filter((run) => String(run.head_sha || '') === currentSha),
-    staleRuns: activeRuns.filter((run) => String(run.head_sha || '') !== currentSha)
+    activeRuns: healthyRuns,
+    activeCurrentRuns: healthyRuns.filter((run) => String(run.head_sha || '') === currentSha),
+    activeOtherRevisionRuns: healthyRuns.filter((run) => String(run.head_sha || '') !== currentSha),
+    staleRuns
   };
 }
 
