@@ -263,7 +263,7 @@ export function buildCronSummaryNotification(summary = {}) {
     summary.seriesDiscovery
       ? {
           name: 'シリーズ探索',
-          value: `確認 ${Number(summary.seriesDiscovery.checked || 0).toLocaleString('ja-JP')} / 新規 ${Number(summary.seriesDiscovery.added || 0).toLocaleString('ja-JP')} / 実行なし ${Number(summary.seriesDiscovery.skippedNoRun || 0).toLocaleString('ja-JP')} / 保留 ${Number(summary.seriesDiscovery.deferred || 0).toLocaleString('ja-JP')} / エラー ${Number(summary.seriesDiscovery.errors || 0).toLocaleString('ja-JP')}`,
+          value: seriesDiscoverySummaryText(summary.seriesDiscovery),
           inline: false
         }
       : null,
@@ -300,6 +300,13 @@ export function buildCronSummaryNotification(summary = {}) {
       }
     ]
   };
+}
+
+function seriesDiscoverySummaryText(summary = {}) {
+  const text = `確認 ${Number(summary.checked || 0).toLocaleString('ja-JP')} / 新規 ${Number(summary.added || 0).toLocaleString('ja-JP')} / 実行なし ${Number(summary.skippedNoRun || 0).toLocaleString('ja-JP')} / 保留 ${Number(summary.deferred || 0).toLocaleString('ja-JP')} / エラー ${Number(summary.errors || 0).toLocaleString('ja-JP')}`;
+  const queued = Number(summary.followUpQueued || 0);
+  if (queued <= 0) return text;
+  return `${text}\n新刊即時確認: 対象 ${queued.toLocaleString('ja-JP')} / 成功 ${Number(summary.followUpSucceeded || 0).toLocaleString('ja-JP')} / 失敗 ${Number(summary.followUpFailed || 0).toLocaleString('ja-JP')}`;
 }
 
 function listPriceChallengeSummaryText(summary = {}) {

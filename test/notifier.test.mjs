@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildPriceNotification, sendDiscordNotification } from '../src/notifier.mjs';
+import { buildCronSummaryNotification, buildPriceNotification, sendDiscordNotification } from '../src/notifier.mjs';
 
 test('series Discord notification includes average effective price', () => {
   const message = buildPriceNotification(
@@ -29,6 +29,29 @@ test('series Discord notification includes average effective price', () => {
     fields.find((field) => field.name === '対象'),
     { name: '対象', value: '2冊合計\n平均実質 ¥330 / 冊', inline: true }
   );
+});
+
+test('cron summary reports same-run new release price checks', () => {
+  const message = buildCronSummaryNotification({
+    source: 'cron',
+    checked: 1100,
+    remainingDue: 2100,
+    resultErrors: 0,
+    seriesDiscovery: {
+      checked: 50,
+      added: 1,
+      skippedNoRun: 0,
+      deferred: 0,
+      errors: 0,
+      followUpQueued: 1,
+      followUpChecked: 1,
+      followUpSucceeded: 1,
+      followUpFailed: 0
+    }
+  });
+
+  const field = message.embeds[0].fields.find((entry) => entry.name === 'シリーズ探索');
+  assert.match(field.value, /新刊即時確認: 対象 1 \/ 成功 1 \/ 失敗 0/);
 });
 
 test('sendDiscordNotification retries Discord 429 using retry_after', async () => {

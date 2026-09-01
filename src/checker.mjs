@@ -5108,6 +5108,14 @@ export async function runDueChecks(options = {}) {
     const results = [];
     let stoppedByRuntimeLimit = false;
     const processedBookIds = new Set();
+    const newReleaseFollowUpBookIds = new Set();
+    const newReleaseFollowUp = {
+      queued: 0,
+      checked: 0,
+      succeeded: 0,
+      failed: 0,
+      asins: []
+    };
     const cachedSeriesRetryCandidates = [];
     let transientErrorStreak = 0;
     for (let index = 0; index < plan.books.length; index += 1) {
@@ -5178,6 +5186,19 @@ export async function runDueChecks(options = {}) {
         if (checkedSeriesDiscovery) {
           seriesDiscovery = mergeSeriesDiscoverySummaries(seriesDiscovery, checkedSeriesDiscovery);
           for (const key of seriesDiscoveryKeys(checkedSeriesDiscovery)) discoveredSeriesKeys.add(key);
+          const followUp = prioritizeNewlyDiscoveredUnpricedBooks(plan, store, checkedSeriesDiscovery, {
+            currentIndex: index,
+            limit: settings.batchSize,
+            processedBookIds
+          });
+          for (const followUpBook of followUp.queuedBooks) {
+            if (newReleaseFollowUpBookIds.has(followUpBook.id)) continue;
+            newReleaseFollowUpBookIds.add(followUpBook.id);
+            newReleaseFollowUp.queued += 1;
+            if (followUpBook.asin && newReleaseFollowUp.asins.length < 50) {
+              newReleaseFollowUp.asins.push(followUpBook.asin);
+            }
+          }
           if (checkedSeriesDiscovery.stoppedByRuntimeLimit) {
             stoppedByRuntimeLimit = true;
             break;
@@ -5221,6 +5242,12 @@ export async function runDueChecks(options = {}) {
     for (const retry of cachedSeriesRetries) {
       results[retry.index] = retry.result;
     }
+    const newReleaseFollowUpResults = results.filter((entry) =>
+      newReleaseFollowUpBookIds.has(entry?.book?.id)
+    );
+    newReleaseFollowUp.checked = newReleaseFollowUpResults.length;
+    newReleaseFollowUp.succeeded = newReleaseFollowUpResults.filter((entry) => entry.ok).length;
+    newReleaseFollowUp.failed = newReleaseFollowUpResults.length - newReleaseFollowUp.succeeded;
 
     const listPriceChallenge = shouldRunListPriceChallenge(source, options)
       ? await runListPriceChallengeInStore(store, results, {
@@ -5275,6 +5302,7 @@ export async function runDueChecks(options = {}) {
       listPriceChallenge,
       priceIntegrityAudit,
       checkErrorSummary,
+      newReleaseFollowUp,
       seriesNotifications,
       results
     };
@@ -5312,6 +5340,11 @@ export async function runDueChecks(options = {}) {
           lastSeriesDiscoverySkipped: persistedSeriesDiscovery?.skippedNoRun || 0,
           lastSeriesDiscoveryDeferred: persistedSeriesDiscovery?.deferred || 0,
           lastSeriesDiscoveryErrors: persistedSeriesDiscovery?.errors?.length || 0,
+          lastNewReleaseFollowUpQueued: newReleaseFollowUp.queued,
+          lastNewReleaseFollowUpChecked: newReleaseFollowUp.checked,
+          lastNewReleaseFollowUpSucceeded: newReleaseFollowUp.succeeded,
+          lastNewReleaseFollowUpFailed: newReleaseFollowUp.failed,
+          lastNewReleaseFollowUpAsins: newReleaseFollowUp.asins,
           lastListPriceChallengeEligible: listPriceChallenge?.eligible || 0,
           lastListPriceChallengeAttempted: listPriceChallenge?.attempted || 0,
           lastListPriceChallengeUpdated: listPriceChallenge?.updated || 0,
@@ -5842,6 +5875,73 @@ function seriesDiscoveryAdditionsForAutomation(store, seriesDiscovery = null) {
 
   const booksByAsin = new Map((store.books || []).map((book) => [book.asin, book]));
   return compactSeriesDiscoveryAdditions(orderedAsins.map((asin) => booksByAsin.get(asin)).filter(Boolean));
+}
+
+export function prioritizeNewlyDiscoveredUnpricedBooks(plan = {}, store = {}, seriesDiscovery = null, options = {}) {
+  if (!Array.isArray(plan.books) || !Array.isArray(store.books)) {
+    return { queuedBooks: [], droppedBooks: [] };
+  }
+
+  const processedBookIds = options.processedBookIds || new Set();
+  const booksById = new Map(store.books.map((book) => [book.id, book]).filter(([id]) => id));
+  const booksByAsin = new Map(store.books.map((book) => [book.asin, book]).filter(([asin]) => asin));
+  const followUpLimit = clampNumber(
+    options.followUpLimit ?? process.env.SERIES_NEW_RELEASE_FOLLOW_UP_LIMIT,
+    1,
+    50,
+    10
+  );
+  const seenIds = new Set();
+  const candidates = [];
+
+  for (const addition of seriesDiscoveryAdditionsForAutomation(store, seriesDiscovery)) {
+    const book = booksById.get(addition.id) || booksByAsin.get(addition.asin);
+    if (!book?.id || seenIds.has(book.id) || processedBookIds.has?.(book.id)) continue;
+    seenIds.add(book.id);
+    if (hasTrustedCurrentPrice(book)) continue;
+    if (isNonBookSeriesCandidateItem(book)) continue;
+    if (isSupplementalSeriesBookTitle(book.title, book.seriesName)) continue;
+    if (isClearlyDifferentSeriesTitle(book.title, book.seriesName)) continue;
+    candidates.push(book);
+    if (candidates.length >= followUpLimit) break;
+  }
+
+  if (candidates.length === 0) return { queuedBooks: [], droppedBooks: [] };
+
+  const before = [...plan.books];
+  const currentIndexValue = Number(options.currentIndex);
+  const currentIndex = Number.isFinite(currentIndexValue)
+    ? Math.max(-1, Math.min(before.length - 1, Math.trunc(currentIndexValue)))
+    : -1;
+  const insertionIndex = currentIndex + 1;
+  const prefix = before.slice(0, insertionIndex);
+  const prefixIds = new Set(prefix.map((book) => book.id).filter(Boolean));
+  const prioritized = candidates.filter((book) => !prefixIds.has(book.id));
+  const prioritizedIds = new Set(prioritized.map((book) => book.id));
+  const remaining = before.slice(insertionIndex).filter((book) => !prioritizedIds.has(book.id));
+  const configuredLimit = Number(options.limit);
+  const baseLimit = Number.isFinite(configuredLimit) && configuredLimit > 0
+    ? Math.max(1, Math.trunc(configuredLimit))
+    : Math.max(before.length, prioritized.length);
+  const overflowLimit = clampNumber(
+    options.overflowLimit ?? process.env.SERIES_NEW_RELEASE_FOLLOW_UP_OVERFLOW_LIMIT,
+    0,
+    10,
+    3
+  );
+  const maxLength = Math.max(
+    baseLimit,
+    Math.min(baseLimit + overflowLimit, prefix.length + prioritized.length)
+  );
+  const next = [...prefix, ...prioritized, ...remaining].slice(0, maxLength);
+  const nextIds = new Set(next.map((book) => book.id).filter(Boolean));
+  const queuedBooks = prioritized.filter((book) => nextIds.has(book.id));
+  const droppedBooks = before.filter((book) => book?.id && !nextIds.has(book.id));
+
+  plan.books.splice(0, plan.books.length, ...next);
+  const growth = Math.max(0, next.length - before.length);
+  plan.dueSelected = Math.min(next.length, Math.max(0, Number(plan.dueSelected || 0)) + growth);
+  return { queuedBooks, droppedBooks };
 }
 
 function compactSeriesDiscoveryAdditions(books = []) {
@@ -6926,12 +7026,7 @@ function applyCheckResultToStore(store, bookRef, snapshotResult, now, options = 
   }
 
   const snapshot = snapshotResult.snapshot;
-  book.title = preferSnapshotText(snapshot.title, book.title);
-  book.author = snapshot.author || book.author;
-  book.publisher = snapshot.publisher || book.publisher;
-  book.imageUrl = snapshot.imageUrl || book.imageUrl;
-  book.imageSource = snapshot.imageUrl ? snapshot.provider || book.imageSource || '' : book.imageSource || '';
-  book.amazonUrl = snapshot.amazonUrl || book.amazonUrl;
+  applyMetadataSnapshotToBook(book, snapshot);
   book.previousEffectivePrice = previousEffectivePrice;
   book.currentPrice = snapshot.currentPrice;
   book.currentPoints = snapshot.currentPoints;
@@ -7184,7 +7279,11 @@ function cronSummaryPayload(result, context = {}) {
           skippedCompleted: result.seriesDiscovery.skippedCompleted || 0,
           deferred: result.seriesDiscovery.deferred || 0,
           markedNoRun: result.seriesDiscovery.markedNoRun || 0,
-          errors: result.seriesDiscovery.errors?.length || 0
+          errors: result.seriesDiscovery.errors?.length || 0,
+          followUpQueued: result.newReleaseFollowUp?.queued || 0,
+          followUpChecked: result.newReleaseFollowUp?.checked || 0,
+          followUpSucceeded: result.newReleaseFollowUp?.succeeded || 0,
+          followUpFailed: result.newReleaseFollowUp?.failed || 0
         }
       : null,
     listPriceChallenge: result.listPriceChallenge
@@ -7477,7 +7576,7 @@ async function settleSnapshotWithUrl(asin, url, book = {}) {
   }
 }
 
-function applyMetadataSnapshotToBook(book, snapshot) {
+export function applyMetadataSnapshotToBook(book, snapshot) {
   if (!book || !snapshot) return;
   book.title = preferSnapshotText(snapshot.title, book.title);
   book.author = snapshot.author || book.author;
@@ -7485,6 +7584,7 @@ function applyMetadataSnapshotToBook(book, snapshot) {
   book.imageUrl = snapshot.imageUrl || book.imageUrl;
   book.imageSource = snapshot.imageUrl ? snapshot.provider || book.imageSource || '' : book.imageSource || '';
   book.amazonUrl = snapshot.amazonUrl || book.amazonUrl;
+  book.releaseDate = snapshot.releaseDate || book.releaseDate || '';
   if (!book.provider || book.provider === 'pending') book.provider = snapshot.provider || book.provider;
   repairStoredBookTitle(book);
 }

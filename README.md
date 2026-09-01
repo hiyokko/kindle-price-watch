@@ -157,7 +157,7 @@ node scripts/github-actions.mjs jobs <run-id>
 node scripts/github-actions.mjs logs <run-id> --grep 'timeout|SIGTERM|CHECK_HARD_TIMEOUT|error'
 ```
 
-定期実行時は、登録済みシリーズのAmazonシリーズページも巡回し、新しい巻が見つかった場合は自動で追加します。明示的に完結が確認できたシリーズには完結フラグと新刊探索の「実行なし」状態を保存し、次回以降の新刊探索から除外します。未探索のシリーズは「未実行」、完結などで今後探索しないシリーズは「実行なし」、Amazon側の一時的なシリーズ一覧取得失敗は「保留」として画面上でも区別します。`SERIES_DISCOVERY_BATCH_SIZE` を設定すると、1回の実行で探索するシリーズ数を調整できます。`SERIES_DISCOVERY_INTERVAL_HOURS` の既定値は24時間です。
+定期実行時は、登録済みシリーズのAmazonシリーズページも巡回し、新しい巻が見つかった場合は自動で追加します。価格チェック開始後の再探索で見つかった新刊が未取得だった場合も、残りのチェック計画へ即時に差し込み、同じ実行内で価格と発売予定日を再取得します。通常は既存の処理上限内で未処理候補と入れ替え、探索が最終盤だった場合だけ最大 `SERIES_NEW_RELEASE_FOLLOW_UP_OVERFLOW_LIMIT` 冊（既定3冊）の超過を許容します。1実行の即時確認対象は `SERIES_NEW_RELEASE_FOLLOW_UP_LIMIT`（既定10冊）までです。明示的に完結が確認できたシリーズには完結フラグと新刊探索の「実行なし」状態を保存し、次回以降の新刊探索から除外します。未探索のシリーズは「未実行」、完結などで今後探索しないシリーズは「実行なし」、Amazon側の一時的なシリーズ一覧取得失敗は「保留」として画面上でも区別します。`SERIES_DISCOVERY_BATCH_SIZE` を設定すると、1回の実行で探索するシリーズ数を調整できます。`SERIES_DISCOVERY_INTERVAL_HOURS` の既定値は24時間です。
 
 単巻として登録された本も定期実行ごとに既定2冊ずつ再監査します。Amazonで複数巻のシリーズが確認できた場合や、登録済み単巻同士の巻数表記から同一シリーズと安全に判定できた場合は、一括保存の中でシリーズへ変換します。確認済みの単巻は30日後、取得エラーは24時間後に再監査します。件数は `SINGLE_BOOK_SERIES_AUDIT_BATCH_SIZE`、再監査間隔は `SINGLE_BOOK_SERIES_AUDIT_INTERVAL_DAYS`、エラー再試行間隔は `SINGLE_BOOK_SERIES_AUDIT_ERROR_RETRY_HOURS` で調整できます。全単巻の手動棚卸しは `npm run audit:single-series -- --all`、確認後の一括反映は末尾に `--apply` を付けて実行します。
 

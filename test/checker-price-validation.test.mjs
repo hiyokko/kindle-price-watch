@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  applyMetadataSnapshotToBook,
   auditSingleBookSeriesClassificationsInStore,
   canUseCachedSeriesPriceSnapshotForBook,
   canonicalSeriesSourceAsin,
@@ -20,6 +21,7 @@ import {
   observedListPriceCandidateForBook,
   observedPeerListPriceCandidateForBook,
   priceIntegrityIssueForBook,
+  prioritizeNewlyDiscoveredUnpricedBooks,
   repairStorePriceState,
   selectListPriceChallengeCandidates,
   seriesKeyForSeries,
@@ -590,6 +592,118 @@ test('unpriced series additions use a longer snapshot timeout in automation', ()
     if (previous == null) delete process.env.UNRESOLVED_SERIES_FETCH_TIMEOUT_MS;
     else process.env.UNRESOLVED_SERIES_FETCH_TIMEOUT_MS = previous;
   }
+});
+
+test('new unpriced volumes discovered during a run are moved to the next check slot', () => {
+  const checked = { id: 'checked', asin: 'B000000001', title: '既存 1', currentPrice: 700, effectivePrice: 693 };
+  const oldTwo = { id: 'old-2', asin: 'B000000002', title: '既存 2', currentPrice: 700, effectivePrice: 693 };
+  const oldThree = { id: 'old-3', asin: 'B000000003', title: '既存 3', currentPrice: 700, effectivePrice: 693 };
+  const newRelease = {
+    id: 'new-release',
+    asin: 'B0HHC3L12Y',
+    title: 'ケントゥリア 10 (ジャンプコミックスDIGITAL)',
+    seriesName: 'ケントゥリア',
+    seriesKey: 'series:asin:B0D66PP999',
+    volume: 10,
+    currentPrice: null,
+    effectivePrice: null,
+    provider: 'series_diff_pending',
+    lastError: 'シリーズ価格補完: HTTP取得がタイムアウトしました'
+  };
+  const plan = { books: [checked, oldTwo, oldThree], dueSelected: 3 };
+  const store = { books: [...plan.books, newRelease] };
+  const seriesDiscovery = {
+    results: [
+      {
+        seriesKey: newRelease.seriesKey,
+        additions: [{ id: newRelease.id, asin: newRelease.asin }]
+      }
+    ]
+  };
+
+  const result = prioritizeNewlyDiscoveredUnpricedBooks(plan, store, seriesDiscovery, {
+    currentIndex: 0,
+    limit: 3,
+    overflowLimit: 0,
+    processedBookIds: new Set([checked.id])
+  });
+
+  assert.deepEqual(plan.books.map((book) => book.id), ['checked', 'new-release', 'old-2']);
+  assert.deepEqual(result.queuedBooks.map((book) => book.id), ['new-release']);
+  assert.deepEqual(result.droppedBooks.map((book) => book.id), ['old-3']);
+  assert.equal(plan.dueSelected, 3);
+});
+
+test('new release follow-up allows bounded overflow when discovery happens at the batch tail', () => {
+  const checked = { id: 'checked', asin: 'B000000001', title: '既存 1', currentPrice: 700, effectivePrice: 693 };
+  const newRelease = {
+    id: 'new-release',
+    asin: 'B0HHC3L12Y',
+    title: 'ケントゥリア 10 (ジャンプコミックスDIGITAL)',
+    seriesName: 'ケントゥリア',
+    seriesKey: 'series:asin:B0D66PP999',
+    volume: 10,
+    provider: 'series_diff_pending',
+    lastError: '価格を取得できませんでした'
+  };
+  const plan = { books: [checked], dueSelected: 1 };
+  const store = { books: [checked, newRelease] };
+  const seriesDiscovery = {
+    results: [{ additions: [{ id: newRelease.id, asin: newRelease.asin }] }]
+  };
+
+  const result = prioritizeNewlyDiscoveredUnpricedBooks(plan, store, seriesDiscovery, {
+    currentIndex: 0,
+    limit: 1,
+    overflowLimit: 1,
+    processedBookIds: new Set([checked.id])
+  });
+
+  assert.deepEqual(plan.books.map((book) => book.id), ['checked', 'new-release']);
+  assert.equal(result.queuedBooks.length, 1);
+  assert.equal(plan.dueSelected, 2);
+});
+
+test('trusted newly discovered prices are not checked twice in the same run', () => {
+  const checked = { id: 'checked', asin: 'B000000001', title: '既存 1', currentPrice: 700, effectivePrice: 693 };
+  const pricedRelease = {
+    id: 'priced-release',
+    asin: 'B0HHC3L12Y',
+    title: 'ケントゥリア 10 (ジャンプコミックスDIGITAL)',
+    seriesName: 'ケントゥリア',
+    volume: 10,
+    currentPrice: 770,
+    currentPoints: 8,
+    effectivePrice: 762,
+    provider: 'amazon_html'
+  };
+  const plan = { books: [checked], dueSelected: 1 };
+  const result = prioritizeNewlyDiscoveredUnpricedBooks(
+    plan,
+    { books: [checked, pricedRelease] },
+    { results: [{ additions: [{ id: pricedRelease.id, asin: pricedRelease.asin }] }] },
+    { currentIndex: 0, limit: 1, processedBookIds: new Set([checked.id]) }
+  );
+
+  assert.deepEqual(plan.books.map((book) => book.id), ['checked']);
+  assert.equal(result.queuedBooks.length, 0);
+});
+
+test('book checks retain the release date found on preorder pages', () => {
+  const book = {
+    title: 'ケントゥリア 10',
+    provider: 'series_diff_pending',
+    releaseDate: ''
+  };
+
+  applyMetadataSnapshotToBook(book, {
+    title: 'ケントゥリア 10 (ジャンプコミックスDIGITAL)',
+    provider: 'amazon_html',
+    releaseDate: '2026-10-02'
+  });
+
+  assert.equal(book.releaseDate, '2026-10-02');
+  assert.equal(book.provider, 'series_diff_pending');
 });
 
 test('validated future release series volumes are kept as preorder books', () => {
