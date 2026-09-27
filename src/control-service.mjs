@@ -11,6 +11,9 @@ import {
 } from './webhook-config.mjs';
 import { readWebhookStore, writeWebhookStore } from './webhook-store.mjs';
 
+export const NOTIFICATION_THRESHOLD_OPTIONS = Object.freeze([0, 10, 20, 30, 50, 60, 70, 80, 90]);
+const DEFAULT_NOTIFICATION_THRESHOLD = 80;
+
 export async function getSettings() {
   const store = await readStore();
   return mergedRuntimeSettings(store.settings);
@@ -152,12 +155,25 @@ export async function saveSettings(settings) {
 
 export function mergedRuntimeSettings(settings = {}) {
   return {
-    notificationThreshold: clampNumber(settings.notificationThreshold, 0, 95, 10),
+    notificationThreshold: normalizeNotificationThreshold(settings.notificationThreshold),
     batchSize: floorNumber(settings.batchSize, 1, 50),
     listPriceChallengeBatchSize: clampNumber(settings.listPriceChallengeBatchSize, 0, 50, 50),
     notifyOnPriceDrop: settings.notifyOnPriceDrop !== false,
     notifyOnBestEver: settings.notifyOnBestEver !== false
   };
+}
+
+function normalizeNotificationThreshold(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return DEFAULT_NOTIFICATION_THRESHOLD;
+
+  return NOTIFICATION_THRESHOLD_OPTIONS.reduce((nearest, option) => {
+    const distance = Math.abs(option - number);
+    const nearestDistance = Math.abs(nearest - number);
+    return distance < nearestDistance || (distance === nearestDistance && option > nearest)
+      ? option
+      : nearest;
+  }, NOTIFICATION_THRESHOLD_OPTIONS[0]);
 }
 
 export async function sendTestNotification() {

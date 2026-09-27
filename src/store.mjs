@@ -25,7 +25,7 @@ const defaultStore = {
   version: 1,
   storeRevision: 0,
   settings: {
-    notificationThreshold: 10,
+    notificationThreshold: 80,
     batchSize: 50,
     listPriceChallengeBatchSize: 50,
     notifyOnPriceDrop: true,
