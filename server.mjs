@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { loadEnv, readNumberEnv } from './src/env.mjs';
 import { buildBodyResponse } from './src/http-response.mjs';
 import { registerStorePayloadSync } from './src/store-payload-sync.mjs';
-import { assertSecureRuntime, runtimeSecurityStatus } from './src/runtime-security.mjs';
+import { protectManagedRuntime, runtimeSecurityStatus } from './src/runtime-security.mjs';
 import {
   addBooksPayload,
   bootstrapPayloadResponse,
@@ -28,6 +28,7 @@ import {
 
 // Keep runtime diagnostics available even while a managed runtime update is pending.
 loadEnv({ checkRuntime: false });
+protectManagedRuntime();
 registerStorePayloadSync();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -62,7 +63,6 @@ const server = createServer(async (req, res) => {
         return;
       }
 
-      assertSecureRuntime();
       await handleApi(req, res, url);
       return;
     }

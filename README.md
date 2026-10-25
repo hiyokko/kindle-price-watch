@@ -1,6 +1,8 @@
 # Kindle Price Watch
 
-Node.js 24.22.1以上の24.xを使用します（`.node-version`）。`npm run check:runtime` でCVE-2026-111497の修正済みランタイムか確認できます。GitHub Actionsはこの最低バージョンを満たす最新の24.xを取得します。Vercelは24.xのパッチ更新を管理するため、デプロイ後は認証付き `GET /api/runtime` の `securityUpdateApplied` と実バージョンを確認します。未修正ランタイムでは外部通信を伴うAPIと運用スクリプトを停止します。PHP/Composerは使用していません。
+Node.js 24.22.1以上の24.xを使用します（`.node-version`）。`npm run check:runtime` でCVE-2026-111497の修正済みランタイムか確認できます。GitHub Actionsはこの最低バージョンを満たす最新の24.xを取得し、未修正ランタイムでは運用スクリプトを停止します。PHP/Composerは使用していません。
+
+Vercelは24.xのパッチ更新を管理します。認証付き `GET /api/runtime` の `nodeVersion` / `securityUpdateApplied` で実測してください。管理ランタイムが未更新の間は、起動時にNode.jsのBrotli解凍APIを無効化し、fetchのAccept-Encodingをgzip/deflateに限定します。要求していないbrレスポンスもネイティブ解凍前に拒否します。この状態は `brotliDecoderDisabled: true` / `protected: true` であり、ランタイム本体の更新完了とは区別します。Vercel側が更新されると、次回起動から自動的に修正済みランタイムを使用します。
 
 根拠: [Node.js公式セキュリティ更新](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases)、[Vercel公式対策案内](https://vercel.com/kb/bulletin/node-js-security-advisory)。Node.jsは修正をバックポートするため、`process.versions.brotli` の表示だけで未修正と判断せず、公式修正済みNode.jsバージョンで判定します。npm依存関係の監査は `npm audit` で別途確認します。
 
