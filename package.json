@@ -12,6 +12,7 @@
     "audit:series-identity": "node scripts/audit-series-identity.mjs",
     "audit:single-series": "node scripts/audit-single-book-series.mjs",
     "test": "node --test",
+    "check:runtime": "node scripts/check-runtime.mjs",
     "github:actions": "node scripts/github-actions.mjs",
     "github:actions:token": "node scripts/save-github-actions-token.mjs",
     "deploy:production": "node scripts/deploy-production.mjs"
@@ -20,9 +21,12 @@
     "@vercel/blob": "^2.8.0"
   },
   "overrides": {
-    "undici": "^6.28.0"
+    "undici": "^6.29.1",
+    "@vercel/cli-config": {
+      "zod": "^4.6.6"
+    }
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=24.22.1 <25"
   }
 }

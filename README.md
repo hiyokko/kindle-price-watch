@@ -1,5 +1,9 @@
 # Kindle Price Watch
 
+Node.js 24.22.1以上の24.xを使用します（`.node-version`）。`npm run check:runtime` でCVE-2026-111497の修正済みランタイムか確認できます。GitHub Actionsはこの最低バージョンを満たす最新の24.xを取得します。Vercelは24.xのパッチ更新を管理するため、デプロイ後は認証付き `GET /api/runtime` の `securityUpdateApplied` と実バージョンを確認します。未修正ランタイムでは外部通信を伴うAPIと運用スクリプトを停止します。PHP/Composerは使用していません。
+
+根拠: [Node.js公式セキュリティ更新](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases)、[Vercel公式対策案内](https://vercel.com/kb/bulletin/node-js-security-advisory)。Node.jsは修正をバックポートするため、`process.versions.brotli` の表示だけで未修正と判断せず、公式修正済みNode.jsバージョンで判定します。npm依存関係の監査は `npm audit` で別途確認します。
+
 登録したKindle本を定期チェックし、値下げや過去最安をDiscordへ通知する自前用ダッシュボードです。ほしい物リスト連携はありません。
 
 ## ローカルセットアップ

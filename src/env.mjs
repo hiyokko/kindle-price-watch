@@ -1,7 +1,9 @@
 import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
+import { assertSecureRuntime } from './runtime-security.mjs';
 
-export function loadEnv() {
+export function loadEnv(options = {}) {
+  if (options.checkRuntime !== false) assertSecureRuntime();
   const envPath = path.join(process.cwd(), '.env');
   loadEnvFile(envPath);
   const runtimeEnvPath = String(process.env.KPW_RUNTIME_ENV_FILE || '').trim();
