@@ -6,6 +6,22 @@ function candidateAsins(candidate = {}) {
   );
 }
 
+
+export function notificationSeriesScope(book) {
+  if (!book || (book.importMode !== 'kindle_series' && !book.seriesKey)) return null;
+
+  const seriesKey = String(book.seriesKey || '').trim();
+  const sourceUrl = String(book.sourceUrl || '').trim();
+  const key = seriesKey || (sourceUrl ? `series:url:${sourceUrl}` : '');
+  if (!key) return null;
+
+  return { key, seriesKey, sourceUrl };
+}
+
+export function isSingleBookRecord(book = {}) {
+  return (book.importMode || 'single') === 'single' && !book.seriesKey;
+}
+
 export function normalizeSeriesIdentityName(value = '') {
   return String(value || '')
     .normalize('NFKC')

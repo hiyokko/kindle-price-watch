@@ -11,6 +11,7 @@ import {
   addBooksPayload,
   bootstrapPayloadResponse,
   checkBookPayload,
+  checkPlanPayload,
   deleteBookPayload,
   deleteBooksPayload,
   deleteSeriesPayload,
@@ -88,6 +89,11 @@ server.listen(port, () => {
 async function handleApi(req, res, url) {
   const method = req.method || 'GET';
   const pathParts = url.pathname.split('/').filter(Boolean);
+
+  if (method === 'GET' && url.pathname === '/api/check-plan') {
+    sendJson(res, 200, await checkPlanPayload());
+    return;
+  }
 
   if (method === 'GET' && url.pathname === '/api/bootstrap') {
     sendResponse(res, await bootstrapPayloadResponse(req));

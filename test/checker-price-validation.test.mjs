@@ -664,6 +664,26 @@ test('new release follow-up allows bounded overflow when discovery happens at th
   assert.equal(plan.dueSelected, 2);
 });
 
+test('new release follow-up preserves the reserved overdue prefix', () => {
+  const books = [
+    { id: 'done', asin: 'B000000001', currentPrice: 700 },
+    { id: 'oldest', asin: 'B000000002', currentPrice: 700 },
+    { id: 'older', asin: 'B000000003', currentPrice: 700 },
+    { id: 'regular', asin: 'B000000004', currentPrice: 700 }
+  ];
+  const addition = {
+    id: 'new', asin: 'B0HHC3L12Y', title: 'ケントゥリア 10',
+    seriesName: 'ケントゥリア', seriesKey: 'series:asin:B0D66PP999',
+    currentPrice: null, provider: 'series_diff_pending'
+  };
+  const plan = { books, dueSelected: 4, overdueBookIds: new Set(['done', 'oldest', 'older']) };
+  const result = prioritizeNewlyDiscoveredUnpricedBooks(plan, { books: [...books, addition] }, {
+    results: [{ additions: [addition] }]
+  }, { currentIndex: 0, limit: 4, overflowLimit: 0, processedBookIds: new Set(['done']) });
+  assert.deepEqual(plan.books.map((book) => book.id), ['done', 'oldest', 'older', 'new']);
+  assert.deepEqual(result.droppedBooks.map((book) => book.id), ['regular']);
+});
+
 test('trusted newly discovered prices are not checked twice in the same run', () => {
   const checked = { id: 'checked', asin: 'B000000001', title: '既存 1', currentPrice: 700, effectivePrice: 693 };
   const pricedRelease = {

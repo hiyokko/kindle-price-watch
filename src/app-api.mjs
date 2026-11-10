@@ -4,6 +4,7 @@ import {
   getDiscordWebhooks,
   getBookImportQueue,
   getSettingsSummary,
+  mergedRuntimeSettings,
   saveDiscordWebhooks,
   saveBookImportQueue,
   saveSettings,
@@ -11,17 +12,24 @@ import {
   settingsSummaryFromStore
 } from './control-service.mjs';
 import { bookListPayload, bootstrapPayload, compactBooksPayload } from './book-list-payload.mjs';
+import { checkPlanPreview } from './check-planner.mjs';
 import { buildBodyResponse, buildPrecompressedGzipResponse, requestAcceptsEncoding } from './http-response.mjs';
 import {
   hasBlobConfig,
   readBlobBootstrapPayload,
   readBlobControlPayload,
   readStoreHeadMetadata,
+  readStore,
   writeBlobBootstrapPayload,
   writeBlobControlPayload
 } from './store.mjs';
 
 let checkerModulePromise;
+
+export async function checkPlanPayload() {
+  const store = await readStore();
+  return checkPlanPreview(store, mergedRuntimeSettings(store.settings));
+}
 
 export async function listBooksPayload() {
   const { listBooks } = await checkerModule();

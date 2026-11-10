@@ -1,3 +1,16 @@
+import { cloneBulkStoreSnapshot, mergeBulkCheckStoreForPersist } from './bulk-store-merge.mjs';
+import { planDueChecks, countDueBooks } from './check-planner.mjs';
+import {
+  isPermanentSnapshotError, isTransientSnapshotError, isBlockingSnapshotError,
+  isUnvalidatedSeriesPriceProvider, isUnverifiedFreeSeriesPriceProvider,
+  isSeriesDerivedPriceProvider, seriesAggregateFreshAfter, hasTrustedCurrentPrice,
+  needsDiscountExpiryRecheck, isCheckRetryCoolingDown
+} from './check-policy.mjs';
+import { notificationSeriesScope, isSingleBookRecord } from './series-identity.mjs';
+
+export { mergeBulkCheckStoreForPersist } from './bulk-store-merge.mjs';
+export { needsDiscountExpiryRecheck, isCheckRetryCoolingDown } from './check-policy.mjs';
+
 import crypto from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -63,23 +76,12 @@ export {
   resolveCronScheduleIntent
 } from './scheduler.mjs';
 
-const UNVALIDATED_SERIES_PRICE_PROVIDERS = new Set([
-  'amazon_series_source_price',
-  'amazon_series_unit_price',
-  'efox_series',
-  'external_series',
-  'kinpome_series',
-  'kintyaku_series',
-  'sale_bon_series'
-]);
 const SINGLE_EPISODE_SERIES_PRICE_MAX = 250;
 const SUSPICIOUS_BULK_SERIES_COUNT_MIN = 20;
 const AMAZON_HTML_TINY_PRICE_MAX = 10;
-const DISCOUNT_RECHECK_DEFAULT_HOURS = 24;
 const SINGLE_SERIES_AUDIT_DEFAULT_BATCH_SIZE = 2;
 const SINGLE_SERIES_AUDIT_DEFAULT_INTERVAL_DAYS = 30;
 const SINGLE_SERIES_AUDIT_DEFAULT_ERROR_RETRY_HOURS = 24;
-const DISCOUNT_RECHECK_RATIO = 0.7;
 const PRICE_INTEGRITY_SERIES_OUTLIER_RATIO = 0.55;
 const PRICE_INTEGRITY_SERIES_PEER_DISCOUNT_RATIO = 0.35;
 const PRICE_INTEGRITY_SERIES_PEER_STALE_RATIO = 0.1;
@@ -2253,24 +2255,12 @@ function isTrustedSeriesOverrideSnapshotError(error) {
   return /シリーズ一括取得済み価格/.test(String(error || ''));
 }
 
-function isPermanentSnapshotError(error) {
-  return /^Kindle版(?:ASIN|商品)ではありません/.test(String(error || ''));
-}
-
 function shouldStoreSnapshotError(book, error) {
   if (!error) return false;
   if (isPermanentSnapshotError(error) || isSuspiciousSnapshotError(error)) return true;
   if (isBlockingSnapshotError(error)) return true;
   if (book.currentPrice == null) return true;
   return !isTransientSnapshotError(error);
-}
-
-function isTransientSnapshotError(error) {
-  return /(?:価格を取得できませんでした|Amazonにブロック|HTTP\s*(?:403|429|500|503)|fetch failed|タイムアウト|reader:|商品ページではなくエラーページ)/i.test(String(error || ''));
-}
-
-function isBlockingSnapshotError(error) {
-  return /(?:HTTP\s*(?:403|429|503)|Too Many Requests|Forbidden|ServiceUnavailable|サービスが利用できません|Amazonにブロック|captcha|robot check|自動化されたアクセス|ショッピングを続けてください)/i.test(String(error || ''));
 }
 
 function repairSuspiciousPriceState(book, store, options = {}) {
@@ -3580,10 +3570,6 @@ function singleBookSeriesAuditCandidates(books = [], options = {}) {
     });
 }
 
-function isSingleBookRecord(book = {}) {
-  return (book.importMode || 'single') === 'single' && !book.seriesKey;
-}
-
 function isSingleBookSeriesAuditDue(book, nowMs, options = {}) {
   const auditedAt = timestampMs(book.singleSeriesAuditedAt);
   if (auditedAt <= 0) return true;
@@ -3900,18 +3886,6 @@ function isUnvalidatedSeriesPriceHistoryEntry(entry) {
   );
 }
 
-function isUnvalidatedSeriesPriceProvider(provider) {
-  return UNVALIDATED_SERIES_PRICE_PROVIDERS.has(String(provider || '').toLowerCase());
-}
-
-function isUnverifiedFreeSeriesPriceProvider(provider, currentPrice) {
-  const price = Number(currentPrice);
-  if (!Number.isFinite(price) || price !== 0) return false;
-  const normalized = String(provider || '').toLowerCase();
-  if (['amazon_html', 'amazon_reader', 'listasin', 'keepa'].includes(normalized)) return false;
-  return isSeriesDerivedPriceProvider(normalized);
-}
-
 function suspiciousStoredCurrentPriceReason(book) {
   const listPrice = trustedListPriceFor(book.currentPrice, book.listPrice, book.provider);
   return suspiciousPriceReason({
@@ -4102,11 +4076,6 @@ function shouldIgnoreListPriceForProvider(currentPrice, listPrice, provider) {
 function isObservedListPriceProvider(provider) {
   const normalized = String(provider || '').toLowerCase();
   return normalized === OBSERVED_LIST_PRICE_PROVIDER || normalized === OBSERVED_PEER_LIST_PRICE_PROVIDER;
-}
-
-function isSeriesDerivedPriceProvider(provider) {
-  const normalized = String(provider || '').toLowerCase();
-  return normalized.includes('_series') || normalized === 'amazon_series_bulk' || normalized === 'amazon_series_reader';
 }
 
 export function suspiciousPriceReason({
@@ -5288,6 +5257,11 @@ export async function runDueChecks(options = {}) {
     const result = {
       checked: results.length,
       remainingDue,
+      checkPlan: {
+        ...plan.summary,
+        overdueChecked: results.filter((entry) => plan.overdueBookIds.has(entry?.book?.id)).length,
+        overdueSucceeded: results.filter((entry) => entry.ok && plan.overdueBookIds.has(entry?.book?.id)).length
+      },
       cursor: store.checkCursor,
       overlapped: Math.max(0, results.length - plan.dueSelected),
       stoppedByRuntimeLimit,
@@ -5913,7 +5887,10 @@ export function prioritizeNewlyDiscoveredUnpricedBooks(plan = {}, store = {}, se
   const currentIndex = Number.isFinite(currentIndexValue)
     ? Math.max(-1, Math.min(before.length - 1, Math.trunc(currentIndexValue)))
     : -1;
-  const insertionIndex = currentIndex + 1;
+  let insertionIndex = currentIndex + 1;
+  while (insertionIndex < before.length && plan.overdueBookIds?.has(before[insertionIndex]?.id)) {
+    insertionIndex += 1;
+  }
   const prefix = before.slice(0, insertionIndex);
   const prefixIds = new Set(prefix.map((book) => book.id).filter(Boolean));
   const prioritized = candidates.filter((book) => !prefixIds.has(book.id));
@@ -8118,17 +8095,6 @@ function seriesHistorySummaries(store) {
   return summaries;
 }
 
-function notificationSeriesScope(book) {
-  if (!book || (book.importMode !== 'kindle_series' && !book.seriesKey)) return null;
-
-  const seriesKey = String(book.seriesKey || '').trim();
-  const sourceUrl = String(book.sourceUrl || '').trim();
-  const key = seriesKey || (sourceUrl ? `series:url:${sourceUrl}` : '');
-  if (!key) return null;
-
-  return { key, seriesKey, sourceUrl };
-}
-
 export function seriesAggregateSnapshot(store, scope, options = {}) {
   const books = seriesBooksForNotification(store, scope);
   const representativeBook = books[0] || null;
@@ -8192,35 +8158,6 @@ export function seriesAggregateSnapshot(store, scope, options = {}) {
 
 export function isActiveSeriesAggregateSnapshot(snapshot) {
   return Boolean(snapshot && snapshot.bookCount > 0 && snapshot.representativeBook);
-}
-
-function seriesAggregateFreshAfter(now = Date.now()) {
-  const timestamp = Number(now);
-  const base = Number.isFinite(timestamp) ? timestamp : Date.now();
-  return new Date(recentJstExecutionBoundaryMs(base, seriesAggregateObservationRuns()));
-}
-
-function recentJstExecutionBoundaryMs(now, runCount = 5) {
-  const count = floorNumber(runCount, 1, 5);
-  const dayMs = 24 * 60 * 60 * 1000;
-  const times = scheduledExecutionTimes().sort(
-    (left, right) => left.hour * 60 + left.minute - (right.hour * 60 + right.minute)
-  );
-  const boundaries = [];
-
-  for (let dayOffset = 0; boundaries.length < count && dayOffset <= count; dayOffset += 1) {
-    for (const time of [...times].reverse()) {
-      const boundary = todayJstExecutionBoundaryMs(now, time) - dayOffset * dayMs;
-      if (boundary <= now) boundaries.push(boundary);
-      if (boundaries.length >= count) break;
-    }
-  }
-
-  return boundaries[count - 1] ?? latestJstExecutionBoundaryMs(now);
-}
-
-function seriesAggregateObservationRuns() {
-  return floorNumber(process.env.SERIES_TOTAL_OBSERVATION_RUNS, 1, 5);
 }
 
 function appendSeriesPriceHistoryEntry(store, snapshot, checkedAt) {
@@ -8497,238 +8434,6 @@ function notificationMatchesEvent(item, bookId, event) {
   return item.bookId === bookId;
 }
 
-function planDueChecks(store, settings, now, options = {}) {
-  const rotatedBooks = rotateAfterCursor(store.books, store.checkCursor?.lastBookId);
-  const priorityContext = checkPriorityContext(rotatedBooks, now, settings);
-  if (options.forceAll) {
-    const selected = orderCheckCandidates(rotatedBooks, priorityContext, now).slice(0, settings.batchSize);
-    return { books: selected, dueSelected: selected.length };
-  }
-
-  const dueBefore = Number.isFinite(options.dueCutoffMs)
-    ? options.dueCutoffMs
-    : scheduledDueCutoffMs(now);
-  const dueBooks = rotatedBooks.filter((book) => isAutoCheckCandidate(book, dueBefore) && !isCheckRetryCoolingDown(book, now));
-  const orderedDueBooks = orderCheckCandidates(dueBooks, priorityContext, now);
-  const selected = selectCheckCandidatesWithSeriesCompletion(orderedDueBooks, rotatedBooks, priorityContext, now, settings.batchSize);
-  const dueSelected = selected.filter((book) => isBookDue(book, dueBefore)).length;
-
-  if (dueBooks.length > 0 && selected.length < settings.batchSize) {
-    const selectedIds = new Set(selected.map((book) => book.id));
-    const fillerBooks = orderCheckCandidates(
-      rotatedBooks.filter((book) => !isCheckRetryCoolingDown(book, now)),
-      priorityContext,
-      now
-    );
-    for (const book of fillerBooks) {
-      if (selected.length >= settings.batchSize) break;
-      if (selectedIds.has(book.id) || isAutoCheckCandidate(book, dueBefore)) continue;
-      selected.push(book);
-      selectedIds.add(book.id);
-    }
-  }
-
-  return { books: selected, dueSelected };
-}
-
-function selectCheckCandidatesWithSeriesCompletion(orderedBooks, allBooks, context, now, limit) {
-  const selected = [];
-  const selectedIds = new Set();
-
-  for (const book of orderedBooks) {
-    if (selected.length >= limit) break;
-    if (selectedIds.has(book.id)) continue;
-
-    selected.push(book);
-    selectedIds.add(book.id);
-
-    const completionBooks = seriesCompletionBooksForPlan(book, allBooks, context, now, selectedIds);
-    if (completionBooks.length === 0 || completionBooks.length > limit - selected.length) continue;
-
-    for (const completionBook of completionBooks) {
-      selected.push(completionBook);
-      selectedIds.add(completionBook.id);
-    }
-  }
-
-  return selected;
-}
-
-function seriesCompletionBooksForPlan(book, allBooks, context, now, selectedIds) {
-  const scope = notificationSeriesScope(book);
-  if (!scope) return [];
-  const group = context.series.get(scope.key);
-  if (!group || group.aggregateMissing <= 0) return [];
-
-  const candidates = allBooks.filter((candidate) => {
-    if (selectedIds.has(candidate.id)) return false;
-    const candidateScope = notificationSeriesScope(candidate);
-    if (!candidateScope || candidateScope.key !== scope.key) return false;
-    if (isCheckRetryCoolingDown(candidate, now)) return false;
-    return needsSeriesAggregateRefresh(candidate, context.seriesFreshAfterMs);
-  });
-
-  return orderCheckCandidates(candidates, context, now);
-}
-
-function checkPriorityContext(books, now, settings = {}) {
-  const series = new Map();
-  const rotatedIndex = new Map();
-  const seriesFreshAfterMs = seriesAggregateFreshAfter(now).getTime();
-
-  for (const [index, book] of books.entries()) {
-    rotatedIndex.set(book.id, index);
-    const scope = notificationSeriesScope(book);
-    if (!scope) continue;
-
-    const key = scope.key;
-    if (!series.has(key)) {
-      series.set(key, {
-        total: 0,
-        priced: 0,
-        unpriced: 0,
-        stale: 0,
-        aggregateMissing: 0
-      });
-    }
-    const group = series.get(key);
-    group.total += 1;
-    if (hasTrustedCurrentPrice(book)) {
-      group.priced += 1;
-    } else {
-      group.unpriced += 1;
-    }
-    if (isBookStaleForPriority(book, now)) group.stale += 1;
-    if (needsSeriesAggregateRefresh(book, seriesFreshAfterMs)) group.aggregateMissing += 1;
-  }
-
-  return { series, rotatedIndex, seriesFreshAfterMs };
-}
-
-function orderCheckCandidates(books, context, now) {
-  return [...books].sort((left, right) => {
-    const scoreDiff = checkPriorityScore(right, context, now) - checkPriorityScore(left, context, now);
-    if (scoreDiff !== 0) return scoreDiff;
-    return (context.rotatedIndex.get(left.id) ?? 0) - (context.rotatedIndex.get(right.id) ?? 0);
-  });
-}
-
-function checkPriorityScore(book, context, now) {
-  let score = 0;
-  if (!hasTrustedCurrentPrice(book)) score += 100000;
-  if (needsBookImageRefresh(book)) score += 60000;
-  if (isDiscardedUnvalidatedSeriesPrice(book)) score += 25000;
-  if (!book.lastCheckedAt) score += 12000;
-  if (needsDiscountExpiryRecheck(book, now)) score += 45000;
-  if (isBookStaleForPriority(book, now)) score += 2500;
-  if (isTransientSnapshotError(book.lastError) && !isBlockingSnapshotError(book.lastError)) score += 1500;
-
-  const scope = notificationSeriesScope(book);
-  const series = scope ? context.series.get(scope.key) : null;
-  if (series?.unpriced > 0) score += 10000 + Math.min(series.unpriced, 1000);
-  if (series?.stale > 0) score += 1000 + Math.min(series.stale, 500);
-  if (series?.aggregateMissing > 0) {
-    if (needsSeriesAggregateRefresh(book, context.seriesFreshAfterMs)) score += 8000;
-    score += Math.max(0, 3000 - series.aggregateMissing * 30);
-  }
-
-  if (isBlockingSnapshotError(book.lastError) && !hasTrustedCurrentPrice(book)) score -= 5000;
-  return score;
-}
-
-function isAutoCheckCandidate(book, dueBefore) {
-  return isBookDue(book, dueBefore) || needsBookImageRefresh(book);
-}
-
-function needsBookImageRefresh(book) {
-  if (hasBookImage(book)) return false;
-  if (isPermanentSnapshotError(book?.lastError)) return false;
-  return true;
-}
-
-function hasBookImage(book) {
-  return Boolean(book?.imageUrl || book?.imageKey);
-}
-
-function needsSeriesAggregateRefresh(book, freshAfterMs) {
-  if (!hasTrustedCurrentPrice(book)) return true;
-  const checkedAt = timestampMs(book.lastCheckedAt);
-  return checkedAt <= 0 || checkedAt < freshAfterMs;
-}
-
-function hasTrustedCurrentPrice(book) {
-  return (
-    book?.currentPrice != null &&
-    book?.effectivePrice != null &&
-    !isUnvalidatedSeriesPriceProvider(book.provider) &&
-    !isUnverifiedFreeSeriesPriceProvider(book.provider, book.currentPrice)
-  );
-}
-
-function isDiscardedUnvalidatedSeriesPrice(book) {
-  return String(book?.lastError || '').includes('未検証のシリーズ価格を破棄しました');
-}
-
-function isBookStaleForPriority(book, now) {
-  const checkedAt = new Date(book?.lastCheckedAt || 0).getTime();
-  if (!Number.isFinite(checkedAt) || checkedAt <= 0) return true;
-  return now - checkedAt >= 3 * 24 * 60 * 60 * 1000;
-}
-
-export function needsDiscountExpiryRecheck(book, now = Date.now()) {
-  if (!hasTrustedCurrentPrice(book)) return false;
-
-  const checkedAt = new Date(book?.lastCheckedAt || 0).getTime();
-  if (!Number.isFinite(checkedAt) || checkedAt <= 0) return true;
-
-  const ageMs = now - checkedAt;
-  const thresholdHours = floorNumber(process.env.DISCOUNT_RECHECK_HOURS, 1, DISCOUNT_RECHECK_DEFAULT_HOURS);
-  if (ageMs < thresholdHours * 60 * 60 * 1000) return false;
-
-  const effective = nullableNumber(book.effectivePrice ?? book.currentPrice);
-  const listPrice = nullableNumber(trustedListPriceFor(book.currentPrice, book.listPrice, book.provider));
-  if (effective == null || effective <= 0 || listPrice == null || listPrice <= 0) return false;
-
-  return effective <= listPrice * DISCOUNT_RECHECK_RATIO;
-}
-
-export function isCheckRetryCoolingDown(book, now) {
-  if (!isTransientSnapshotError(book?.lastError) && !isBlockingSnapshotError(book?.lastError)) return false;
-  if (isDiscardedUnvalidatedSeriesPrice(book)) return false;
-  if (book?.currentPrice == null && !book?.lastCheckedAt) return false;
-
-  const checkedAt = new Date(book.lastCheckedAt || book.updatedAt || book.createdAt || 0).getTime();
-  if (!Number.isFinite(checkedAt) || checkedAt <= 0) return false;
-  return now - checkedAt < checkRetryCooldownMs(book);
-}
-
-function checkRetryCooldownMs(book) {
-  const fallbackHours = isBlockingSnapshotError(book?.lastError) ? 12 : 3;
-  return floorNumber(process.env.CHECK_RETRY_COOLDOWN_HOURS, 0, fallbackHours) * 60 * 60 * 1000;
-}
-
-function rotateAfterCursor(books, lastBookId = '') {
-  if (!Array.isArray(books) || books.length === 0) return [];
-  const cursorIndex = books.findIndex((book) => book.id === lastBookId);
-  if (cursorIndex === -1 || cursorIndex === books.length - 1) return [...books];
-  return [...books.slice(cursorIndex + 1), ...books.slice(0, cursorIndex + 1)];
-}
-
-function countDueBooks(books, now) {
-  const dueBefore = scheduledDueCutoffMs(now);
-  return books.filter((book) => isBookDue(book, dueBefore)).length;
-}
-
-function isBookDue(book, dueBefore) {
-  if (!book.lastCheckedAt) return true;
-  const checkedAt = new Date(book.lastCheckedAt).getTime();
-  return !Number.isFinite(checkedAt) || checkedAt <= dueBefore;
-}
-
-function scheduledDueCutoffMs(now) {
-  return latestJstExecutionBoundaryMs(now);
-}
-
 function shouldWaitForScheduledExecutionWindow(source, options = {}, now = Date.now()) {
   if (options.ignoreExecutionWindow === true) return false;
   if (source !== 'cron') return false;
@@ -8930,10 +8635,6 @@ export async function recordCronRun(fields) {
   });
 }
 
-function cloneBulkStoreSnapshot(store) {
-  return JSON.parse(JSON.stringify(store || {}));
-}
-
 async function persistBulkCheckStore({ store, baseStore = null, cronFields = null }) {
   const nextAutomation = {
     ...(store.automation || {}),
@@ -8952,182 +8653,6 @@ async function persistBulkCheckStore({ store, baseStore = null, cronFields = nul
       }
     };
   });
-}
-
-export function mergeBulkCheckStoreForPersist(currentStore = {}, runStore = {}, baseStore = {}) {
-  return {
-    ...currentStore,
-    books: mergeBulkBooks(currentStore.books || [], runStore.books || [], baseStore.books || []),
-    priceHistory: mergeStoreEntries(
-      currentStore.priceHistory || [],
-      runStore.priceHistory || [],
-      baseStore.priceHistory || [],
-      'price'
-    ),
-    seriesPriceHistory: mergeStoreEntries(
-      currentStore.seriesPriceHistory || [],
-      runStore.seriesPriceHistory || [],
-      baseStore.seriesPriceHistory || [],
-      'series-price'
-    ),
-    notifications: mergeStoreEntries(
-      currentStore.notifications || [],
-      runStore.notifications || [],
-      baseStore.notifications || [],
-      'notification'
-    ),
-    checkCursor: latestStoreCursor(currentStore.checkCursor, runStore.checkCursor),
-    seriesDiscoveryCursor: latestStoreCursor(currentStore.seriesDiscoveryCursor, runStore.seriesDiscoveryCursor),
-    importQueue: mergeBulkImportQueue(currentStore.importQueue, runStore.importQueue, baseStore.importQueue)
-  };
-}
-
-function mergeBulkBooks(currentBooks, runBooks, baseBooks) {
-  const currentKeys = new Set(currentBooks.map(bookIdentityKey).filter(Boolean));
-  const runByKey = mapByIdentity(runBooks, bookIdentityKey);
-  const baseByKey = mapByIdentity(baseBooks, bookIdentityKey);
-  const runSeriesSourceAsins = new Set(
-    runBooks
-      .filter((book) => !isSingleBookRecord(book))
-      .map((book) => extractAsin(book.sourceUrl) || String(book.seriesKey || '').match(/^series:asin:([A-Z0-9]{10})$/i)?.[1])
-      .filter(Boolean)
-      .map((asin) => String(asin).toUpperCase())
-  );
-  const merged = [];
-
-  for (const currentBook of currentBooks) {
-    const key = bookIdentityKey(currentBook);
-    if (!key) {
-      merged.push(currentBook);
-      continue;
-    }
-
-    const runBook = runByKey.get(key);
-    const baseBook = baseByKey.get(key);
-    if (runBook) {
-      if (!baseBook) {
-        merged.push(currentBook);
-        continue;
-      }
-
-      const runChanged = !sameStoreValue(runBook, baseBook);
-      const currentChanged = !sameStoreValue(currentBook, baseBook);
-      if (runChanged && currentChanged) {
-        merged.push(mergeStoreObjectChanges(baseBook, runBook, currentBook));
-      } else if (runChanged) {
-        merged.push(runBook);
-      } else {
-        merged.push(currentBook);
-      }
-      continue;
-    }
-
-    if (baseBook && shouldKeepSeriesContainerRemoval(currentBook, baseBook, runSeriesSourceAsins)) continue;
-    if (baseBook && sameStoreValue(currentBook, baseBook)) continue;
-    merged.push(currentBook);
-  }
-
-  for (const runBook of runBooks) {
-    const key = bookIdentityKey(runBook);
-    if (!key || currentKeys.has(key)) continue;
-    const baseBook = baseByKey.get(key);
-    if (!baseBook || !sameStoreValue(runBook, baseBook)) merged.push(runBook);
-  }
-
-  return merged;
-}
-
-function shouldKeepSeriesContainerRemoval(currentBook, baseBook, runSeriesSourceAsins) {
-  const asin = String(baseBook?.asin || '').toUpperCase();
-  if (!asin || !runSeriesSourceAsins.has(asin)) return false;
-  return isSingleBookRecord(baseBook) && isSingleBookRecord(currentBook);
-}
-
-function mergeStoreObjectChanges(baseObject = {}, runObject = {}, currentObject = {}) {
-  const merged = { ...currentObject };
-  const keys = new Set([...Object.keys(baseObject || {}), ...Object.keys(runObject || {})]);
-  for (const key of keys) {
-    if (sameStoreValue(runObject?.[key], baseObject?.[key])) continue;
-    if (runObject?.[key] === undefined) {
-      delete merged[key];
-    } else {
-      merged[key] = cloneBulkStoreSnapshot(runObject[key]);
-    }
-  }
-  return merged;
-}
-
-function mergeStoreEntries(currentEntries, runEntries, baseEntries, namespace) {
-  const baseKeys = new Set(baseEntries.map((entry) => storeEntryKey(entry, namespace)));
-  const runKeys = new Set(runEntries.map((entry) => storeEntryKey(entry, namespace)));
-  const currentKeys = new Set();
-  const merged = [];
-
-  for (const entry of currentEntries) {
-    const key = storeEntryKey(entry, namespace);
-    if (baseKeys.has(key) && !runKeys.has(key)) continue;
-    currentKeys.add(key);
-    merged.push(entry);
-  }
-
-  for (const entry of runEntries) {
-    const key = storeEntryKey(entry, namespace);
-    if (currentKeys.has(key)) continue;
-    if (!baseKeys.has(key)) {
-      currentKeys.add(key);
-      merged.push(entry);
-    }
-  }
-
-  return merged;
-}
-
-function mergeBulkImportQueue(currentQueue = {}, runQueue = {}, baseQueue = {}) {
-  return {
-    pending: mergeStoreEntries(currentQueue.pending || [], runQueue.pending || [], baseQueue.pending || [], 'queue-pending'),
-    completed: mergeStoreEntries(
-      currentQueue.completed || [],
-      runQueue.completed || [],
-      baseQueue.completed || [],
-      'queue-completed'
-    ),
-    errors: mergeStoreEntries(currentQueue.errors || [], runQueue.errors || [], baseQueue.errors || [], 'queue-error')
-  };
-}
-
-function latestStoreCursor(currentCursor = {}, runCursor = {}) {
-  const currentTime = Date.parse(currentCursor?.checkedAt || '') || 0;
-  const runTime = Date.parse(runCursor?.checkedAt || '') || 0;
-  return runTime >= currentTime ? runCursor || currentCursor : currentCursor || runCursor;
-}
-
-function mapByIdentity(entries = [], keyFn) {
-  const map = new Map();
-  for (const entry of entries) {
-    const key = keyFn(entry);
-    if (key) map.set(key, entry);
-  }
-  return map;
-}
-
-function bookIdentityKey(book = {}) {
-  const asin = String(book.asin || '').trim().toUpperCase();
-  if (asin) return `asin:${asin}`;
-  const id = String(book.id || '').trim();
-  return id ? `id:${id}` : '';
-}
-
-function storeEntryKey(entry = {}, namespace = 'entry') {
-  if (entry?.id) return `${namespace}:id:${entry.id}`;
-  if (namespace === 'queue-pending' && entry?.key) return `${namespace}:key:${entry.key}`;
-  if (entry?.bookId || entry?.asin || entry?.checkedAt || entry?.createdAt) {
-    return `${namespace}:${entry.bookId || ''}:${entry.asin || ''}:${entry.checkedAt || entry.createdAt || ''}`;
-  }
-  return `${namespace}:json:${JSON.stringify(entry)}`;
-}
-
-function sameStoreValue(left, right) {
-  return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
 }
 
 function shouldPersistCronRun(result = {}) {

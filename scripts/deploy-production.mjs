@@ -5,16 +5,25 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assertSecureRuntime } from '../src/runtime-security.mjs';
 
-assertSecureRuntime();
-
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const uploadDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kindle-price-watch-deploy-'));
+const VERCEL_CLI_VERSION = '65.2.0';
 
-await copyProject(projectRoot, uploadDir);
-await assertVercelProjectLinked(uploadDir);
-await deploy(uploadDir);
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  await main();
+}
 
-console.log(`Deployed from Git-free upload directory: ${uploadDir}`);
+async function main() {
+  assertSecureRuntime();
+  const uploadDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kindle-price-watch-deploy-'));
+  try {
+    await copyProject(projectRoot, uploadDir);
+    const project = await assertVercelProjectLinked(uploadDir);
+    await deploy(uploadDir, process.env.VERCEL_SCOPE || project.orgId);
+    console.log('Deployed from a Git-free upload directory.');
+  } finally {
+    await fs.rm(uploadDir, { recursive: true, force: true });
+  }
+}
 
 async function copyProject(sourceRoot, targetRoot) {
   const entries = await fs.readdir(sourceRoot, { withFileTypes: true });
@@ -52,11 +61,12 @@ async function copyEntry(sourcePath, targetPath, relativePath, entry) {
   if (entry.isFile()) await fs.copyFile(sourcePath, targetPath);
 }
 
-function shouldExclude(relativePath, entry) {
+export function shouldExclude(relativePath, entry) {
   const parts = relativePath.split(path.sep);
   const name = parts.at(-1) || '';
 
   if (parts.includes('.git') || parts.includes('node_modules')) return true;
+  if (['.aws', '.codex', '.agents'].includes(parts[0])) return true;
   if (name === '.DS_Store' || /^npm-debug\.log/.test(name)) return true;
   if (isLocalEnvFile(name)) return true;
   if (parts[0] === 'data' && /\.(?:json|tmp)$/i.test(name)) return true;
@@ -76,17 +86,20 @@ function isLocalEnvFile(name) {
 async function assertVercelProjectLinked(root) {
   const projectJsonPath = path.join(root, '.vercel', 'project.json');
   try {
-    await fs.access(projectJsonPath);
-  } catch {
-    if (process.env.VERCEL_PROJECT_ID && process.env.VERCEL_ORG_ID) return;
+    return JSON.parse(await fs.readFile(projectJsonPath, 'utf8'));
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    if (process.env.VERCEL_PROJECT_ID && process.env.VERCEL_ORG_ID) {
+      return { projectId: process.env.VERCEL_PROJECT_ID, orgId: process.env.VERCEL_ORG_ID };
+    }
     throw new Error(
       'Vercel project link is missing. Run `vercel link` once locally, or set VERCEL_PROJECT_ID and VERCEL_ORG_ID.'
     );
   }
 }
 
-async function deploy(cwd) {
-  const candidates = await vercelDeployCommands();
+async function deploy(cwd, scope) {
+  const candidates = vercelDeployCommands(scope);
   const missing = [];
 
   for (const candidate of candidates) {
@@ -105,66 +118,38 @@ async function deploy(cwd) {
   throw new Error(`No Vercel CLI runner found. Tried: ${missing.join(', ')}`);
 }
 
-async function vercelDeployCommands() {
+export function vercelDeployCommands(scope) {
   const commands = [];
+  const args = ['deploy', '--prod', ...(scope ? ['--scope', scope] : [])];
 
   if (process.env.VERCEL_CLI) {
     commands.push({
       label: process.env.VERCEL_CLI,
-      command: process.env.VERCEL_CLI,
-      args: ['deploy', '--prod']
+      command: /\.[cm]?js$/i.test(process.env.VERCEL_CLI) ? process.execPath : process.env.VERCEL_CLI,
+      args: /\.[cm]?js$/i.test(process.env.VERCEL_CLI) ? [process.env.VERCEL_CLI, ...args] : args
     });
   }
 
   commands.push({
     label: 'vercel',
     command: 'vercel',
-    args: ['deploy', '--prod']
+    args
   });
-
-  const bundledNpm = '/private/tmp/npm-cli/package/bin/npm-cli.js';
-  if (await isRunnableBundledNpm(bundledNpm)) {
-    commands.push({
-      label: bundledNpm,
-      command: process.execPath,
-      args: [bundledNpm, 'exec', '--yes', 'vercel@latest', '--', 'deploy', '--prod']
-    });
-  }
 
   commands.push(
     {
-      label: 'pnpm dlx vercel@latest',
-      command: 'pnpm',
-      args: ['dlx', 'vercel@latest', 'deploy', '--prod']
-    },
-    {
-      label: 'npm exec vercel@latest',
+      label: `npm exec vercel@${VERCEL_CLI_VERSION}`,
       command: 'npm',
-      args: ['exec', '--yes', 'vercel@latest', '--', 'deploy', '--prod']
+      args: ['exec', '--yes', `vercel@${VERCEL_CLI_VERSION}`, '--', ...args]
     },
     {
-      label: 'npx vercel@latest',
+      label: `npx vercel@${VERCEL_CLI_VERSION}`,
       command: 'npx',
-      args: ['--yes', 'vercel@latest', 'deploy', '--prod']
+      args: ['--yes', `vercel@${VERCEL_CLI_VERSION}`, ...args]
     }
   );
 
   return commands;
-}
-
-async function isRunnableBundledNpm(binPath) {
-  if (!(await exists(binPath))) return false;
-  const packageRoot = path.resolve(path.dirname(binPath), '..');
-  return exists(path.join(packageRoot, 'lib', 'cli.js'));
-}
-
-async function exists(filePath) {
-  try {
-    await fs.access(filePath);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 function run(command, args, cwd) {

@@ -26,7 +26,10 @@ npm start
 - `server.mjs`: 認証、静的ファイル配信、HTTPルーティング
 - `src/app-api.mjs`: HTTP payload変換。価格取得エンジンは必要な操作でだけ遅延読込
 - `src/control-service.mjs`: 設定、追加キュー、Discord Webhook
-- `src/checker.mjs`: 価格チェック、価格監査、シリーズ探索、永続化マージ
+- `src/checker.mjs`: 価格チェック、価格監査、シリーズ探索の実行制御
+- `src/check-planner.mjs`: 長期未確認本の優先枠、シリーズ補完、巡回順の計画
+- `src/check-policy.mjs`: 価格の信頼性、再試行待ち、割引再確認の共通ルール
+- `src/bulk-store-merge.mjs`: 実行中に追加・更新されたデータと一括保存結果の競合マージ
 - `src/price-provider.mjs`: Amazonと補助サイトの取得・HTML解析
 - `src/scheduler.mjs`: JST実行枠と完了判定
 - `src/store.mjs`: ローカルJSONと本番Blobの主ストア
@@ -37,6 +40,18 @@ npm start
 - `config/github-actions.env`: 2つのActions workflowで共有する非機密の実行設定
 
 通常の書籍一覧・設定表示・watchdogでは `checker.mjs` と `price-provider.mjs` を読み込みません。価格取得、シリーズ探索、データ修復などが必要な操作だけが価格処理系を読み込みます。ストア書込後の派生payload更新は各機能に埋め込まず、エントリーポイントで `registerStorePayloadSync()` を明示的に登録します。
+
+### 巡回と実行の保護
+
+48時間以上未確認の本は、単巻・シリーズ・割引状態にかかわらず、最終確認が古い順で処理枠の先頭を確保します。閾値は `CHECK_OVERDUE_HOURS`（既定48）で設定します。再試行待ちを除く対象が上限を超えた場合も、古い順で次の実行へ引き継ぎます。新刊の即時確認やシリーズ全巻の補完は、この優先枠の後へ配置します。初回未確認の本は登録日時を基準にし、閾値未満の本には従来の新刊・割引・シリーズ補完の優先順位を適用します。
+
+認証付き `GET /api/check-plan` は保存済みデータから次の巡回計画を読み取り専用で計算し、未確認時間の閾値、優先対象数、先頭20冊を返します。実行中の処理結果は最後の一括保存まで反映されません。Actionsの結果ログにも `checkPlan` として優先対象数・処理数・成功数を残します。
+
+価格チェックworkflowの `cancel-in-progress` は `false` とし、後から届いた定刻実行は稼働中の実行が終わるまで待機します。同じ実行枠を処理済みの場合は既存の完了判定で終了します。watchdogは20分間隔を維持し、正常な実行中Runを置き換えません。
+
+配備には既存の共有Vercel CLIを `VERCEL_CLI` で指定できます（JavaScript CLIも指定可能）。未指定時のnpm/npxフォールバックは検証済み65.2.0を使用し、配備のたびに最新版へ更新しません。Git・秘密情報・ローカルDBを除外したアップロード用コピーは、配備の成否にかかわらず今回作成分だけ削除します。
+
+巡回の再発防止と互換性の検証方針は [check-planning](docs/codex/check-planning.md) を参照してください。
 
 ## Vercel無料枠で使う
 
