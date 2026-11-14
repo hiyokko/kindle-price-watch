@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Kindle Price Watch</title>
-    <link rel="stylesheet" href="/styles.css?v=20260513-4">
+    <link rel="stylesheet" href="/styles.css?v=20261115-1">
   </head>
   <body>
     <header class="topbar">
@@ -111,7 +111,7 @@
       <section class="book-grid" id="bookGrid" aria-label="登録している本"></section>
     </main>
 
-    <dialog class="history-dialog" id="historyDialog">
+    <dialog class="history-dialog" id="historyDialog" aria-labelledby="historyTitle">
       <div class="dialog-header">
         <div>
           <p class="eyebrow">価格履歴</p>
@@ -122,11 +122,11 @@
       <div class="chart" id="historyChart"></div>
     </dialog>
 
-    <dialog class="webhook-dialog" id="webhookDialog">
+    <dialog class="webhook-dialog" id="webhookDialog" aria-labelledby="webhookTitle">
       <div class="dialog-header">
         <div>
           <p class="eyebrow">Discord</p>
-          <h2>Webhook</h2>
+          <h2 id="webhookTitle">Webhook</h2>
         </div>
         <button class="icon-button" id="closeWebhookButton" type="button" title="閉じる" aria-label="閉じる">×</button>
       </div>
@@ -139,11 +139,11 @@
       </form>
     </dialog>
 
-    <dialog class="import-queue-dialog" id="importQueueDialog">
+    <dialog class="import-queue-dialog" id="importQueueDialog" aria-labelledby="importQueueTitle">
       <div class="dialog-header">
         <div>
           <p class="eyebrow">一括追加</p>
-          <h2>追加キュー</h2>
+          <h2 id="importQueueTitle">追加キュー</h2>
         </div>
         <button class="icon-button" id="closeImportQueueButton" type="button" title="閉じる" aria-label="閉じる">×</button>
       </div>
@@ -220,6 +220,6 @@
       </article>
     </template>
 
-    <script src="/app.js?v=20260724-1" type="module"></script>
+    <script src="/app.js?v=20261115-1" type="module"></script>
   </body>
 </html>

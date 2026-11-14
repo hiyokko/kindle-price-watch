@@ -159,7 +159,7 @@ a {
 }
 
 .summary-button:focus-visible {
-  outline: 3px solid rgba(39, 140, 132, 0.18);
+  outline: 2px solid var(--teal-strong);
   outline-offset: 4px;
 }
 
@@ -748,6 +748,10 @@ button:disabled {
 .webhook-dialog,
 .import-queue-dialog {
   width: min(760px, calc(100% - 24px));
+  max-height: calc(100vh - 24px);
+  max-height: calc(100dvh - 24px);
+  overflow: auto;
+  overscroll-behavior: contain;
   padding: 0;
   border: 1px solid var(--line);
   box-shadow: var(--shadow);
@@ -757,6 +761,13 @@ button:disabled {
 .webhook-dialog::backdrop,
 .import-queue-dialog::backdrop {
   background: rgba(20, 25, 28, 0.32);
+  overflow: hidden;
+  overscroll-behavior: contain;
+}
+
+:is(button, input, select, textarea, a):focus-visible {
+  outline: 2px solid var(--teal-strong);
+  outline-offset: 3px;
 }
 
 .dialog-header {

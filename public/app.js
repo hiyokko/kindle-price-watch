@@ -447,7 +447,6 @@ function discordSummaryText() {
 }
 
 function renderBooks() {
-  els.bookGrid.innerHTML = '';
   const groups = sortedGroups(filteredGroups());
   const queued = pendingImportQueueEntries();
   if (groups.length === 0 && queued.length === 0) {
@@ -460,7 +459,7 @@ function renderBooks() {
           ? '<div class="book-body"><h2 class="book-title">直近自動実行の新刊はありません</h2><p class="book-meta">フィルタを解除すると全件を表示します。</p></div>'
           : '<div class="book-body"><h2 class="book-title">まだ本がありません</h2><p class="book-meta">Amazon URLかASINを追加してください。</p></div>';
     empty.innerHTML = emptyMessage;
-    els.bookGrid.append(empty);
+    els.bookGrid.replaceChildren(empty);
     renderBulkControls();
     return;
   }
@@ -475,9 +474,9 @@ function renderBooks() {
       continue;
     }
 
-    fragment.append(createSeriesNode(group));
+    fragment.append(createSeriesNode(group, group === groups[0]));
   }
-  els.bookGrid.append(fragment);
+  els.bookGrid.replaceChildren(fragment);
 }
 
 function filteredGroups() {
@@ -592,8 +591,8 @@ function createImportQueueNode(entry) {
   return node;
 }
 
-function createSeriesNode(group) {
-  const expanded = state.expandedSeriesKeys.has(group.key);
+function createSeriesNode(group, eagerImage = false) {
+  let expanded = state.expandedSeriesKeys.has(group.key);
   const selectedCount = group.books.filter((book) => state.selectedBookIds.has(book.id)).length;
   const firstImage = group.books.find((book) => book.imageUrl)?.imageUrl || '';
   const seriesTotal = seriesTotalLabel(group);
@@ -612,9 +611,10 @@ function createSeriesNode(group) {
   summary.className = 'series-summary';
   summary.type = 'button';
   summary.setAttribute('aria-expanded', String(expanded));
+  summary.setAttribute('aria-controls', `series-books-${encodeURIComponent(group.key)}`);
   summary.innerHTML = `
     <span class="series-cover">
-      ${firstImage ? `<img src="${escapeHtml(firstImage)}" alt="">` : '<span>No Image</span>'}
+      ${firstImage ? `<img src="${escapeHtml(firstImage)}" alt="" width="64" height="86" loading="${eagerImage ? 'eager' : 'lazy'}" decoding="async">` : '<span>No Image</span>'}
     </span>
     <span class="series-copy">
       <span class="eyebrow">シリーズ</span>
@@ -624,14 +624,19 @@ function createSeriesNode(group) {
       </span>
       ${seriesMeta ? `<span class="book-meta series-source-meta">${escapeHtml(seriesMeta)}</span>` : ''}
       <span class="series-total">${escapeHtml(seriesTotal)}</span>
-      <span class="book-meta">${escapeHtml(registeredCount)} / ${group.checkedCount}冊確認済み / 最終確認 ${relativeTime(group.lastCheckedAt)} / ${escapeHtml(seriesStatus)} / ${selectedCount}冊選択中</span>
+      <span class="book-meta">${escapeHtml(registeredCount)} / ${group.checkedCount}冊確認済み / 最終確認 ${relativeTime(group.lastCheckedAt)} / ${escapeHtml(seriesStatus)} / <span class="series-selection-count">${selectedCount}冊選択中</span></span>
     </span>
     <span class="series-chevron">${expanded ? '閉じる' : '開く'}</span>
   `;
   summary.addEventListener('click', () => {
-    if (expanded) state.expandedSeriesKeys.delete(group.key);
-    else state.expandedSeriesKeys.add(group.key);
-    renderBooks();
+    expanded = !expanded;
+    if (expanded) state.expandedSeriesKeys.add(group.key);
+    else state.expandedSeriesKeys.delete(group.key);
+    section.classList.toggle('expanded', expanded);
+    summary.setAttribute('aria-expanded', String(expanded));
+    summary.querySelector('.series-chevron').textContent = expanded ? '閉じる' : '開く';
+    books.hidden = !expanded;
+    renderSeriesBooks();
   });
 
   const actions = document.createElement('div');
@@ -641,6 +646,7 @@ function createSeriesNode(group) {
   selectLabel.className = 'series-select';
   selectLabel.innerHTML = '<input type="checkbox"><span>シリーズ選択</span>';
   const seriesCheckbox = selectLabel.querySelector('input');
+  seriesCheckbox.setAttribute('aria-label', `${group.title} をシリーズ選択`);
   seriesCheckbox.checked = selectedCount === group.books.length;
   seriesCheckbox.indeterminate = selectedCount > 0 && selectedCount < group.books.length;
   seriesCheckbox.addEventListener('click', (event) => event.stopPropagation());
@@ -649,7 +655,10 @@ function createSeriesNode(group) {
       if (seriesCheckbox.checked) state.selectedBookIds.add(book.id);
       else state.selectedBookIds.delete(book.id);
     }
-    renderBooks();
+    for (const checkbox of books.querySelectorAll('.book-checkbox')) {
+      checkbox.checked = seriesCheckbox.checked;
+    }
+    updateSelection();
     renderBulkControls();
   });
 
@@ -680,17 +689,32 @@ function createSeriesNode(group) {
   header.append(summary, actions);
 
   const books = document.createElement('div');
+  books.id = summary.getAttribute('aria-controls');
   books.className = 'series-books';
   books.hidden = !expanded;
-  for (const book of group.books) {
-    books.append(createBookNode(book));
+
+  function updateSelection() {
+    const count = group.books.filter((book) => state.selectedBookIds.has(book.id)).length;
+    seriesCheckbox.checked = count === group.books.length;
+    seriesCheckbox.indeterminate = count > 0 && count < group.books.length;
+    summary.querySelector('.series-selection-count').textContent = `${count}冊選択中`;
   }
+
+  function renderSeriesBooks() {
+    // Keep collapsed series lightweight; selection lives in state, not in hidden cards.
+    books.replaceChildren();
+    if (!expanded) return;
+    const fragment = document.createDocumentFragment();
+    for (const book of group.books) fragment.append(createBookNode(book, updateSelection));
+    books.append(fragment);
+  }
+  renderSeriesBooks();
 
   section.append(header, books);
   return section;
 }
 
-function createBookNode(book) {
+function createBookNode(book, onSelectionChange = () => {}) {
   const node = els.template.content.cloneNode(true);
   const card = node.querySelector('.book-card');
   const cover = node.querySelector('.cover');
@@ -712,9 +736,11 @@ function createBookNode(book) {
   card.dataset.bookId = book.id;
   card.classList.toggle('pending', book.currentPrice == null);
   checkbox.checked = state.selectedBookIds.has(book.id);
+  checkbox.setAttribute('aria-label', `${displayBookTitle(book)} を選択`);
   checkbox.addEventListener('change', () => {
     if (checkbox.checked) state.selectedBookIds.add(book.id);
     else state.selectedBookIds.delete(book.id);
+    onSelectionChange();
     renderBulkControls();
   });
   cover.src = book.imageUrl || '';
