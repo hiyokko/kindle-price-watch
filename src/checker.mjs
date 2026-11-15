@@ -1,5 +1,5 @@
 import { cloneBulkStoreSnapshot, mergeBulkCheckStoreForPersist } from './bulk-store-merge.mjs';
-import { planDueChecks, countDueBooks } from './check-planner.mjs';
+import { planDueChecks, countDueBooks, isOverdueForCheck, selectOverdueCheckRetries } from './check-planner.mjs';
 import {
   isPermanentSnapshotError, isTransientSnapshotError, isBlockingSnapshotError,
   isUnvalidatedSeriesPriceProvider, isUnverifiedFreeSeriesPriceProvider,
@@ -5118,6 +5118,19 @@ export async function runDueChecks(options = {}) {
       asins: []
     };
     const cachedSeriesRetryCandidates = [];
+    const pendingSeriesDiscoveryBooks = [];
+    const overdueRetries = { eligible: 0, attempted: 0, succeeded: 0, failed: 0, skipped: 0 };
+    let overdueRetriesCompleted = false;
+    const retryOverdueFailures = async () => {
+      if (overdueRetriesCompleted) return;
+      overdueRetriesCompleted = true;
+      const summary = await timePhase('overdueRetriesMs', () => retryOverdueCheckFailuresInStore(store, results, plan.overdueBookIds, {
+        ...options, startedAt, maxRuntimeMs, saveReserveMs, pacing,
+        getWebhookUrls, deferSeriesNotifications: true, seriesNotificationBaselines,
+        seriesFreshAfter, seriesCandidateCache, acquisitionStats
+      }));
+      Object.assign(overdueRetries, summary);
+    };
     let transientErrorStreak = 0;
     const bookChecksStartedAt = Date.now();
     for (let index = 0; index < plan.books.length; index += 1) {
@@ -5127,6 +5140,7 @@ export async function runDueChecks(options = {}) {
       }
 
       const book = plan.books[index];
+      if (!plan.overdueBookIds.has(book.id)) await retryOverdueFailures();
       const canUseCachedSeriesPrice = canUseCachedSeriesPriceSnapshotForBook(book, {
         seriesCandidateCache,
         store
@@ -5175,39 +5189,44 @@ export async function runDueChecks(options = {}) {
       }
 
       if (discoverCheckedSeries) {
-        if (shouldStopBeforeSeriesDiscovery(startedAt, maxRuntimeMs, saveReserveMs)) {
-          stoppedByRuntimeLimit = true;
-          break;
-        }
-        const checkedSeriesDiscovery = await discoverSeriesUpdateForCheckedBook(store, result.book, {
-          startedAt,
-          maxRuntimeMs,
-          saveReserveMs,
-          seenKeys: discoveredSeriesKeys,
-          seriesCandidateCache
-        });
-        if (checkedSeriesDiscovery) {
-          seriesDiscovery = mergeSeriesDiscoverySummaries(seriesDiscovery, checkedSeriesDiscovery);
-          for (const key of seriesDiscoveryKeys(checkedSeriesDiscovery)) discoveredSeriesKeys.add(key);
-          const followUp = prioritizeNewlyDiscoveredUnpricedBooks(plan, store, checkedSeriesDiscovery, {
-            currentIndex: index,
-            limit: settings.batchSize,
-            processedBookIds
-          });
-          for (const followUpBook of followUp.queuedBooks) {
-            if (newReleaseFollowUpBookIds.has(followUpBook.id)) continue;
-            newReleaseFollowUpBookIds.add(followUpBook.id);
-            newReleaseFollowUp.queued += 1;
-            if (followUpBook.asin && newReleaseFollowUp.asins.length < 50) {
-              newReleaseFollowUp.asins.push(followUpBook.asin);
+        pendingSeriesDiscoveryBooks.push(result.book);
+        // Finish the protected old prefix before spending time on exploration.
+        const oldestChecksPending = plan.books.slice(index + 1).some((candidate) => plan.overdueBookIds.has(candidate.id));
+        if (!oldestChecksPending) {
+          if (!isBlockingCheckResult(result)) await retryOverdueFailures();
+          for (const checkedBook of pendingSeriesDiscoveryBooks.splice(0)) {
+            if (shouldStopBeforeSeriesDiscovery(startedAt, maxRuntimeMs, saveReserveMs)) {
+              stoppedByRuntimeLimit = true;
+              break;
             }
-          }
-          if (checkedSeriesDiscovery.stoppedByRuntimeLimit) {
-            stoppedByRuntimeLimit = true;
-            break;
+            const checkedSeriesDiscovery = await discoverSeriesUpdateForCheckedBook(store, checkedBook, {
+              startedAt, maxRuntimeMs, saveReserveMs,
+              seenKeys: discoveredSeriesKeys, seriesCandidateCache
+            });
+            if (checkedSeriesDiscovery) {
+              seriesDiscovery = mergeSeriesDiscoverySummaries(seriesDiscovery, checkedSeriesDiscovery);
+              for (const key of seriesDiscoveryKeys(checkedSeriesDiscovery)) discoveredSeriesKeys.add(key);
+              const followUp = prioritizeNewlyDiscoveredUnpricedBooks(plan, store, checkedSeriesDiscovery, {
+                currentIndex: index, limit: settings.batchSize, processedBookIds
+              });
+              for (const followUpBook of followUp.queuedBooks) {
+                if (newReleaseFollowUpBookIds.has(followUpBook.id)) continue;
+                newReleaseFollowUpBookIds.add(followUpBook.id);
+                newReleaseFollowUp.queued += 1;
+                if (followUpBook.asin && newReleaseFollowUp.asins.length < 50) {
+                  newReleaseFollowUp.asins.push(followUpBook.asin);
+                }
+              }
+              if (checkedSeriesDiscovery.stoppedByRuntimeLimit) {
+                stoppedByRuntimeLimit = true;
+                break;
+              }
+            }
           }
         }
       }
+      if (stoppedByRuntimeLimit) break;
+      result = results[index];
 
       if (isBlockingCheckResult(result)) {
         transientErrorStreak = 0;
@@ -5234,8 +5253,9 @@ export async function runDueChecks(options = {}) {
       }
     }
 
+    await retryOverdueFailures();
     timings.bookChecksMs = Date.now() - bookChecksStartedAt;
-    const cachedSeriesRetries = await timePhase('cachedSeriesRetriesMs', () => retryCachedSeriesCheckFailuresInStore(store, cachedSeriesRetryCandidates, {
+    const cachedSeriesRetries = await timePhase('cachedSeriesRetriesMs', () => retryCachedSeriesCheckFailuresInStore(store, cachedSeriesRetryCandidates.filter((candidate) => !results[candidate.index]?.ok), {
       ...options,
       getWebhookUrls,
       deferSeriesNotifications: true,
@@ -5295,7 +5315,9 @@ export async function runDueChecks(options = {}) {
       checkPlan: {
         ...plan.summary,
         overdueChecked: results.filter((entry) => plan.overdueBookIds.has(entry?.book?.id)).length,
-        overdueSucceeded: results.filter((entry) => entry.ok && plan.overdueBookIds.has(entry?.book?.id)).length
+        overdueSucceeded: results.filter((entry) => entry.ok && plan.overdueBookIds.has(entry?.book?.id)).length,
+        overdueFailed: results.filter((entry) => !entry.ok && plan.overdueBookIds.has(entry?.book?.id)).length,
+        overdueRemaining: store.books.filter((book) => isOverdueForCheck(book, Date.now(), plan.summary.overdueHours)).length
       },
       cursor: store.checkCursor,
       overlapped: Math.max(0, results.length - plan.dueSelected),
@@ -5312,6 +5334,7 @@ export async function runDueChecks(options = {}) {
       priceIntegrityAudit,
       checkErrorSummary,
       newReleaseFollowUp,
+      overdueRetries,
       seriesNotifications,
       timings,
       priceAcquisition: acquisitionStats,
@@ -6485,6 +6508,7 @@ async function checkOneBookInStore(store, bookRef, options = {}) {
     timeoutMs: snapshotTimeoutMsForBook(bookRef, options),
     seriesCandidateCache: options.seriesCandidateCache,
     acquisitionStats: options.acquisitionStats,
+    seriesPriceFirst: options.seriesPriceFirst,
     store
   });
   const applied = applyCheckResultToStore(store, bookRef, snapshotResult, now, checkResultApplyOptions(options));
@@ -6509,6 +6533,46 @@ function checkResultApplyOptions(options = {}) {
     seriesNotificationBaselines: options.seriesNotificationBaselines,
     seriesFreshAfter: options.seriesFreshAfter
   };
+}
+
+async function retryOverdueCheckFailuresInStore(store, results, overdueBookIds, options) {
+  const limit = clampNumber(process.env.CHECK_OVERDUE_RETRY_LIMIT, 0, 50, 10);
+  const candidates = selectOverdueCheckRetries(results, overdueBookIds, results.length);
+  const summary = { eligible: candidates.length, attempted: 0, succeeded: 0, failed: 0, skipped: 0 };
+  const retryStartedAt = Date.now();
+  const retryBudgetMs = floorNumber(process.env.CHECK_OVERDUE_RETRY_MAX_RUNTIME_MS, 0, 300000);
+  for (const candidate of candidates.slice(0, limit)) {
+    if (shouldStopBeforeNextBookCheck(options.startedAt, options.maxRuntimeMs, options.saveReserveMs)) break;
+    if (Date.now() - retryStartedAt >= retryBudgetMs) break;
+    if (!(await waitBeforeCheck(options.pacing, 1, retryStartedAt, retryBudgetMs))) break;
+    const remaining = retryBudgetMs - (Date.now() - retryStartedAt);
+    if (remaining < 1000) break;
+    const book = store.books.find((entry) => entry.id === candidate.result.book?.id);
+    if (!book) continue;
+    const runtime = runtimeAbortOptions(options.startedAt, options.maxRuntimeMs, {
+      reserveMs: options.saveReserveMs,
+      capMs: Math.min(remaining, checkBookMaxRuntimeMs(), floorNumber(process.env.CHECK_OVERDUE_RETRY_BOOK_MAX_RUNTIME_MS, 1000, 30000))
+    });
+    try {
+      summary.attempted += 1;
+      const result = await checkOneBookInStore(store, book, {
+        ...options, signal: runtime.signal, updateCursor: false,
+        seriesPriceFirst: canUseCachedSeriesPriceSnapshotForBook(book, { ...options, store })
+      });
+      result.retry = 'overdue_price';
+      results[candidate.index] = result;
+      if (result.ok) summary.succeeded += 1;
+      else summary.failed += 1;
+      if (isBlockingCheckResult(result)) {
+        await waitAfterBlockedCheck(options.pacing, options.startedAt, options.maxRuntimeMs, options.saveReserveMs);
+        break;
+      }
+    } finally {
+      runtime.cleanup();
+    }
+  }
+  summary.skipped = summary.eligible - summary.attempted;
+  return summary;
 }
 
 async function retryCachedSeriesCheckFailuresInStore(store, candidates = [], options = {}) {
@@ -7010,6 +7074,8 @@ function applyCheckResultToStore(store, bookRef, snapshotResult, now, options = 
 
   const previousEffectivePrice = book.effectivePrice;
   const previousLowestEffectivePrice = book.lowestEffectivePrice;
+  book.lastCheckAttemptedAt = now;
+  book.lastCheckAttemptError = snapshotResult.ok ? '' : snapshotResult.error || '価格を取得できませんでした';
   const seriesScope = notificationSeriesScope(book);
   const seriesBaseline =
     snapshotResult.ok && seriesScope ? captureSeriesNotificationBaseline(store, seriesScope, options) : null;
@@ -7032,8 +7098,6 @@ function applyCheckResultToStore(store, bookRef, snapshotResult, now, options = 
       isSuspiciousSnapshotError(snapshotResult.error)
     ) {
       book.lastCheckedAt = null;
-    } else if (!repair.currentRestored) {
-      book.lastCheckedAt = now;
     }
     book.updatedAt = now;
     book.lastError = shouldStoreSnapshotError(book, snapshotResult.error) ? snapshotResult.error : '';

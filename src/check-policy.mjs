@@ -123,17 +123,20 @@ export function needsDiscountExpiryRecheck(book, now = Date.now()) {
 }
 
 export function isCheckRetryCoolingDown(book, now) {
-  if (!isTransientSnapshotError(book?.lastError) && !isBlockingSnapshotError(book?.lastError)) return false;
+  const attemptedAt = timestampMs(book?.lastCheckAttemptedAt);
+  const lastCheckedAt = timestampMs(book?.lastCheckedAt);
+  const error = attemptedAt >= lastCheckedAt ? book?.lastCheckAttemptError || book?.lastError : book?.lastError;
+  if (!isTransientSnapshotError(error) && !isBlockingSnapshotError(error)) return false;
   if (isDiscardedUnvalidatedSeriesPrice(book)) return false;
   if (book?.currentPrice == null && !book?.lastCheckedAt) return false;
 
-  const checkedAt = new Date(book.lastCheckedAt || book.updatedAt || book.createdAt || 0).getTime();
+  const checkedAt = attemptedAt || new Date(book.lastCheckedAt || book.updatedAt || book.createdAt || 0).getTime();
   if (!Number.isFinite(checkedAt) || checkedAt <= 0) return false;
-  return now - checkedAt < checkRetryCooldownMs(book);
+  return now - checkedAt < checkRetryCooldownMs(error);
 }
 
-function checkRetryCooldownMs(book) {
-  const fallbackHours = isBlockingSnapshotError(book?.lastError) ? 12 : 3;
+function checkRetryCooldownMs(error) {
+  const fallbackHours = isBlockingSnapshotError(error) ? 12 : 3;
   return floorNumber(process.env.CHECK_RETRY_COOLDOWN_HOURS, 0, fallbackHours) * 60 * 60 * 1000;
 }
 

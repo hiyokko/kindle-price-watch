@@ -196,7 +196,18 @@ function timestampMs(value) {
 
 export function checkOverdueHours(value = process.env.CHECK_OVERDUE_HOURS) {
   const hours = Number(value);
-  return Number.isFinite(hours) && hours >= 1 ? Math.min(168, hours) : 48;
+  return Number.isFinite(hours) && hours >= 1 ? Math.min(168, hours) : 24;
+}
+
+export function selectOverdueCheckRetries(results, overdueBookIds, limit = 10) {
+  return results.map((result, index) => ({ result, index }))
+    .filter(({ result }) => {
+      const error = result?.error || result?.book?.lastCheckAttemptError || result?.book?.lastError || '';
+      return result?.ok === false && overdueBookIds.has(result.book?.id) &&
+        isTransientSnapshotError(error) && !isBlockingSnapshotError(error);
+    })
+    .sort((a, b) => checkAgeAnchorMs(a.result.book) - checkAgeAnchorMs(b.result.book))
+    .slice(0, Math.max(0, limit));
 }
 
 export function isOverdueForCheck(book, now, hours = checkOverdueHours()) {

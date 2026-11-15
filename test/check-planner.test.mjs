@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { checkPlanPreview, planDueChecks } from '../src/check-planner.mjs';
+import { checkOverdueHours, checkPlanPreview, planDueChecks, selectOverdueCheckRetries } from '../src/check-planner.mjs';
+import { isCheckRetryCoolingDown } from '../src/check-policy.mjs';
 
 const now = Date.parse('2026-11-10T03:00:00Z');
 const hour = 60 * 60 * 1000;
@@ -105,4 +106,44 @@ test('plan previews are bounded and preserve the store and notification state', 
   assert.equal(preview.planned, 25);
   assert.equal(preview.overdueSelected, 25);
   assert.deepEqual(store, before);
+});
+
+test('the default overdue boundary protects books after 24 hours', () => {
+  assert.equal(checkOverdueHours(''), 24);
+  const result = planDueChecks({ books: [
+    book('new', 0, { lastCheckedAt: null, createdAt: date(1), currentPrice: null }),
+    book('day-old', 25), book('oldest', 47)
+  ] }, { batchSize: 2 }, now, { overdueHours: 24 });
+  assert.deepEqual(result.books.map(entry => entry.id), ['oldest', 'day-old']);
+});
+
+test('failed old books use their attempt time for cooldown without losing age priority', () => {
+  const failed = book('failed', 96, {
+    lastCheckAttemptedAt: date(0.1), lastCheckAttemptError: 'HTTP取得がタイムアウトしました', lastError: ''
+  });
+  assert.equal(isCheckRetryCoolingDown(failed, now), true);
+  assert.deepEqual(plan([failed, book('other', 72)]).books.map(entry => entry.id), ['other']);
+  failed.lastCheckAttemptedAt = date(13);
+  assert.deepEqual(plan([failed, book('other', 72)]).books.map(entry => entry.id), ['failed', 'other']);
+  failed.lastCheckAttemptedAt = date(0.1);
+  failed.lastCheckAttemptError = 'HTTP 503';
+  assert.equal(isCheckRetryCoolingDown(failed, now + 4 * hour), true);
+  failed.lastCheckedAt = new Date(now).toISOString();
+  assert.equal(isCheckRetryCoolingDown(failed, now), false);
+});
+
+test('overdue retries are bounded, oldest first, and exclude blocked or permanent failures', () => {
+  const results = [
+    { ok: false, error: '価格を取得できませんでした', book: book('older', 60) },
+    { ok: false, error: 'HTTP 503', book: book('blocked', 120) },
+    { ok: false, error: 'Kindle版商品ではありません', book: book('permanent', 120) },
+    { ok: false, error: 'HTTP取得がタイムアウトしました', book: book('oldest', 96) },
+    { ok: false, error: '価格を取得できませんでした', book: book('recent', 1) },
+    { ok: true, book: book('success', 96) }
+  ];
+  const ids = new Set(['older', 'blocked', 'permanent', 'oldest', 'success']);
+  const before = structuredClone(results);
+  assert.deepEqual(selectOverdueCheckRetries(results, ids, 1).map(entry => entry.result.book.id), ['oldest']);
+  assert.deepEqual(selectOverdueCheckRetries(results, ids).map(entry => entry.result.book.id), ['oldest', 'older']);
+  assert.deepEqual(results, before);
 });
