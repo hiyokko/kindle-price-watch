@@ -28,3 +28,11 @@ test('cron logs keep run totals without dumping every checked book', () => {
     failureSamples: [{ asin: 'B000000003', title: '失敗した本', error: 'timeout' }]
   });
 });
+
+test('compact cron logs retain phase timings and acquisition diagnostics', () => {
+  const timings = { bookChecksMs: 1200, persistenceMs: 20, totalMs: 1250 };
+  const priceAcquisition = { seriesFailureCacheSkips: 5, individualPriceHits: 10 };
+  const summary = compactCronRunResult({ timings, priceAcquisition, results: [] });
+  assert.deepEqual(summary.timings, timings);
+  assert.deepEqual(summary.priceAcquisition, priceAcquisition);
+});

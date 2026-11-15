@@ -7,6 +7,7 @@ import {
   needsDiscountExpiryRecheck, isCheckRetryCoolingDown
 } from './check-policy.mjs';
 import { notificationSeriesScope, isSingleBookRecord } from './series-identity.mjs';
+import { requestSignal } from './request-signal.mjs';
 
 export { mergeBulkCheckStoreForPersist } from './bulk-store-merge.mjs';
 export { needsDiscountExpiryRecheck, isCheckRetryCoolingDown } from './check-policy.mjs';
@@ -1186,7 +1187,19 @@ async function fetchKindleSeriesCandidate(input, options = {}) {
   }
 
   const key = seriesCandidateCacheKey(input, options);
+  if (options.probeSeriesCompletion === false) {
+    const fullKey = seriesCandidateCacheKey(input, { ...options, probeSeriesCompletion: true });
+    if (cache.has(fullKey)) return cache.get(fullKey);
+  }
   if (cache.has(key)) return cache.get(key);
+
+  const failureKey = `failure:${key}`;
+  const failure = cache.get(failureKey);
+  if (failure?.retryAt > Date.now()) {
+    if (options.acquisitionStats) options.acquisitionStats.seriesFailureCacheSkips += 1;
+    throw failure.error;
+  }
+  cache.delete(failureKey);
 
   const promise = fetchKindleSeriesItems(input, options).then(
     (series) => {
@@ -1195,6 +1208,13 @@ async function fetchKindleSeriesCandidate(input, options = {}) {
     },
     (error) => {
       cache.delete(key);
+      // Only price lookups back off. Discovery/import must still be allowed to retry.
+      if (options.probeSeriesCompletion === false) {
+        cache.set(failureKey, {
+          error,
+          retryAt: Date.now() + floorNumber(process.env.SERIES_PRICE_FAILURE_RETRY_MS, 0, 300000)
+        });
+      }
       throw error;
     }
   );
@@ -1206,14 +1226,15 @@ function cachedKindleSeriesCandidate(input, options = {}) {
   const cache = options.seriesCandidateCache;
   if (!cache || typeof cache.get !== 'function') return null;
 
-  const value = cache.get(seriesCandidateCacheKey(input, options));
+  const value = cache.get(seriesCandidateCacheKey(input, options)) ||
+    cache.get(seriesCandidateCacheKey(input, { ...options, probeSeriesCompletion: false }));
   if (!value || typeof value.then === 'function') return null;
   return value;
 }
 
 function seriesCandidateCacheKey(input, options = {}) {
   return [
-    options.requireCollectionPage ? 'collection' : 'series',
+    options.requireCollectionPage ? 'collection' : options.probeSeriesCompletion === false ? 'price-series' : 'series',
     String(input || '').trim()
   ].join(':');
 }
@@ -4944,6 +4965,16 @@ export async function runDueChecks(options = {}) {
 
   try {
     const startedAt = Date.now();
+    const timings = {};
+    const acquisitionStats = {
+      seriesLookupMs: 0, individualLookupMs: 0,
+      seriesPriceHits: 0, individualPriceHits: 0, seriesFailureCacheSkips: 0
+    };
+    const timePhase = async (name, task) => {
+      const phaseStartedAt = Date.now();
+      try { return await task(); }
+      finally { timings[name] = Date.now() - phaseStartedAt; }
+    };
     const maxRuntimeMs = floorNumber(process.env.CHECK_MAX_RUNTIME_MS, 0, 0);
     const saveReserveMs = runtimeSaveReserveMs();
     const seriesCandidateCache = options.seriesCandidateCache || new Map();
@@ -5047,20 +5078,21 @@ export async function runDueChecks(options = {}) {
       }
     }
 
+    timings.setupMs = Date.now() - startedAt;
     const importQueue = shouldRunBookImportQueue(source, options)
-      ? await processBookImportQueueInStore(store, { startedAt, maxRuntimeMs, saveReserveMs, now: cronStartedAt, seriesCandidateCache })
+      ? await timePhase('importQueueMs', () => processBookImportQueueInStore(store, { startedAt, maxRuntimeMs, saveReserveMs, now: cronStartedAt, seriesCandidateCache }))
       : null;
     const singleSeriesAudit = shouldRunSingleBookSeriesAudit(source, options)
-      ? await auditSingleBookSeriesClassificationsInStore(store, {
+      ? await timePhase('singleSeriesAuditMs', () => auditSingleBookSeriesClassificationsInStore(store, {
           startedAt,
           maxRuntimeMs,
           saveReserveMs,
           now: cronStartedAt,
           seriesCandidateCache
-        })
+        }))
       : null;
     let seriesDiscovery = shouldRunSeriesDiscovery(source, options, store, settings, startedAt)
-      ? await discoverSeriesUpdates(store, { startedAt, maxRuntimeMs, saveReserveMs, seriesCandidateCache })
+      ? await timePhase('initialSeriesDiscoveryMs', () => discoverSeriesUpdates(store, { startedAt, maxRuntimeMs, saveReserveMs, seriesCandidateCache }))
       : null;
     const discoveredSeriesKeys = seriesDiscoveryKeys(seriesDiscovery);
     const discoverCheckedSeries = shouldRunCheckedBookSeriesDiscovery(source, options);
@@ -5087,6 +5119,7 @@ export async function runDueChecks(options = {}) {
     };
     const cachedSeriesRetryCandidates = [];
     let transientErrorStreak = 0;
+    const bookChecksStartedAt = Date.now();
     for (let index = 0; index < plan.books.length; index += 1) {
       if (shouldStopBeforeNextBookCheck(startedAt, maxRuntimeMs, saveReserveMs)) {
         stoppedByRuntimeLimit = true;
@@ -5125,7 +5158,8 @@ export async function runDueChecks(options = {}) {
           deferSeriesNotifications: true,
           seriesNotificationBaselines,
           seriesFreshAfter,
-          seriesCandidateCache
+          seriesCandidateCache,
+          acquisitionStats
         });
       } finally {
         runtime.cleanup();
@@ -5200,14 +5234,15 @@ export async function runDueChecks(options = {}) {
       }
     }
 
-    const cachedSeriesRetries = await retryCachedSeriesCheckFailuresInStore(store, cachedSeriesRetryCandidates, {
+    timings.bookChecksMs = Date.now() - bookChecksStartedAt;
+    const cachedSeriesRetries = await timePhase('cachedSeriesRetriesMs', () => retryCachedSeriesCheckFailuresInStore(store, cachedSeriesRetryCandidates, {
       ...options,
       getWebhookUrls,
       deferSeriesNotifications: true,
       seriesNotificationBaselines,
       seriesFreshAfter,
       seriesCandidateCache
-    });
+    }));
     for (const retry of cachedSeriesRetries) {
       results[retry.index] = retry.result;
     }
@@ -5219,31 +5254,31 @@ export async function runDueChecks(options = {}) {
     newReleaseFollowUp.failed = newReleaseFollowUpResults.length - newReleaseFollowUp.succeeded;
 
     const listPriceChallenge = shouldRunListPriceChallenge(source, options)
-      ? await runListPriceChallengeInStore(store, results, {
+      ? await timePhase('listPriceChallengeMs', () => runListPriceChallengeInStore(store, results, {
           startedAt,
           maxRuntimeMs,
           saveReserveMs,
           settings,
           pacing
-        })
+        }))
       : null;
 
     const priceIntegrityAudit = shouldRunPriceIntegrityAudit(source, options)
-      ? await runPriceIntegrityAudit(store, results, {
+      ? await timePhase('priceIntegrityAuditMs', () => runPriceIntegrityAudit(store, results, {
           ...options,
           startedAt,
           maxRuntimeMs,
           saveReserveMs,
           now: new Date().toISOString(),
           seriesCandidateCache
-        })
+        }))
       : null;
 
     const checkErrorSummary = summarizeCheckResultErrors(results);
-    const seriesNotifications = await sendDeferredSeriesNotifications(store, seriesNotificationBaselines, {
+    const seriesNotifications = await timePhase('seriesNotificationsMs', () => sendDeferredSeriesNotifications(store, seriesNotificationBaselines, {
       ...options,
       getWebhookUrls
-    });
+    }));
     const remainingDue = countDueBooks(store.books, scheduleNow);
     const finishedAt = new Date().toISOString();
     const seriesDiscoveryAdditions = seriesDiscoveryAdditionsForAutomation(store, seriesDiscovery);
@@ -5278,6 +5313,8 @@ export async function runDueChecks(options = {}) {
       checkErrorSummary,
       newReleaseFollowUp,
       seriesNotifications,
+      timings,
+      priceAcquisition: acquisitionStats,
       results
     };
 
@@ -5348,21 +5385,22 @@ export async function runDueChecks(options = {}) {
       hasImportQueueWork(importQueue) ||
       hasListPriceChallengeWork(listPriceChallenge)
     ) {
-      await persistBulkCheckStore({
+      await timePhase('persistenceMs', () => persistBulkCheckStore({
         store,
         baseStore,
         cronFields
-      });
+      }));
     }
 
-    result.summaryNotification = await sendCronSummaryNotification(result, {
+    result.summaryNotification = await timePhase('summaryNotificationMs', () => sendCronSummaryNotification(result, {
       source,
       options,
       startedAt: cronStartedAt,
       finishedAt,
       durationMs: new Date(finishedAt).getTime() - startedAt,
       getWebhookUrls
-    });
+    }));
+    timings.totalMs = Date.now() - startedAt;
 
     if (source === 'cron') {
       result.cronPersisted = Boolean(cronFields);
@@ -6446,6 +6484,7 @@ async function checkOneBookInStore(store, bookRef, options = {}) {
     signal: options.signal,
     timeoutMs: snapshotTimeoutMsForBook(bookRef, options),
     seriesCandidateCache: options.seriesCandidateCache,
+    acquisitionStats: options.acquisitionStats,
     store
   });
   const applied = applyCheckResultToStore(store, bookRef, snapshotResult, now, checkResultApplyOptions(options));
@@ -7310,20 +7349,31 @@ function sharedWebhookUrlLoader() {
   };
 }
 
-async function settleSnapshot(asin, book = {}, options = {}) {
+export async function settleSnapshot(asin, book = {}, options = {}) {
+  const stats = options.acquisitionStats;
   try {
+    const seriesStartedAt = Date.now();
     const seriesSnapshot = await fetchSeriesPriceSnapshotForBook(asin, book, options);
-    const snapshot =
-      seriesSnapshot ||
-      await fetchBookSnapshot(asin, {
-        ...book,
-        signal: options.signal,
-        timeoutMs: options.timeoutMs,
-        url: options.url || snapshotInputUrlForBook(book),
-        allowAmazonExtendedFallback: shouldAllowAmazonExtendedFallbackForBook(book, options),
-        allowAmazonSearchFallback: shouldAllowAmazonSearchFallbackForBook(book, options),
-        preferListasinFallback: shouldPreferListasinFallbackForBook(book, options)
-      });
+    if (stats) stats.seriesLookupMs += Date.now() - seriesStartedAt;
+    let snapshot = seriesSnapshot;
+    if (snapshot && stats) stats.seriesPriceHits += 1;
+    if (!snapshot) {
+      const individualStartedAt = Date.now();
+      try {
+        snapshot = await fetchBookSnapshot(asin, {
+          ...book,
+          signal: options.signal,
+          timeoutMs: options.timeoutMs,
+          url: options.url || snapshotInputUrlForBook(book),
+          allowAmazonExtendedFallback: shouldAllowAmazonExtendedFallbackForBook(book, options),
+          allowAmazonSearchFallback: shouldAllowAmazonSearchFallbackForBook(book, options),
+          preferListasinFallback: shouldPreferListasinFallbackForBook(book, options)
+        });
+        if (stats && snapshot.currentPrice != null) stats.individualPriceHits += 1;
+      } finally {
+        if (stats) stats.individualLookupMs += Date.now() - individualStartedAt;
+      }
+    }
     if (snapshot.currentPrice == null) return { ok: false, snapshot, error: '価格を取得できませんでした' };
     const suspiciousReason = suspiciousSnapshotReason(book, snapshot);
     if (suspiciousReason) {
@@ -7359,9 +7409,15 @@ async function fetchSeriesPriceSnapshotForBook(asin, book = {}, options = {}) {
   const input = seriesDiscoveryInput(book.sourceUrl, book.seriesKey);
   if (!input) return null;
 
+  const phase = requestSignal(options.signal, Math.min(
+    floorNumber(options.seriesPriceTimeoutMs ?? process.env.SERIES_PRICE_LOOKUP_MAX_RUNTIME_MS, 1, 15000),
+    Math.max(1, Math.floor(checkBookMaxRuntimeMs() / 4))
+  ));
   try {
     const series = await fetchSeriesCandidates(input, {
       ...options,
+      signal: phase.signal,
+      probeSeriesCompletion: false,
       allowIncomplete: true,
       skipBackfill: true,
       skipExternalFallback: options.skipExternalFallback ?? true,
@@ -7373,6 +7429,8 @@ async function fetchSeriesPriceSnapshotForBook(asin, book = {}, options = {}) {
     });
   } catch {
     return null;
+  } finally {
+    phase.cleanup();
   }
 }
 

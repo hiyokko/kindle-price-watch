@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { amazonUrlForAsin, extractAsin, isKindleSeriesUrl } from './amazon-url.mjs';
 import { seriesCandidatesAreCompatible } from './series-identity.mjs';
+import { requestSignal } from './request-signal.mjs';
 
 const ASIN_GLOBAL_PATTERN = /[A-Z0-9]{10}/gi;
 const DEFAULT_FETCH_TIMEOUT_MS = 4000;
@@ -1444,7 +1445,7 @@ export async function fetchBookSnapshot(asin, options = {}) {
   }
 
   if (provider === 'listasin') {
-    return fetchFromListasin(normalizedAsin, context);
+    return fetchFromListasin(normalizedAsin, context, context);
   }
 
   if (provider === 'auto' || provider === 'amazon_html') {
@@ -2675,10 +2676,12 @@ async function fetchHtml(url, options = {}) {
   let lastError = null;
 
   for (let attempt = 0; attempt <= retries; attempt += 1) {
+    options.signal?.throwIfAborted();
     try {
       return await fetchHtmlOnce(url, options);
     } catch (error) {
       lastError = error;
+      options.signal?.throwIfAborted();
       if (attempt >= retries || !isRetriableFetchError(error)) throw error;
       await sleepWithSignal(fetchRetryDelayMs(attempt, options), options.signal);
     }
@@ -2796,12 +2799,14 @@ async function fetchTextWithRetries(url, options = {}) {
 
   let lastError = null;
   for (let attempt = 0; attempt <= retries; attempt += 1) {
+    options.signal?.throwIfAborted();
     try {
       return await fetchHtml(url, fetchOptions);
     } catch (error) {
       lastError = error;
+      options.signal?.throwIfAborted();
       if (attempt >= retries || !isRetriableFetchError(error)) throw error;
-      await sleep(fetchRetryDelayMs(attempt, options));
+      await sleepWithSignal(fetchRetryDelayMs(attempt, options), options.signal);
     }
   }
 
@@ -2945,31 +2950,6 @@ function sleepWithSignal(ms, signal) {
 
 function abortError() {
   return new DOMException('Aborted', 'AbortError');
-}
-
-function requestSignal(externalSignal, timeoutMs) {
-  if (!externalSignal && !timeoutMs) return { signal: undefined, cleanup: () => {} };
-
-  const controller = new AbortController();
-  let timeoutId = null;
-  const abort = () => {
-    if (!controller.signal.aborted) controller.abort();
-  };
-
-  if (externalSignal) {
-    if (externalSignal.aborted) abort();
-    else externalSignal.addEventListener('abort', abort, { once: true });
-  }
-
-  if (timeoutMs) timeoutId = setTimeout(abort, timeoutMs);
-
-  return {
-    signal: controller.signal,
-    cleanup: () => {
-      if (timeoutId) clearTimeout(timeoutId);
-      if (externalSignal) externalSignal.removeEventListener('abort', abort);
-    }
-  };
 }
 
 function isAbortError(error) {
