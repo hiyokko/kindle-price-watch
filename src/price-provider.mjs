@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { amazonUrlForAsin, extractAsin, isKindleSeriesUrl } from './amazon-url.mjs';
 import { seriesCandidatesAreCompatible } from './series-identity.mjs';
 import { requestSignal } from './request-signal.mjs';
+import { isUnusableBookTitle, preferBookTitle } from './book-title.mjs';
 
 const ASIN_GLOBAL_PATTERN = /[A-Z0-9]{10}/gi;
 const DEFAULT_FETCH_TIMEOUT_MS = 4000;
@@ -1509,7 +1510,6 @@ async function fetchFromKeepa(asin) {
 async function fetchFromAmazonHtml(asin, inputUrl = '', options = {}) {
   let lastSnapshot = null;
   const errors = [];
-  let amazonBlocked = false;
   let listasinTried = false;
   let nonKindleProductDetected = false;
   let consecutiveAmazonTimeouts = 0;
@@ -1541,7 +1541,6 @@ async function fetchFromAmazonHtml(asin, inputUrl = '', options = {}) {
         else consecutiveAmazonTimeouts = 0;
         if (isAmazonBlockingFetchError(error)) {
           if (shouldContinueAfterBlockedKindleDbsUrl(url)) continue;
-          amazonBlocked = true;
           break;
         }
         if (
@@ -1566,7 +1565,7 @@ async function fetchFromAmazonHtml(asin, inputUrl = '', options = {}) {
     }
   }
 
-  if (!amazonBlocked && options.allowAmazonReaderFallback !== false && shouldUseAmazonReaderFallback()) {
+  if (options.allowAmazonReaderFallback !== false && shouldUseAmazonReaderFallback()) {
     try {
       const snapshot = await fetchFromAmazonReader(asin, inputUrl, options);
       if (snapshot.currentPrice != null && !shouldDeferAmazonReaderPrice(snapshot, options)) {
@@ -1864,7 +1863,9 @@ async function fetchResolvedCollectionFromAmazonReaderResult(result, sourceUrl, 
 }
 
 function amazonReaderUrl(sourceUrl) {
-  return `https://r.jina.ai/http://${sourceUrl}`;
+  const url = new URL(sourceUrl);
+  if (!['http:', 'https:'].includes(url.protocol)) throw new Error('Reader取得先URLが不正です');
+  return `https://r.jina.ai/${url.href}`;
 }
 
 function nonKindleProductError() {
@@ -2292,6 +2293,17 @@ function extractAmazonReaderSnapshotFromText(text, asin, url, provider) {
   const value = String(text || '');
   assertKindleBookProductPage(value);
   const title = extractAmazonReaderTitle(value);
+  const sourceUrl = value.match(/^URL Source:[\t ]*(\S+)/im)?.[1] || '';
+  const sourceAsin = extractAsin(sourceUrl);
+  let sourceHostMatches = false;
+  try { sourceHostMatches = new URL(sourceUrl).hostname === new URL(url).hostname; } catch {}
+  if ((sourceAsin && sourceAsin !== asin) || (sourceUrl && !sourceHostMatches)) {
+    throw new Error('Readerの商品ASINまたは取得元が一致しません');
+  }
+  const purchase = value.match(/You will be charged\s+JPY\s*([0-9][0-9,]*)/i);
+  const purchaseContext = purchase ? value.slice(Math.max(0, purchase.index - 1500), purchase.index + 800) : '';
+  const readerPurchaseVerified = Boolean(sourceHostMatches && sourceAsin === asin && purchase &&
+    /Kindle Store Terms of Use/i.test(purchaseContext) && /Kindle Edition/i.test(value) && !isUnusableBookTitle(title));
   return normalizeSnapshot({
     asin,
     title,
@@ -2299,20 +2311,22 @@ function extractAmazonReaderSnapshotFromText(text, asin, url, provider) {
     publisher: '',
     imageUrl: extractAmazonReaderImage(value, title),
     amazonUrl: amazonUrlForAsin(asin),
-    currentPrice: extractAmazonReaderCurrentPrice(value),
-    currentPoints: extractAmazonReaderPoints(value),
+    currentPrice: readerPurchaseVerified ? parsePrice(purchase[1]) : extractAmazonReaderCurrentPrice(value),
+    currentPoints: extractAmazonReaderPoints(readerPurchaseVerified ? purchaseContext : value),
     listPrice: null,
-    provider
+    provider,
+    explicitPriceDisplay: readerPurchaseVerified,
+    readerPurchaseVerified
   });
 }
 
 function extractAmazonReaderTitle(text) {
-  const rawTitle = text.match(/^Title:\s*(.+)$/im)?.[1] || text.match(/^#\s+(.+)$/m)?.[1] || '';
-  return cleanTitle(rawTitle)
+  const candidates = [text.match(/^Title:[\t ]*(.+)$/im)?.[1], text.match(/^#[\t ]+(.+)$/m)?.[1]];
+  return candidates.map(rawTitle => cleanTitle(rawTitle)
     .replace(/^Amazon\.co\.jp:\s*/i, '')
     .replace(/\s+eBook\s*:.*$/i, '')
     .replace(/\s*:\s*Kindle Store.*$/i, '')
-    .trim();
+    .trim()).find(title => !isUnusableBookTitle(title)) || '';
 }
 
 function extractAmazonReaderAuthor(text) {
@@ -2406,6 +2420,8 @@ function mergeSnapshotLike(base, overlay) {
     currentPoints: shouldUseOverlayPricing ? overlay.currentPoints : base.currentPoints ?? overlay.currentPoints,
     effectivePrice: shouldUseOverlayPricing ? overlay.effectivePrice : base.effectivePrice ?? overlay.effectivePrice,
     listPrice: shouldUseOverlayPricing ? overlay.listPrice : base.listPrice ?? overlay.listPrice,
+    explicitPriceDisplay: shouldUseOverlayPricing ? overlay.explicitPriceDisplay : base.explicitPriceDisplay,
+    readerPurchaseVerified: shouldUseOverlayPricing ? overlay.readerPurchaseVerified : base.readerPurchaseVerified,
     provider: shouldUseOverlayPricing ? overlay.provider : base.provider
   };
 }
@@ -2424,6 +2440,7 @@ export function shouldDeferAmazonReaderPrice(snapshot = {}, options = {}) {
   const price = Number(snapshot.currentPrice);
   if (!Number.isFinite(price) || price < 0) return false;
   if (price <= 5) return true;
+  if (snapshot.readerPurchaseVerified === true && snapshot.explicitPriceDisplay === true) return false;
 
   const references = [
     snapshot.listPrice,
@@ -2443,7 +2460,7 @@ function bestSnapshotTitle(primary, fallback) {
   const second = cleanTitle(fallback);
   if (!first) return second;
   if (second && isPlaceholderSnapshotTitle(first) && !isPlaceholderSnapshotTitle(second)) return second;
-  return first;
+  return preferBookTitle(first, second);
 }
 
 function isPlaceholderSnapshotTitle(title) {
@@ -2983,6 +3000,7 @@ function normalizeSnapshot(snapshot) {
     listPrice: nullableNumber(snapshot.listPrice),
     provider: snapshot.provider,
     explicitPriceDisplay: Boolean(snapshot.explicitPriceDisplay),
+    readerPurchaseVerified: Boolean(snapshot.readerPurchaseVerified),
     explicitFreeKindlePrice: Boolean(snapshot.explicitFreeKindlePrice)
   };
 }
@@ -4060,6 +4078,7 @@ function maxSeriesItemVolume(items) {
 }
 
 function cleanTitle(value) {
+  if (isUnusableBookTitle(value)) return '';
   return cleanText(value)
     .replace(/\s+\|.*$/, '')
     .replace(/\s*-\s*Amazon.*$/i, '')

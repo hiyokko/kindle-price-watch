@@ -8,6 +8,7 @@ import {
 } from './check-policy.mjs';
 import { notificationSeriesScope, isSingleBookRecord } from './series-identity.mjs';
 import { requestSignal } from './request-signal.mjs';
+import { isUnusableBookTitle, preferBookTitle, recoverBookTitle } from './book-title.mjs';
 
 export { mergeBulkCheckStoreForPersist } from './bulk-store-merge.mjs';
 export { needsDiscountExpiryRecheck, isCheckRetryCoolingDown } from './check-policy.mjs';
@@ -2504,11 +2505,12 @@ export function repairStorePriceState(store, options = {}) {
   }
 
   for (const book of store.books) {
+    const titleRepaired = repairStoredBookTitle(book, store.priceHistory);
     const repair = repairSuspiciousPriceState(book, store, {
       clearCurrent: options.clearCurrent !== false,
       restoreMissingCurrent: options.restoreMissingCurrent === true
     });
-    if (!repair.changed) continue;
+    if (!repair.changed && !titleRepaired) continue;
 
     if (repair.currentCleared && !repair.currentRestored) {
       book.lastCheckedAt = null;
@@ -7415,6 +7417,9 @@ function sharedWebhookUrlLoader() {
 
 export async function settleSnapshot(asin, book = {}, options = {}) {
   const stats = options.acquisitionStats;
+  if (isUnusableBookTitle(book.title)) {
+    book = { ...book, title: recoverBookTitle(book, options.store?.priceHistory) };
+  }
   try {
     const seriesStartedAt = Date.now();
     const seriesSnapshot = await fetchSeriesPriceSnapshotForBook(asin, book, options);
@@ -7838,14 +7843,12 @@ function effectivePriceFromSeed(seed) {
 }
 
 function preferSnapshotText(snapshotText, fallbackText) {
-  if (!snapshotText || /^ASIN\s+[A-Z0-9]{10}$/i.test(snapshotText)) return fallbackText;
-  if (isAmazonErrorPageBookTitle(snapshotText)) return fallbackText;
-  return snapshotText;
+  return preferBookTitle(snapshotText, fallbackText);
 }
 
-function repairStoredBookTitle(book) {
+function repairStoredBookTitle(book, history = []) {
   if (!book || !isAmazonErrorPageBookTitle(book.title)) return false;
-  const fallback = fallbackBookTitle(book);
+  const fallback = recoverBookTitle(book, history) || fallbackBookTitle(book);
   if (!fallback || fallback === book.title) return false;
   book.title = fallback;
   return true;
@@ -7858,13 +7861,7 @@ function fallbackBookTitle(book) {
 }
 
 function isAmazonErrorPageBookTitle(title) {
-  const value = String(title || '').replace(/\s+/g, '');
-  return (
-    /(?:503|ServiceUnavailable|サービスが利用できません)/i.test(value) ||
-    /(?:RobotCheck|CAPTCHA|ショッピングを続けてください)/i.test(value) ||
-    /^URLSource:/i.test(value) ||
-    /^Amazon\.co\.jp$/i.test(value)
-  );
+  return isUnusableBookTitle(title);
 }
 
 function isUnresolvedSingleBook(book) {
