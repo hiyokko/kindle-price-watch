@@ -1099,13 +1099,15 @@ async function detectCollectionSeries(input, options = {}) {
   });
 }
 
-async function fetchSeriesCandidates(input, options = {}) {
+export async function fetchSeriesCandidates(input, options = {}) {
   const candidates = [];
+  options.signal?.throwIfAborted();
 
   try {
     const series = await fetchKindleSeriesCandidate(input, options);
     if (series.items.length > 1) candidates.push(series);
   } catch {
+    options.signal?.throwIfAborted();
     // Fall back below.
   }
 
@@ -1114,6 +1116,7 @@ async function fetchSeriesCandidates(input, options = {}) {
       const series = await fetchExternalKindleSeriesItems(input, options);
       if (series?.items?.length > 1) candidates.push(series);
     } catch {
+      options.signal?.throwIfAborted();
       // No usable external fallback.
     }
 
@@ -1124,9 +1127,10 @@ async function fetchSeriesCandidates(input, options = {}) {
 
     for (const seriesName of saleBonNames) {
       try {
-        const series = await fetchSaleBonKindleSeriesItems(seriesName, { sourceAsin: extractAsin(input) });
+        const series = await fetchSaleBonKindleSeriesItems(seriesName, { ...options, sourceAsin: extractAsin(input) });
         if (series?.items?.length > 1) candidates.push(series);
       } catch {
+        options.signal?.throwIfAborted();
         // Sale-bon is an optional fallback; ignore failures and use the other candidates.
       }
     }
@@ -1135,9 +1139,10 @@ async function fetchSeriesCandidates(input, options = {}) {
     const kintyakuQueries = supplementalSeriesQueries(candidates, saleBonNames);
     for (const { query, seriesName } of kintyakuQueries) {
       try {
-        const series = await fetchKintyakuKindleSeriesItems(query, { sourceAsin, seriesName });
+        const series = await fetchKintyakuKindleSeriesItems(query, { ...options, sourceAsin, seriesName });
         if (series?.items?.length > 1) candidates.push(series);
       } catch {
+        options.signal?.throwIfAborted();
         // Kintyaku is an optional metadata source; ignore failures and use the other candidates.
       }
     }
@@ -1145,9 +1150,10 @@ async function fetchSeriesCandidates(input, options = {}) {
     const efoxQueries = supplementalSeriesQueries(candidates, saleBonNames);
     for (const { query, seriesName } of efoxQueries) {
       try {
-        const series = await fetchEfoxKindleSeriesItems(query, { sourceAsin, seriesName });
+        const series = await fetchEfoxKindleSeriesItems(query, { ...options, sourceAsin, seriesName });
         if (series?.items?.length > 1) candidates.push(series);
       } catch {
+        options.signal?.throwIfAborted();
         // efox is an optional article source; ignore failures and use the other candidates.
       }
     }
@@ -1155,9 +1161,10 @@ async function fetchSeriesCandidates(input, options = {}) {
     const kinpomeQueries = supplementalSeriesQueries(candidates, saleBonNames);
     for (const { query, seriesName } of kinpomeQueries) {
       try {
-        const series = await fetchKinpomeKindleSeriesItems(query, { sourceAsin, seriesName });
+        const series = await fetchKinpomeKindleSeriesItems(query, { ...options, sourceAsin, seriesName });
         if (series?.items?.length > 1) candidates.push(series);
       } catch {
+        options.signal?.throwIfAborted();
         // Kinpome is an optional price source; ignore failures and use the other candidates.
       }
     }
@@ -1362,6 +1369,7 @@ async function sourceSeriesNamesForSaleBon(input, options = {}) {
     });
     for (const seriesName of seriesNameCandidatesFromBookTitle(snapshot.title)) names.add(seriesName);
   } catch {
+    options.signal?.throwIfAborted();
     // URL slug candidates remain useful when Amazon product/search pages are blocked.
   }
 
@@ -1891,6 +1899,7 @@ async function fetchAmazonHtmlSnapshotForSeriesBackfill(asin, seed = {}, options
         if (snapshot.currentPrice != null) return snapshot;
         lastSnapshot = snapshot;
       } catch (error) {
+        options.signal?.throwIfAborted();
         lastError = error;
       }
     }
@@ -1973,6 +1982,7 @@ function mergeAmazonSnapshotIntoSeriesItem(item, snapshot) {
     provider,
     explicitPriceDisplay: useSnapshotPrice ? Boolean(snapshot.explicitPriceDisplay) : Boolean(item.explicitPriceDisplay),
     explicitFreeKindlePrice: useSnapshotPrice ? Boolean(snapshot.explicitFreeKindlePrice) : Boolean(item.explicitFreeKindlePrice),
+    readerPurchaseVerified: useSnapshotPrice ? Boolean(snapshot.readerPurchaseVerified) : Boolean(item.readerPurchaseVerified),
     lastError: currentPrice == null ? item.lastError || '' : ''
   };
 }
@@ -2067,6 +2077,7 @@ function updateExistingSeriesBook(book, item, options) {
     book.effectivePrice = effectivePrice;
     book.explicitPriceDisplay = Boolean(item.explicitPriceDisplay);
     book.explicitFreeKindlePrice = Boolean(item.explicitFreeKindlePrice);
+    book.readerPurchaseVerified = Boolean(item.readerPurchaseVerified);
     book.lowestPrice = book.lowestPrice == null ? item.currentPrice : Math.min(book.lowestPrice, item.currentPrice);
     if (effectivePrice != null) {
       book.lowestEffectivePrice =
@@ -2235,6 +2246,7 @@ export function suspiciousSnapshotReason(book, snapshot) {
     provider: snapshot.provider,
     explicitPriceDisplay: snapshot.explicitPriceDisplay,
     explicitFreeKindlePrice: snapshot.explicitFreeKindlePrice,
+    readerPurchaseVerified: snapshot.readerPurchaseVerified,
     referencePrices: [
       book.currentPrice,
       book.effectivePrice,
@@ -2354,6 +2366,7 @@ function repairSuspiciousPriceState(book, store, options = {}) {
       book.currentPoints = latest.points || 0;
       book.effectivePrice = latest.effectivePrice ?? effectivePriceFromSeed(latest);
       book.provider = latest.provider || book.provider;
+      applySnapshotPriceEvidence(book, latest);
       book.listPrice = trustedListPriceFor(book.currentPrice, latest.listPrice, latest.listPriceProvider || book.provider);
       book.listPriceProvider = book.listPrice == null ? '' : latest.listPriceProvider || book.provider;
       book.lastCheckedAt = latest.checkedAt || book.lastCheckedAt;
@@ -3919,6 +3932,7 @@ function suspiciousStoredCurrentPriceReason(book) {
     provider: book.provider,
     explicitPriceDisplay: book.explicitPriceDisplay,
     explicitFreeKindlePrice: book.explicitFreeKindlePrice,
+    readerPurchaseVerified: book.readerPurchaseVerified,
     referencePrices: [
       listPrice,
       book.previousEffectivePrice,
@@ -3941,6 +3955,7 @@ function isSuspiciousHistoryEntry(entry, book) {
       provider,
       explicitPriceDisplay: entry.explicitPriceDisplay,
       explicitFreeKindlePrice: entry.explicitFreeKindlePrice,
+      readerPurchaseVerified: entry.readerPurchaseVerified,
       referencePrices: [book.currentPrice, book.effectivePrice, book.previousEffectivePrice, listPrice]
     })
   );
@@ -4109,16 +4124,20 @@ export function suspiciousPriceReason({
   provider = '',
   referencePrices = [],
   explicitPriceDisplay = false,
-  explicitFreeKindlePrice = false
+  explicitFreeKindlePrice = false,
+  readerPurchaseVerified = false
 }) {
   const current = Number(price);
-  const pointValue = Number(points || 0);
+  const pointValue = Number(points ?? 0);
   const reference = Math.max(
     ...referencePrices
       .map((value) => Number(value))
       .filter((value) => Number.isFinite(value) && value > 0)
   );
-  if (!Number.isFinite(current)) return '';
+  if (price == null) return '';
+  if (!Number.isFinite(current) || current < 0) return '価格が不正です';
+  if (!Number.isFinite(pointValue) || pointValue < 0) return 'ポイントが不正です';
+  if (pointValue > current) return 'ポイントが価格を超えています';
   if (isLikelyAmazonHtmlTinyContamination({
     price: current,
     provider,
@@ -4128,12 +4147,10 @@ export function suspiciousPriceReason({
   })) {
     return current === 0 ? 'Amazon HTML価格が不自然に0円です' : 'Amazon HTML価格が不自然に小さすぎます';
   }
-  if (isLikelyLowConfidenceReaderPrice({ price: current, provider, reference })) {
+  if (isLikelyLowConfidenceReaderPrice({ price: current, provider, reference, explicitPriceDisplay, readerPurchaseVerified })) {
     return 'Amazon reader価格が基準価格に対して低すぎます';
   }
   if (current <= 0) return '';
-
-  if (Number.isFinite(pointValue) && pointValue > current) return 'ポイントが価格を超えています';
 
   const list = Number(listPrice);
   if (Number.isFinite(list) && list > 0 && current > list * 1.15) return '価格が定価を大きく超えています';
@@ -4174,11 +4191,12 @@ function isAmazonHtmlLikePriceProvider(provider) {
   return ['amazon_html', 'amazon_search'].includes(String(provider || '').toLowerCase());
 }
 
-function isLikelyLowConfidenceReaderPrice({ price, provider = '', reference = 0 }) {
+function isLikelyLowConfidenceReaderPrice({ price, provider = '', reference = 0, explicitPriceDisplay = false, readerPurchaseVerified = false }) {
   if (String(provider || '').toLowerCase() !== 'amazon_reader') return false;
   const current = Number(price);
   const baseline = Number(reference);
   if (!Number.isFinite(current) || current <= 5) return false;
+  if (readerPurchaseVerified === true && explicitPriceDisplay === true) return false;
   if (!Number.isFinite(baseline) || baseline < 100) return false;
   return current <= baseline * 0.7;
 }
@@ -7697,6 +7715,7 @@ function applySnapshotPriceEvidence(book, snapshot) {
   if (!book || !snapshot) return;
   book.explicitPriceDisplay = Boolean(snapshot.explicitPriceDisplay);
   book.explicitFreeKindlePrice = Boolean(snapshot.explicitFreeKindlePrice);
+  book.readerPurchaseVerified = Boolean(snapshot.readerPurchaseVerified);
 }
 
 function normalizeImageUrl(value) {
@@ -7769,7 +7788,8 @@ async function buildBookFromAsin(asin, options = {}) {
     listPrice: fallbackListPrice,
     provider: fallbackProvider,
     explicitPriceDisplay: Boolean(seed.explicitPriceDisplay),
-    explicitFreeKindlePrice: Boolean(seed.explicitFreeKindlePrice)
+    explicitFreeKindlePrice: Boolean(seed.explicitFreeKindlePrice),
+    readerPurchaseVerified: Boolean(seed.readerPurchaseVerified)
   };
   snapshot = mergeSnapshot(fallback, snapshot);
   if (snapshot.currentPrice == null && !lastError) {
@@ -7796,6 +7816,7 @@ async function buildBookFromAsin(asin, options = {}) {
     listPrice: snapshot.listPrice,
     explicitPriceDisplay: Boolean(snapshot.explicitPriceDisplay),
     explicitFreeKindlePrice: Boolean(snapshot.explicitFreeKindlePrice),
+    readerPurchaseVerified: Boolean(snapshot.readerPurchaseVerified),
     lowestPrice: snapshot.currentPrice,
     lowestEffectivePrice: snapshot.effectivePrice,
     previousEffectivePrice: null,
@@ -7818,6 +7839,7 @@ async function buildBookFromAsin(asin, options = {}) {
 
 function mergeSnapshot(fallback, snapshot) {
   if (!snapshot) return fallback;
+  const pricing = snapshot.currentPrice != null || fallback.currentPrice == null ? snapshot : fallback;
   return {
     asin: snapshot.asin || fallback.asin,
     title: preferSnapshotText(snapshot.title, fallback.title),
@@ -7827,13 +7849,14 @@ function mergeSnapshot(fallback, snapshot) {
     imageSource: snapshot.imageUrl ? snapshot.provider || fallback.imageSource : fallback.imageSource,
     amazonUrl: snapshot.amazonUrl || fallback.amazonUrl,
     releaseDate: snapshot.releaseDate || fallback.releaseDate || '',
-    currentPrice: snapshot.currentPrice ?? fallback.currentPrice,
-    currentPoints: snapshot.currentPoints ?? fallback.currentPoints,
-    effectivePrice: snapshot.effectivePrice ?? fallback.effectivePrice,
-    listPrice: snapshot.listPrice ?? fallback.listPrice,
-    provider: snapshot.provider || fallback.provider,
-    explicitPriceDisplay: Boolean(snapshot.explicitPriceDisplay ?? fallback.explicitPriceDisplay),
-    explicitFreeKindlePrice: Boolean(snapshot.explicitFreeKindlePrice ?? fallback.explicitFreeKindlePrice)
+    currentPrice: pricing.currentPrice ?? null,
+    currentPoints: pricing.currentPoints ?? 0,
+    effectivePrice: pricing.effectivePrice ?? effectivePriceFromSeed(pricing),
+    listPrice: pricing.listPrice ?? null,
+    provider: pricing.provider || fallback.provider,
+    explicitPriceDisplay: Boolean(pricing.explicitPriceDisplay),
+    explicitFreeKindlePrice: Boolean(pricing.explicitFreeKindlePrice),
+    readerPurchaseVerified: Boolean(pricing.readerPurchaseVerified)
   };
 }
 
@@ -7945,6 +7968,7 @@ function historyEntry(book, checkedAt) {
     provider: book.provider,
     explicitPriceDisplay: Boolean(book.explicitPriceDisplay),
     explicitFreeKindlePrice: Boolean(book.explicitFreeKindlePrice),
+    readerPurchaseVerified: Boolean(book.readerPurchaseVerified),
     checkedAt
   };
 }
@@ -8064,7 +8088,8 @@ function samePriceHistoryState(left, right) {
     nullableNumber(left.effectivePrice) === nullableNumber(right.effectivePrice) &&
     nullableNumber(left.listPrice) === nullableNumber(right.listPrice) &&
     Boolean(left.explicitPriceDisplay) === Boolean(right.explicitPriceDisplay) &&
-    Boolean(left.explicitFreeKindlePrice) === Boolean(right.explicitFreeKindlePrice)
+    Boolean(left.explicitFreeKindlePrice) === Boolean(right.explicitFreeKindlePrice) &&
+    Boolean(left.readerPurchaseVerified) === Boolean(right.readerPurchaseVerified)
   );
 }
 

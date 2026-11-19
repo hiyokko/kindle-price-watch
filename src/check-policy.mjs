@@ -17,7 +17,7 @@ export function isPermanentSnapshotError(error) {
 }
 
 export function isTransientSnapshotError(error) {
-  return /(?:価格を取得できませんでした|Amazonにブロック|HTTP\s*(?:403|429|500|503)|fetch failed|タイムアウト|reader:|商品ページではなくエラーページ)/i.test(String(error || ''));
+  return /(?:価格を取得できませんでした|Amazonにブロック|HTTP\s*(?:403|429|500|503)|fetch failed|タイムアウト|\baborted\b|\bAbortError\b|reader:|商品ページではなくエラーページ)/i.test(String(error || ''));
 }
 
 export function isBlockingSnapshotError(error) {

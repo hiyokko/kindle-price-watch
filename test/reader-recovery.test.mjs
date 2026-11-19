@@ -69,7 +69,7 @@ test('Reader discount evidence survives merging with a metadata-only direct resp
 });
 
 test('deep reader discounts without matching source evidence remain deferred', async t => {
-  mockReader(t, readerText({ source: 'https://www.amazon.co.jp/' }));
+  mockReader(t, readerText({ source: 'https://www.amazon.co.jp/' }).replace('Amazon Points:+999 pt', 'Amazon Points:+7 pt'));
   const snapshot = await fetchAmazonHtmlSnapshot(asin, sourceUrl, options);
   assert.equal(snapshot.currentPrice, null);
   assert.equal(snapshot.readerPurchaseVerified, false);

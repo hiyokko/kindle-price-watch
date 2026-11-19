@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { amazonUrlForAsin, extractAsin, isKindleSeriesUrl } from './amazon-url.mjs';
 import { seriesCandidatesAreCompatible } from './series-identity.mjs';
-import { requestSignal } from './request-signal.mjs';
+import { requestSignal, awaitWithSignal } from './request-signal.mjs';
 import { isUnusableBookTitle, preferBookTitle } from './book-title.mjs';
 
 const ASIN_GLOBAL_PATTERN = /[A-Z0-9]{10}/gi;
@@ -511,6 +511,7 @@ export async function fetchExternalKindleSeriesItems(input, options = {}) {
         };
       }
     } catch {
+      options.signal?.throwIfAborted();
       // External series pages are a fallback; ignore failures and let callers continue.
     }
   }
@@ -558,6 +559,7 @@ export async function fetchEfoxKindleSeriesItems(seriesName, options = {}) {
         if (!merged.has(item.asin)) merged.set(item.asin, item);
       }
     } catch {
+      options.signal?.throwIfAborted();
       // efox is an optional article source; ignore individual post failures.
     }
   }
@@ -620,6 +622,10 @@ export async function fetchKintyakuKindleSeriesItems(seriesName, options = {}) {
 }
 
 async function fetchFromKintyaku(asin, seed = {}, options = {}) {
+  return withFallbackDeadline(options, bounded => fetchFromKintyakuWithinDeadline(asin, seed, bounded));
+}
+
+async function fetchFromKintyakuWithinDeadline(asin, seed, options) {
   const normalizedAsin = String(asin || '').toUpperCase();
   if (!isProbablyBookAsin(normalizedAsin)) throw new Error('Kindle版ASINではありません');
 
@@ -657,7 +663,7 @@ async function fetchKinpomeSearchHtml(keyword, options = {}) {
   url.searchParams.set('rde', '');
   url.searchParams.set('rds', '');
   url.searchParams.set('st', '');
-  return fetchHtml(url.toString(), { signal: options.signal, timeoutMs: options.timeoutMs ?? 6000 });
+  return fetchHtml(url.toString(), { ...options, timeoutMs: options.timeoutMs ?? 6000 });
 }
 
 async function fetchEfoxSearchPosts(keyword, options = {}) {
@@ -667,7 +673,7 @@ async function fetchEfoxSearchPosts(keyword, options = {}) {
   url.searchParams.set('subtype', 'post');
   url.searchParams.set('per_page', String(postLimit));
 
-  const data = await fetchJson(url.toString(), { signal: options.signal, timeoutMs: options.timeoutMs ?? 8000 });
+  const data = await fetchJson(url.toString(), { ...options, timeoutMs: options.timeoutMs ?? 8000 });
   return (Array.isArray(data) ? data : [])
     .filter((post) => post?.id)
     .slice(0, postLimit);
@@ -679,7 +685,7 @@ async function fetchEfoxPost(post, options = {}) {
 
   const url = new URL(`https://www.efox.jp/wp-json/wp/v2/posts/${id}`);
   url.searchParams.set('_fields', 'title,link,content,modified,date');
-  return fetchJson(url.toString(), { signal: options.signal, timeoutMs: options.timeoutMs ?? 8000 });
+  return fetchJson(url.toString(), { ...options, timeoutMs: options.timeoutMs ?? 8000 });
 }
 
 async function fetchKintyakuAmazonSalesItem(asin, seed = {}, options = {}) {
@@ -715,7 +721,7 @@ async function fetchKintyakuAmazonSalesItems(keyword, options = {}) {
 
       try {
         const data = await fetchJson(url.toString(), {
-          signal: options.signal,
+          ...options,
           timeoutMs: options.timeoutMs ?? 8000,
           retries: options.retries ?? 1
         });
@@ -726,6 +732,7 @@ async function fetchKintyakuAmazonSalesItems(keyword, options = {}) {
           records.push(item);
         }
       } catch (error) {
+        options.signal?.throwIfAborted();
         if (options.throwOnError) throw error;
         break;
       }
@@ -936,6 +943,9 @@ function kintyakuBookItemFromRecord(record) {
   const price = listing?.Price || {};
   const currentPrice = parsePrice(price.Amount ?? price.DisplayAmount);
   const currentPoints = parsePoints(listing?.LoyaltyPoints?.Points);
+  if (hasNonYenCurrency(price.Currency ?? price.CurrencyCode, price.DisplayAmount)) return null;
+  if (currentPrice != null && (!Number.isFinite(currentPrice) || currentPrice < 0 ||
+    !Number.isFinite(currentPoints) || currentPoints < 0 || currentPoints > currentPrice)) return null;
   const title = cleanTitle(record?.ItemInfo?.Title?.DisplayValue || '');
   if (!title) return null;
 
@@ -1431,6 +1441,8 @@ export async function fetchBookSnapshot(asin, options = {}) {
   const normalizedAsin = String(asin || '').toUpperCase();
   const inputUrl = typeof options === 'string' ? options : options.url || '';
   const context = typeof options === 'string' ? { url: inputUrl } : options || {};
+  let metadataSnapshot = null;
+  context.signal?.throwIfAborted();
 
   if (!isProbablyBookAsin(normalizedAsin)) {
     throw new Error('Kindle版ASINではありません。Kindle商品ページのBで始まるASINを登録してください');
@@ -1438,8 +1450,11 @@ export async function fetchBookSnapshot(asin, options = {}) {
 
   if ((provider === 'auto' || provider === 'keepa') && process.env.KEEPA_API_KEY) {
     try {
-      return await fetchFromKeepa(normalizedAsin);
+      const snapshot = await fetchFromKeepa(normalizedAsin, context);
+      if (snapshot.currentPrice != null || provider === 'keepa') return snapshot;
+      metadataSnapshot = snapshot;
     } catch (error) {
+      context.signal?.throwIfAborted();
       errors.push(`Keepa: ${error.message}`);
       if (provider === 'keepa') throw error;
     }
@@ -1451,13 +1466,16 @@ export async function fetchBookSnapshot(asin, options = {}) {
 
   if (provider === 'auto' || provider === 'amazon_html') {
     try {
-      return await fetchFromAmazonHtml(normalizedAsin, inputUrl, context);
+      const snapshot = await fetchFromAmazonHtml(normalizedAsin, inputUrl,
+        metadataSnapshot ? { ...metadataSnapshot, ...context } : context);
+      return metadataSnapshot ? mergeSnapshotLike(metadataSnapshot, snapshot) : snapshot;
     } catch (error) {
       errors.push(`Amazon HTML: ${error.message}`);
       if (provider === 'amazon_html') throw error;
     }
   }
 
+  if (metadataSnapshot) return metadataSnapshot;
   throw new Error(errors.join(' / ') || '価格取得プロバイダが設定されていません');
 }
 
@@ -1465,8 +1483,13 @@ export async function fetchAmazonHtmlSnapshot(asin, url = '', options = {}) {
   return fetchFromAmazonHtml(asin, url, { ...options, url });
 }
 
-async function fetchFromKeepa(asin) {
+async function fetchFromKeepa(asin, options) {
+  return withFallbackDeadline(options, bounded => fetchFromKeepaWithinDeadline(asin, bounded));
+}
+
+async function fetchFromKeepaWithinDeadline(asin, options) {
   const domain = keepaDomainId(process.env.AMAZON_DOMAIN || 'JP');
+  if (domain !== keepaDomainId('JP')) throw new Error('Keepaの取得通貨はJPYのみ対応しています');
   const url = new URL('https://api.keepa.com/product');
   url.searchParams.set('key', process.env.KEEPA_API_KEY);
   url.searchParams.set('domain', String(domain));
@@ -1474,18 +1497,15 @@ async function fetchFromKeepa(asin) {
   url.searchParams.set('stats', '1');
   url.searchParams.set('history', '0');
 
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}`);
-  }
-
-  const data = await response.json();
+  const data = await fetchJson(url.toString(), { ...options, retries: 0,
+    timeoutMs: options.timeoutMs ?? 8000, headers: { Accept: 'application/json' } });
   if (data.error) {
     throw new Error(data.error.message || data.error.type || 'Keepa API error');
   }
 
   const product = data.products?.[0];
   if (!product) throw new Error('商品が見つかりません');
+  if (String(product.asin || '').toUpperCase() !== asin) throw new Error('Keepaの商品ASINが一致しません');
 
   const current = product.stats?.current || [];
   const price = keepaPrice(current[0]) ?? keepaPrice(current[1]) ?? keepaPrice(current[18]);
@@ -1510,7 +1530,6 @@ async function fetchFromKeepa(asin) {
 async function fetchFromAmazonHtml(asin, inputUrl = '', options = {}) {
   let lastSnapshot = null;
   const errors = [];
-  let listasinTried = false;
   let nonKindleProductDetected = false;
   let consecutiveAmazonTimeouts = 0;
   const allowExternalPriceFallback = options.allowExternalPriceFallback !== false;
@@ -1555,49 +1574,30 @@ async function fetchFromAmazonHtml(asin, inputUrl = '', options = {}) {
     amazonPhase.cleanup();
   }
 
-  if (allowExternalPriceFallback && shouldUseEarlyListasinFallback(options)) {
-    listasinTried = true;
+  const earlyListasin = shouldUseEarlyListasinFallback(options);
+  const seed = () => snapshotSeedFromOptions(asin, options, lastSnapshot);
+  const listasin = { label: 'listasIn', fetch: () => fetchFromListasin(asin, seed(), options) };
+  const fallbacks = [
+    ...(allowExternalPriceFallback && earlyListasin ? [listasin] : []),
+    ...(options.allowAmazonReaderFallback !== false && shouldUseAmazonReaderFallback()
+      ? [{ label: 'reader', fetch: () => fetchFromAmazonReader(asin, inputUrl, options) }] : []),
+    ...(allowExternalPriceFallback ? [{ label: 'Kintyaku', fetch: () => fetchFromKintyaku(asin, seed(), options) }] : []),
+    ...(allowExternalPriceFallback && !earlyListasin ? [listasin] : [])
+  ];
+  for (const fallback of fallbacks) {
+    if (options.signal?.aborted) break;
     try {
-      const snapshot = await fetchFromListasin(asin, snapshotSeedFromOptions(asin, options, lastSnapshot), options);
-      return lastSnapshot ? mergeSnapshotLike(lastSnapshot, snapshot) : snapshot;
-    } catch (error) {
-      errors.push(`listasIn: ${error.message}`);
-    }
-  }
-
-  if (options.allowAmazonReaderFallback !== false && shouldUseAmazonReaderFallback()) {
-    try {
-      const snapshot = await fetchFromAmazonReader(asin, inputUrl, options);
-      if (snapshot.currentPrice != null && !shouldDeferAmazonReaderPrice(snapshot, options)) {
-        return lastSnapshot ? mergeSnapshotLike(lastSnapshot, snapshot) : snapshot;
-      }
-      const metadataSnapshot = shouldDeferAmazonReaderPrice(snapshot, options) ? snapshotWithoutPrice(snapshot) : snapshot;
-      lastSnapshot = lastSnapshot ? mergeSnapshotLike(lastSnapshot, metadataSnapshot) : metadataSnapshot;
-    } catch (error) {
-      if (isPermanentKindleProductError(error)) nonKindleProductDetected = true;
-      errors.push(`reader: ${error.message}`);
-    }
-  }
-
-  if (allowExternalPriceFallback) {
-    try {
-      const snapshot = await fetchFromKintyaku(asin, snapshotSeedFromOptions(asin, options, lastSnapshot), options);
+      let snapshot = await fallback.fetch();
+      if (shouldDeferAmazonReaderPrice(snapshot, options)) snapshot = snapshotWithoutPrice(snapshot);
       if (snapshot.currentPrice != null) return lastSnapshot ? mergeSnapshotLike(lastSnapshot, snapshot) : snapshot;
       lastSnapshot = lastSnapshot ? mergeSnapshotLike(lastSnapshot, snapshot) : snapshot;
     } catch (error) {
-      errors.push(`Kintyaku: ${error.message}`);
-    }
-
-    if (!listasinTried) {
-      try {
-        const snapshot = await fetchFromListasin(asin, snapshotSeedFromOptions(asin, options, lastSnapshot), options);
-        return lastSnapshot ? mergeSnapshotLike(lastSnapshot, snapshot) : snapshot;
-      } catch (error) {
-        errors.push(`listasIn: ${error.message}`);
-      }
+      if (isPermanentKindleProductError(error)) nonKindleProductDetected = true;
+      errors.push(`${fallback.label}: ${error.message}`);
     }
   }
 
+  if (!lastSnapshot) options.signal?.throwIfAborted();
   if (!lastSnapshot && (nonKindleProductDetected || isLegacyPhysicalProductAsin(asin))) {
     throw nonKindleProductError();
   }
@@ -1607,19 +1607,26 @@ async function fetchFromAmazonHtml(asin, inputUrl = '', options = {}) {
 }
 
 async function fetchFromListasin(asin, seed = {}, options = {}) {
+  return withFallbackDeadline(options, bounded => fetchFromListasinWithinDeadline(asin, seed, bounded));
+}
+
+async function fetchFromListasinWithinDeadline(asin, seed, options) {
   const normalizedAsin = String(asin || '').toUpperCase();
   if (!isProbablyBookAsin(normalizedAsin)) throw new Error('Kindle版ASINではありません');
 
   const url = new URL('https://www.listasin.net/api/0200_jd.cgi');
   url.searchParams.set('asins', normalizedAsin);
   const data = await fetchJson(url.toString(), {
-    signal: options.signal,
+    ...options,
     timeoutMs: options.timeoutMs ?? 5000,
     retries: 2,
     retryDelayMs: 300
   });
   const record = data?.result?.books?.[normalizedAsin];
   if (!record) throw new Error('価格データがありません');
+  const reportedAsin = record.asin ?? record.ASIN;
+  if (reportedAsin && String(reportedAsin).toUpperCase() !== normalizedAsin) throw new Error('listasInの商品ASINが一致しません');
+  if (hasNonYenCurrency(record.currency)) throw new Error('listasInの取得通貨がJPYではありません');
 
   const currentPrice = parsePrice(record.latest_price);
   if (currentPrice == null) throw new Error('価格データがありません');
@@ -1796,10 +1803,20 @@ function amazonTimeoutFallbackThreshold(options = {}) {
 }
 
 async function fetchFromAmazonReader(asin, inputUrl = '', options = {}) {
-  const sourceUrl = amazonProductCandidateUrls(asin, inputUrl)[0] || amazonUrlForAsin(asin);
-  const readerUrl = amazonReaderUrl(sourceUrl);
-  const text = await fetchHtml(readerUrl, options);
-  return extractAmazonReaderSnapshotFromText(text, asin, sourceUrl, 'amazon_reader');
+  return withFallbackDeadline(options, async bounded => {
+    const sourceUrl = amazonProductCandidateUrls(asin, inputUrl)[0] || amazonUrlForAsin(asin);
+    const text = await fetchHtml(amazonReaderUrl(sourceUrl), bounded);
+    return extractAmazonReaderSnapshotFromText(text, asin, sourceUrl, 'amazon_reader');
+  });
+}
+
+async function withFallbackDeadline(options, task) {
+  options.signal?.throwIfAborted();
+  const phase = requestSignal(options.signal, readPositiveInteger(
+    options.fallbackMaxRuntimeMs ?? process.env.FALLBACK_PROVIDER_MAX_RUNTIME_MS, 12000
+  ));
+  try { return await task({ ...options, signal: phase.signal }); }
+  finally { phase.cleanup(); }
 }
 
 async function fetchKindleSeriesItemsFromAmazonReader(input, options = {}) {
@@ -1825,6 +1842,7 @@ async function fetchKindleSeriesItemsFromAmazonReader(input, options = {}) {
       if (result.items.length > 1) return result;
       lastError = new Error('readerでシリーズ内のKindle ASINを取得できませんでした');
     } catch (error) {
+      options.signal?.throwIfAborted();
       lastError = error;
     }
   }
@@ -1918,6 +1936,7 @@ function hasPhysicalBookEvidence(text) {
 
 export function extractKindleSeriesItemsFromAmazonReaderText(text, input, sourceUrl, options = {}) {
   const value = String(text || '');
+  readerSourceMatches(value, extractAsin(sourceUrl), sourceUrl);
   const seriesName = extractAmazonReaderSeriesName(value);
   const expectedVolumeCount = extractAmazonReaderSeriesExpectedCount(value);
   const inputAsin = extractAsin(input);
@@ -2290,19 +2309,13 @@ function extractAmazonReaderSeriesCompletionStatus(text) {
 }
 
 function extractAmazonReaderSnapshotFromText(text, asin, url, provider) {
-  const value = String(text || '');
+  const value = readerProductContent(String(text || ''));
   assertKindleBookProductPage(value);
   const title = extractAmazonReaderTitle(value);
-  const sourceUrl = value.match(/^URL Source:[\t ]*(\S+)/im)?.[1] || '';
-  const sourceAsin = extractAsin(sourceUrl);
-  let sourceHostMatches = false;
-  try { sourceHostMatches = new URL(sourceUrl).hostname === new URL(url).hostname; } catch {}
-  if ((sourceAsin && sourceAsin !== asin) || (sourceUrl && !sourceHostMatches)) {
-    throw new Error('Readerの商品ASINまたは取得元が一致しません');
-  }
+  const sourceMatches = readerSourceMatches(value, asin, url);
   const purchase = value.match(/You will be charged\s+JPY\s*([0-9][0-9,]*)/i);
   const purchaseContext = purchase ? value.slice(Math.max(0, purchase.index - 1500), purchase.index + 800) : '';
-  const readerPurchaseVerified = Boolean(sourceHostMatches && sourceAsin === asin && purchase &&
+  const readerPurchaseVerified = Boolean(sourceMatches && purchase &&
     /Kindle Store Terms of Use/i.test(purchaseContext) && /Kindle Edition/i.test(value) && !isUnusableBookTitle(title));
   return normalizeSnapshot({
     asin,
@@ -2318,6 +2331,24 @@ function extractAmazonReaderSnapshotFromText(text, asin, url, provider) {
     explicitPriceDisplay: readerPurchaseVerified,
     readerPurchaseVerified
   });
+}
+
+function readerSourceMatches(text, asin, url) {
+  const sourceUrl = text.match(/^URL Source:[\t ]*(\S+)/im)?.[1] || '';
+  if (!sourceUrl) return false;
+  const sourceAsin = extractAsin(sourceUrl);
+  let sameHost = false;
+  try {
+    const source = new URL(sourceUrl);
+    sameHost = ['http:', 'https:'].includes(source.protocol) && source.hostname === new URL(url).hostname;
+  } catch {}
+  if (!sameHost || (sourceAsin && sourceAsin !== asin)) throw new Error('Readerの商品ASINまたは取得元が一致しません');
+  return Boolean(asin && sourceAsin === asin);
+}
+
+function readerProductContent(text) {
+  const related = /^(?:#{1,6}[\t ]+)?(?:Customers who (?:bought|viewed) this item also (?:bought|viewed)|Customers also (?:bought|viewed)|Products related to this item|Frequently bought together|この商品を買った人はこんな商品も買っています|この商品をチェックした人はこんな商品もチェックしています)[^\n]*$/im.exec(text);
+  return related ? text.slice(0, related.index) : text;
 }
 
 function extractAmazonReaderTitle(text) {
@@ -2421,6 +2452,7 @@ function mergeSnapshotLike(base, overlay) {
     effectivePrice: shouldUseOverlayPricing ? overlay.effectivePrice : base.effectivePrice ?? overlay.effectivePrice,
     listPrice: shouldUseOverlayPricing ? overlay.listPrice : base.listPrice ?? overlay.listPrice,
     explicitPriceDisplay: shouldUseOverlayPricing ? overlay.explicitPriceDisplay : base.explicitPriceDisplay,
+    explicitFreeKindlePrice: shouldUseOverlayPricing ? overlay.explicitFreeKindlePrice : base.explicitFreeKindlePrice,
     readerPurchaseVerified: shouldUseOverlayPricing ? overlay.readerPurchaseVerified : base.readerPurchaseVerified,
     provider: shouldUseOverlayPricing ? overlay.provider : base.provider
   };
@@ -2488,6 +2520,7 @@ function compactFetchErrors(errors) {
 }
 
 export function extractAmazonHtmlSnapshotFromHtml(html, asin, url, provider = 'amazon_html', options = {}) {
+  assertAmazonProductIdentity(html, asin);
   assertKindleBookProductPage(html);
   const base = extractAmazonHtmlSnapshotBase(html, asin, url, provider);
   const kindleOffer = extractKindlePurchaseOffer(html, asin);
@@ -2517,6 +2550,21 @@ export function extractAmazonHtmlSnapshotFromHtml(html, asin, url, provider = 'a
     explicitPriceDisplay,
     explicitFreeKindlePrice
   });
+}
+
+function assertAmazonProductIdentity(html, asin) {
+  // Check only page-level identity, never recommendation-card ASINs.
+  const attribute = (tag, name) => decodeHtml(tag.match(new RegExp(`\\s${name}\\s*=\\s*["']([^"']*)["']`, 'i'))?.[1] || '');
+  for (const match of String(html || '').matchAll(/<(?:input|link)\b[^>]*>/gi)) {
+    const tag = match[0];
+    let reported = '';
+    if (/^<input\b/i.test(tag) && attribute(tag, 'id').toUpperCase() === 'ASIN') {
+      reported = attribute(tag, 'value').toUpperCase();
+    } else if (/^<link\b/i.test(tag) && attribute(tag, 'rel').toLowerCase() === 'canonical') {
+      reported = extractAsin(attribute(tag, 'href'));
+    }
+    if (reported && reported !== String(asin).toUpperCase()) throw new Error('Amazonの商品ASINが一致しません');
+  }
 }
 
 function extractAmazonSearchSnapshotFromHtml(html, asin, url, provider, options = {}) {
@@ -2838,6 +2886,7 @@ async function waitForHostFetchSlot(url, options = {}) {
 
   const previous = HOST_THROTTLES.get(host)?.queue || Promise.resolve();
   const next = previous.catch(() => {}).then(async () => {
+    options.signal?.throwIfAborted();
     const state = HOST_THROTTLES.get(host) || {};
     const waitMs = Math.max(0, Number(state.nextAt || 0) - Date.now());
     if (waitMs > 0) await sleepWithSignal(waitMs, options.signal);
@@ -2853,7 +2902,7 @@ async function waitForHostFetchSlot(url, options = {}) {
     ...(HOST_THROTTLES.get(host) || {}),
     queue: next
   });
-  await next;
+  await awaitWithSignal(next, options.signal);
 }
 
 function noteHostFetchPenalty(url, responseLike = {}) {
@@ -2976,6 +3025,11 @@ function isAbortError(error) {
 function normalizeSnapshot(snapshot) {
   const currentPrice = nullableNumber(snapshot.currentPrice);
   const currentPoints = nullableNumber(snapshot.currentPoints) ?? 0;
+  if (snapshot.currentPrice != null && (!Number.isFinite(snapshot.currentPrice) || snapshot.currentPrice < 0)) {
+    throw new Error('取得価格が不正です');
+  }
+  if (snapshot.currentPoints != null && (!Number.isFinite(snapshot.currentPoints) || snapshot.currentPoints < 0 ||
+    (currentPrice != null && currentPoints > currentPrice))) throw new Error('取得ポイントが不正です');
   const effectivePrice =
     currentPrice == null ? null : Math.max(0, Math.round(currentPrice - currentPoints));
 
@@ -3084,6 +3138,7 @@ function parsePrice(value) {
     return parsePrice(value.amount ?? value.value ?? value.displayAmount ?? value.raw);
   }
   if (isPercentOnlyText(value)) return null;
+  if (/^(?:JPY\s*|[￥¥]\s*)?[-−]\s*\d/i.test(String(value).trim())) return null;
   const normalized = String(value).replace(/[,\s￥¥円]/g, '');
   const match = normalized.match(/\d+(?:\.\d+)?/);
   return match ? Math.round(Number(match[0])) : null;
@@ -3099,8 +3154,13 @@ function parsePoints(value) {
   if (value == null) return 0;
   if (typeof value === 'number') return Math.round(value);
   if (typeof value === 'object') return parsePoints(value.points ?? value.value ?? value.amount);
+  if (/^\s*[-−]\s*\d/.test(String(value))) return -1;
   const match = String(value).replace(/,/g, '').match(/\d+/);
   return match ? Number(match[0]) : 0;
+}
+
+function hasNonYenCurrency(currency, display = '') {
+  return Boolean(currency && !/^JPY$/i.test(String(currency).trim())) || /[$\u20ac\u00a3]|\b(?:USD|EUR|GBP|CNY)\b/i.test(String(display || ''));
 }
 
 function normalizeAmazonUrl(input) {

@@ -15,3 +15,14 @@ export function requestSignal(externalSignal, timeoutMs) {
     }
   };
 }
+
+export function awaitWithSignal(promise, signal) {
+  if (!signal) return promise;
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    const cleanup = () => signal.removeEventListener('abort', abort);
+    promise.then(value => { cleanup(); resolve(value); }, error => { cleanup(); reject(error); });
+    if (signal.aborted) abort();
+    else signal.addEventListener('abort', abort, { once: true });
+  });
+}

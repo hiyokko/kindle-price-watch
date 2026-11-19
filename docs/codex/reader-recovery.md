@@ -30,6 +30,11 @@ does not guarantee continued upstream availability.
   all subsequent snapshot validation. Reject a different source ASIN outright.
 - Scope points to that purchase area rather than recommendation/navigation text.
   Carry explicit-price evidence when merging a metadata-only direct response.
+- Carry `readerPurchaseVerified` with its price through checker validation,
+  series-item updates, store/history persistence and history restoration. The
+  parser's approval is insufficient if a later guard rejects the same purchase.
+  Clear stale evidence on replacement pricing; never borrow it from a seed when
+  another provider supplies the new price. See [fallback acquisition](fallback-acquisition.md).
 - Treat whole URLs, image Markdown and transport/error headings as invalid titles.
   Never let them replace a valid stored title. Do not clean a CDN URL by stripping
   the `-amazon...` suffix and accidentally turn it into a plausible title fragment.
